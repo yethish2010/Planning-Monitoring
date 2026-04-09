@@ -1,0 +1,4921 @@
+import { useState, useEffect, createContext, useContext, useRef, useMemo, Fragment, Component } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
+import { 
+  LayoutDashboard, Users, Building2, Layers, DoorOpen, 
+  Wrench, Calendar, Clock, BookOpen, BrainCircuit, 
+  BarChart3, FileText, Bell, LogOut, Menu, X,
+  ChevronRight, Search, Plus, Edit2, Trash2, Check, AlertTriangle,
+  Globe, Map as MapIcon, Activity, Zap, TrendingUp, TrendingDown, Sparkles, FileSpreadsheet,
+  PieChart as PieChartIcon, AlertCircle, CheckCircle2, Info, LayoutGrid
+} from 'lucide-react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls, Text, PerspectiveCamera, Environment, ContactShadows, Float, Html } from '@react-three/drei';
+import * as THREE from 'three';
+import { GoogleGenAI, Type } from "@google/genai";
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+import * as XLSX from 'xlsx';
+
+import * as mammoth from 'mammoth';
+
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  PieChart, Pie, Cell, Legend, LineChart, Line, AreaChart, Area
+} from 'recharts';
+
+// --- UTILS ---
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+const GEMINI_API_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
+function getGenAIClient() {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Gemini API key is missing. Please set VITE_GEMINI_API_KEY in .env.");
+  }
+  return new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+}
+
+const parseAIResponse = (text: string) => {
+  try {
+    let cleanText = text.trim();
+    if (cleanText.includes("```json")) {
+      cleanText = cleanText.split("```json")[1].split("```")[0];
+    } else if (cleanText.includes("```")) {
+      cleanText = cleanText.split("```")[1].split("```")[0];
+    }
+    return JSON.parse(cleanText.trim());
+  } catch (err) {
+    console.error("AI Parse Error:", err, "Raw Text:", text);
+    throw new Error("Invalid AI response format");
+  }
+};
+
+const INVALID_TIMETABLE_LABELS = [
+  'reading period',
+  'reading periods',
+  'period',
+  'periods',
+  'break',
+  'lunch',
+  'tea break',
+  'interval',
+  'library',
+];
+
+const isInvalidTimetableValue = (value: unknown) => {
+  if (!value) return true;
+  const normalized = value.toString().trim().toLowerCase();
+  return !normalized || INVALID_TIMETABLE_LABELS.includes(normalized);
+};
+
+const sanitizeExtractedSchedule = (schedule: any) => {
+  if (!schedule || isInvalidTimetableValue(schedule.course_name)) return null;
+  if (!schedule.room || !schedule.day_of_week || !schedule.start_time || !schedule.end_time) return null;
+
+  return {
+    ...schedule,
+    course_name: schedule.course_name?.toString().trim(),
+    faculty: schedule.faculty?.toString().trim() || 'TBA',
+    room: schedule.room?.toString().trim(),
+    day_of_week: schedule.day_of_week?.toString().trim(),
+    start_time: schedule.start_time?.toString().trim(),
+    end_time: schedule.end_time?.toString().trim(),
+  };
+};
+
+const normalizeLookupValue = (value: unknown) =>
+  value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
+
+const getImportValue = (row: any, labels: string[]) => {
+  for (const label of labels) {
+    const value = row[label];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return undefined;
+};
+
+const formatExcelTime = (val: any) => {
+  if (typeof val === 'number') {
+    const totalMinutes = Math.round(val * 24 * 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  }
+  return val?.toString();
+};
+
+const formatExcelDate = (val: any) => {
+  if (typeof val === 'number') {
+    // Excel date is days since 1900-01-01
+    const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return date.toISOString().split('T')[0];
+  }
+  return val?.toString();
+};
+
+// --- AUTH CONTEXT ---
+interface AuthContextType {
+  user: any;
+  login: (userData: any) => void;
+  logout: () => void;
+  loading: boolean;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then(res => res.json())
+      .then(data => {
+        if (data.user) setUser(data.user);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const login = (userData: any) => setUser(userData);
+  const logout = () => {
+    fetch('/api/auth/logout', { method: 'POST' }).then(() => setUser(null));
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, login, logout, loading }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+const useAuth = () => useContext(AuthContext)!;
+
+// --- COMPONENTS ---
+
+// --- DEPENDENCY GUARD ---
+function DependencyGuard({ children, dependencies }: { children: React.ReactNode, dependencies: { table: string, label: string }[] }) {
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const checkDeps = async () => {
+      try {
+        const results = await Promise.all(
+          dependencies.map(async dep => {
+            const res = await fetch(`/api/${dep.table}`, { credentials: 'include' });
+            const data = await res.json();
+            return { table: dep.table, count: data.length };
+          })
+        );
+        const newCounts: Record<string, number> = {};
+        results.forEach(r => newCounts[r.table] = r.count);
+        setCounts(newCounts);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    checkDeps();
+  }, [dependencies]);
+
+  if (loading) return <div className="p-8 text-center text-slate-400">Verifying dependencies...</div>;
+
+  const missing = dependencies.filter(dep => !counts[dep.table]);
+
+  if (missing.length > 0) {
+    return (
+      <div className="p-12 max-w-2xl mx-auto text-center space-y-6">
+        <div className="w-20 h-20 bg-amber-50 rounded-full flex items-center justify-center mx-auto text-amber-500">
+          <AlertTriangle size={40} />
+        </div>
+        <h2 className="text-2xl font-bold text-slate-800">Module Dependency Required</h2>
+        <p className="text-slate-500 leading-relaxed">
+          Before you can manage this module, you must first populate its dependent modules:
+          <span className="block mt-2 font-bold text-slate-700">
+            {missing.map(m => m.label).join(', ')}
+          </span>
+        </p>
+        <div className="flex justify-center gap-4">
+          <Link to={`/management/${missing[0].table}`} className="px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all">
+            Go to {missing[0].label}
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
+function Sidebar() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const menuItems = [
+    { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['Administrator', 'Faculty', 'Department Coordinator', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { name: 'User Management', icon: Users, path: '/users', roles: ['Administrator'] },
+    { name: 'Campus Management', icon: Globe, path: '/campuses', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Building Management', icon: Building2, path: '/buildings', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Block Management', icon: Layers, path: '/blocks', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Floor Management', icon: Layers, path: '/floors', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator'] },
+    { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator'] },
+    { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Infrastructure Manager', 'Maintenance Staff'] },
+    { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Department Coordinator'] },
+    { name: 'Timetable View', icon: Clock, path: '/timetable', roles: ['Administrator', 'Department Coordinator'] },
+    { name: 'Digital Twin', icon: Globe, path: '/digital-twin', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Room Bookings', icon: BookOpen, path: '/bookings', roles: ['Administrator', 'Faculty', 'Department Coordinator'] },
+    { name: 'AI Room Recommendation', icon: BrainCircuit, path: '/ai-allocation', roles: ['Administrator', 'Department Coordinator'] },
+    { name: 'Maintenance', icon: Wrench, path: '/maintenance', roles: ['Administrator', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { name: 'Analytics', icon: BarChart3, path: '/analytics', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Utilization Reports', icon: FileText, path: '/reports', roles: ['Administrator', 'Infrastructure Manager'] },
+  ];
+
+  const filteredMenu = menuItems.filter(item => item.roles.includes(user?.role));
+
+  return (
+    <div className="w-64 bg-slate-900 text-white h-screen flex flex-col sticky top-0">
+      <div className="p-6 border-b border-slate-800">
+        <h1 className="text-xl font-bold tracking-tight flex items-center gap-2">
+          <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center">
+            <Building2 size={20} />
+          </div>
+          SmartCampus AI
+        </h1>
+        <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-widest font-semibold">Infrastructure Management</p>
+      </div>
+      
+      <nav className="flex-1 overflow-y-auto p-4 space-y-1 custom-scrollbar">
+        {filteredMenu.map((item) => (
+          <Link
+            key={item.name}
+            to={item.path}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors group"
+          >
+            <item.icon size={18} className="group-hover:text-emerald-400 transition-colors" />
+            <span className="text-sm font-medium">{item.name}</span>
+          </Link>
+        ))}
+      </nav>
+
+      <div className="p-4 border-t border-slate-800">
+        <div className="flex items-center gap-3 mb-4 px-2">
+          <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-sm font-bold">
+            {user?.name?.charAt(0)}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold truncate">{user?.name}</p>
+            <p className="text-xs text-slate-400 truncate">{user?.role}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => { logout(); navigate('/login'); }}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-rose-400 hover:bg-rose-500/10 transition-colors"
+        >
+          <LogOut size={18} />
+          <span className="text-sm font-medium">Logout</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Header({ title }: { title: string }) {
+  return (
+    <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 sticky top-0 z-10">
+      <h2 className="text-lg font-bold text-slate-800">{title}</h2>
+      <div className="flex items-center gap-4">
+        <button className="p-2 text-slate-400 hover:text-slate-600 relative">
+          <Bell size={20} />
+          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></span>
+        </button>
+        <div className="h-8 w-px bg-slate-200 mx-2"></div>
+        <div className="flex items-center gap-2">
+          <div className="text-right">
+            <p className="text-xs font-bold text-slate-800 leading-none">System Status</p>
+            <p className="text-[10px] text-emerald-500 font-bold uppercase">Online</p>
+          </div>
+          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function Layout({ children, title }: { children: React.ReactNode, title: string }) {
+  return (
+    <div className="flex min-h-screen bg-slate-50">
+      <Sidebar />
+      <div className="flex-1 flex flex-col">
+        <Header title={title} />
+        <main className="p-8 flex-1 overflow-auto">
+          {children}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function LoginPage() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
+  const { login } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (data.user) {
+      login(data.user);
+      navigate('/');
+    } else {
+      setError(data.error);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden">
+        <div className="bg-slate-900 p-8 text-center">
+          <div className="w-16 h-16 bg-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-emerald-500/20">
+            <Building2 size={32} className="text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">SmartCampus AI</h1>
+          <p className="text-slate-400 text-sm mt-1">Dynamic Infrastructure Management System</p>
+        </div>
+        
+        <form onSubmit={handleLogin} className="p-8 space-y-6">
+          {error && (
+            <div className="p-3 bg-rose-50 border border-rose-100 text-rose-600 text-sm rounded-lg flex items-center gap-2">
+              <AlertTriangle size={16} />
+              {error}
+            </div>
+          )}
+          
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Email Address</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+              placeholder="admin@smartcampus.ai"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Password</label>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                placeholder="••••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {showPassword ? <X size={18} /> : <div className="w-4 h-4 rounded-full border-2 border-slate-400" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <input type="checkbox" className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+              <span className="text-sm text-slate-600 group-hover:text-slate-900">Remember Me</span>
+            </label>
+            <Link to="/forgot-password" title="Forgot Password" className="text-sm font-semibold text-emerald-600 hover:text-emerald-700">Forgot Password?</Link>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              className="flex-1 px-6 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-900/20 transition-all"
+            >
+              Login
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ForgotPasswordPage() {
+  const [email, setEmail] = useState('');
+  const [message, setMessage] = useState('');
+  const [token, setToken] = useState(''); // For demo purposes
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = await fetch('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (data.success) {
+      setMessage(data.message);
+      setToken(data.token);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden p-8">
+        <h2 className="text-2xl font-bold text-slate-800 mb-2">Forgot Password</h2>
+        <p className="text-slate-500 text-sm mb-6">Enter your email and we'll send you a reset link.</p>
+        
+        {message ? (
+          <div className="space-y-4">
+            <div className="p-4 bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-xl text-sm">
+              {message}
+            </div>
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
+              <p className="text-xs font-bold text-slate-400 uppercase mb-2">Demo Token (Normally sent via email)</p>
+              <code className="text-xs break-all">{token}</code>
+            </div>
+            <Link to={`/reset-password?token=${token}`} className="block w-full py-3 bg-slate-900 text-white text-center font-bold rounded-xl">Proceed to Reset</Link>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase">Email Address</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500"
+                placeholder="admin@smartcampus.ai"
+              />
+            </div>
+            <button type="submit" className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all">Send Reset Link</button>
+            <Link to="/login" className="block text-center text-sm font-semibold text-slate-500 hover:text-slate-800">Back to Login</Link>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ResetPasswordPage() {
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+  const navigate = useNavigate();
+  const token = new URLSearchParams(window.location.search).get('token');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== confirmPassword) return setError('Passwords do not match');
+    
+    const res = await fetch('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, password })
+    });
+    const data = await res.json();
+    if (data.success) {
+      setSuccess(true);
+      setTimeout(() => navigate('/login'), 2000);
+    } else {
+      setError(data.error);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden p-8">
+        <h2 className="text-2xl font-bold text-slate-800 mb-2">Reset Password</h2>
+        <p className="text-slate-500 text-sm mb-6">Create a new secure password for your account.</p>
+        
+        {success ? (
+          <div className="p-4 bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-xl text-sm flex items-center gap-2">
+            <Check size={18} />
+            Password reset successful! Redirecting to login...
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {error && <div className="p-3 bg-rose-50 border border-rose-100 text-rose-600 text-sm rounded-lg">{error}</div>}
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase">New Password</label>
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500"
+                placeholder="••••••••"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase">Confirm Password</label>
+              <input
+                type="password"
+                required
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500"
+                placeholder="••••••••"
+              />
+            </div>
+            <button type="submit" className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all">Update Password</button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- MAIN APP COMPONENT ---
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ErrorBoundary>
+        <Router>
+          <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          
+          <Route path="/" element={
+            <ProtectedRoute>
+              <Layout title="Administrator Dashboard">
+                <DashboardHome />
+              </Layout>
+            </ProtectedRoute>
+          } />
+
+          <Route path="/users" element={<ProtectedRoute roles={['Administrator']}><Layout title="User Management"><UserManagement /></Layout></ProtectedRoute>} />
+
+          {/* CRUD Routes Placeholder */}
+          <Route path="/campuses" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Campus Management"><CampusManagement /></Layout></ProtectedRoute>} />
+          <Route path="/buildings" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Building Management">
+                <DependencyGuard dependencies={[{ table: 'campuses', label: 'Campuses' }]}>
+                  <BuildingManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/blocks" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Block Management">
+                <DependencyGuard dependencies={[
+                  { table: 'campuses', label: 'Campuses' },
+                  { table: 'buildings', label: 'Buildings' }
+                ]}>
+                  <BlockManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/floors" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Floor Management">
+                <DependencyGuard dependencies={[
+                  { table: 'buildings', label: 'Buildings' },
+                  { table: 'blocks', label: 'Blocks' }
+                ]}>
+                  <FloorManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/rooms" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Room Management">
+                <DependencyGuard dependencies={[
+                  { table: 'blocks', label: 'Blocks' },
+                  { table: 'floors', label: 'Floors' }
+                ]}>
+                  <RoomManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/schools" element={<ProtectedRoute roles={['Administrator']}><Layout title="School Management"><SchoolManagement /></Layout></ProtectedRoute>} />
+          <Route path="/departments" element={
+            <ProtectedRoute roles={['Administrator']}>
+              <Layout title="Department Management">
+                <DependencyGuard dependencies={[{ table: 'schools', label: 'Schools' }]}>
+                  <DepartmentManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/dept-allocation" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Department Room Mapping">
+                <DependencyGuard dependencies={[
+                  { table: 'departments', label: 'Departments' },
+                  { table: 'rooms', label: 'Rooms' }
+                ]}>
+                  <DepartmentAllocationManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/equipment" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager', 'Maintenance Staff']}>
+              <Layout title="Equipment Management">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <EquipmentManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/scheduling" element={
+            <ProtectedRoute roles={['Administrator', 'Department Coordinator']}>
+              <Layout title="Schedule Records">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <SchedulingManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/bookings" element={
+            <ProtectedRoute roles={['Administrator', 'Faculty', 'Department Coordinator']}>
+              <Layout title="Room Bookings">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <BookingManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/maintenance" element={
+            <ProtectedRoute roles={['Administrator', 'Maintenance Staff', 'Infrastructure Manager']}>
+              <Layout title="Maintenance Management">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <MaintenanceManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/ai-allocation" element={
+            <ProtectedRoute roles={['Administrator', 'Department Coordinator']}>
+              <Layout title="AI Room Recommendation">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <AIAllocation />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/analytics" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Infrastructure Analytics"><AnalyticsDashboard /></Layout></ProtectedRoute>} />
+          <Route path="/reports" element={<ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}><Layout title="Utilization Reports"><ReportGeneration /></Layout></ProtectedRoute>} />
+          <Route path="/timetable" element={
+            <ProtectedRoute roles={['Administrator', 'Department Coordinator']}>
+              <Layout title="Timetable View">
+                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                  <TimetableBuilder />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/digital-twin" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="AI Smart Campus Digital Twin">
+                <DependencyGuard dependencies={[{ table: 'buildings', label: 'Buildings' }, { table: 'rooms', label: 'Rooms' }]}>
+                  <DigitalTwin />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+        </Routes>
+      </Router>
+      </ErrorBoundary>
+    </AuthProvider>
+  );
+}
+
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error?: Error }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error('Uncaught app error:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-white p-8">
+          <div className="max-w-2xl bg-rose-50 border border-rose-200 p-6 rounded-2xl shadow-lg">
+            <h2 className="text-xl font-bold text-rose-700 mb-3">Unexpected UI error</h2>
+            <p className="text-slate-700 mb-3">An error occurred while rendering this module. Reload the page and try again.</p>
+            <pre className="text-xs text-slate-500 overflow-auto">{this.state.error?.message}</pre>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function ProtectedRoute({ children, roles }: { children: React.ReactNode, roles?: string[] }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-emerald-500 font-bold">Loading SmartCampus AI...</div>;
+  if (!user) return <Navigate to="/login" />;
+  if (roles && !roles.includes(user.role)) return <Navigate to="/" />;
+  return <>{children}</>;
+}
+
+// --- DASHBOARD HOME ---
+
+function DashboardHome() {
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [utilizationTrend, setUtilizationTrend] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [sRes, uRes] = await Promise.all([
+          fetch('/api/dashboard/stats', { credentials: 'include' }),
+          fetch('/api/analytics/utilization-trends', { credentials: 'include' })
+        ]);
+        setStats(await sRes.json());
+        const utilizationData = await uRes.json();
+        setUtilizationTrend(Array.isArray(utilizationData) ? utilizationData : []);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const statCards = [
+    { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50' },
+    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+    { label: 'Scheduled Rooms', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50' },
+    { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50' },
+    { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50' },
+  ];
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+        {statCards.map((stat) => (
+          <div key={stat.label} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all group">
+            <div className="flex items-center justify-between mb-4">
+              <div className={cn("p-3 rounded-2xl transition-all group-hover:scale-110", stat.bg)}>
+                <stat.icon className={stat.color} size={24} />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Live</span>
+              </div>
+            </div>
+            <h3 className="text-3xl font-black text-slate-800 mb-1">{stat.value}</h3>
+            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{stat.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+        <div className="lg:col-span-3 space-y-8">
+          <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800">Campus Utilization Trend</h3>
+                <p className="text-sm text-slate-500">Real-time monitoring of infrastructure demand</p>
+              </div>
+              <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-xl border border-slate-100">
+                <Activity size={16} className="text-emerald-500" />
+                <span className="text-xs font-bold text-slate-600">Peak: 84%</span>
+              </div>
+            </div>
+            <div className="h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={Array.isArray(utilizationTrend) ? utilizationTrend : []}>
+                  <defs>
+                    <linearGradient id="colorUtil" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="name" hide />
+                  <YAxis hide domain={[0, 100]} />
+                  <Tooltip 
+                    contentStyle={{ borderRadius: '24px', border: 'none', boxShadow: '0 25px 50px -12px rgb(0 0 0 / 0.25)' }}
+                  />
+                  <Area type="monotone" dataKey="utilization" stroke="#10b981" fillOpacity={1} fill="url(#colorUtil)" strokeWidth={4} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-3">
+                <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
+                  <Zap size={20} />
+                </div>
+                Quick Actions
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <Link to="/ai-allocation" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
+                  <BrainCircuit className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
+                  <p className="text-xs font-bold text-slate-700">AI Allocation</p>
+                </Link>
+                <Link to="/bookings" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
+                  <Calendar className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
+                  <p className="text-xs font-bold text-slate-700">Room Bookings</p>
+                </Link>
+                <Link to="/digital-twin" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
+                  <Globe className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
+                  <p className="text-xs font-bold text-slate-700">Digital Twin</p>
+                </Link>
+                <Link to="/maintenance" className="p-4 bg-slate-50 rounded-2xl border border-slate-100 hover:border-emerald-500 hover:bg-white transition-all group">
+                  <Wrench className="text-slate-400 group-hover:text-emerald-500 mb-3" size={24} />
+                  <p className="text-xs font-bold text-slate-700">Maintenance</p>
+                </Link>
+              </div>
+            </div>
+
+            <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-3">
+                <div className="p-2 bg-rose-50 rounded-lg text-rose-600">
+                  <AlertTriangle size={20} />
+                </div>
+                System Alerts
+              </h3>
+              <div className="space-y-4">
+                {stats?.recentAlerts?.length > 0 ? stats.recentAlerts.slice(0, 3).map((alert: any) => (
+                  <div key={alert.id} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                    <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center">
+                      <AlertTriangle size={20} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-800">Room {alert.room_number}</p>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest">{alert.building_name}</p>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="text-center py-8 text-slate-400 italic text-sm">No critical alerts.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-8">
+          <div className="bg-slate-900 p-8 rounded-[40px] text-white overflow-hidden relative group">
+            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+              <Sparkles size={80} />
+            </div>
+            <h3 className="text-xl font-bold mb-4 relative z-10">AI Insights</h3>
+            <p className="text-sm text-slate-400 leading-relaxed mb-6 relative z-10">
+              Infrastructure efficiency is up by 12% this week. Consider reallocating Block B rooms for the upcoming seminar.
+            </p>
+            <button className="w-full py-3 bg-emerald-500 text-white rounded-2xl font-bold text-sm hover:bg-emerald-600 transition-all relative z-10">
+              View Analysis
+            </button>
+          </div>
+
+          <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
+            <h3 className="text-lg font-bold text-slate-800 mb-6">Usage by School</h3>
+            <div className="space-y-6">
+              {[
+                { name: 'School of Engineering', value: 85, color: 'bg-emerald-500' },
+                { name: 'School of Business', value: 62, color: 'bg-blue-500' },
+                { name: 'School of Design', value: 45, color: 'bg-amber-500' },
+              ].map(school => (
+                <div key={school.name} className="space-y-2">
+                  <div className="flex justify-between text-xs font-bold">
+                    <span className="text-slate-600">{school.name}</span>
+                    <span className="text-slate-900">{school.value}%</span>
+                  </div>
+                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={cn("h-full rounded-full", school.color)} style={{ width: `${school.value}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- CRUD COMPONENTS (Simplified for brevity, but functional) ---
+
+function GenericCRUD({
+  type,
+  fields,
+  apiPath,
+  onImport,
+  prepareSubmitData,
+  prepareFormData,
+  afterSubmit,
+  onDataChanged,
+}: {
+  type: string,
+  fields: any[],
+  apiPath: string,
+  onImport?: (data: any[]) => Promise<void>,
+  prepareSubmitData?: (formData: any, editingItem: any) => Promise<any> | any,
+  prepareFormData?: (item: any) => any,
+  afterSubmit?: (savedItem: any, formData: any, editingItem: any) => Promise<void> | void,
+  onDataChanged?: () => Promise<void> | void,
+}) {
+  const [data, setData] = useState<any[]>([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<any>(null);
+  const [formData, setFormData] = useState<any>({});
+  const [isImporting, setIsImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchData = async () => {
+    try {
+      const res = await fetch(apiPath, { credentials: 'include' });
+      const json = await res.json();
+      if (!res.ok) {
+        console.error(`${type} load error:`, json);
+        setData([]);
+        return;
+      }
+      setData(Array.isArray(json) ? json : []);
+    } catch (err) {
+      console.error(`${type} load failed:`, err);
+      setData([]);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
+
+  const tableFields = fields.filter(f => !f.formOnly);
+  const formFields = fields.filter(f => !f.tableOnly);
+  const getFieldOptions = (field: any, context: any) => {
+    if (!field.options) return [];
+    const options = typeof field.options === 'function' ? field.options(context) : field.options;
+    return Array.isArray(options) ? options : [];
+  };
+
+  const getOptionValue = (option: any) =>
+    typeof option === 'object' ? option.value : option;
+
+  const getOptionLabel = (option: any) =>
+    typeof option === 'object' ? option.label : option;
+
+  const getFieldDisplayValue = (field: any, item: any) => {
+    if (field.render) return field.render(item);
+    const value = item[field.key];
+
+    if (field.type === 'select') {
+      const option = getFieldOptions(field, item).find((opt: any) => getOptionValue(opt)?.toString() === value?.toString());
+      return option ? getOptionLabel(option) : value;
+    }
+
+    return value;
+  };
+
+  const downloadTemplate = () => {
+    const headers = formFields.map(f => f.label);
+    const ws = XLSX.utils.aoa_to_sheet([headers]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Template");
+    XLSX.writeFile(wb, `${type}_Template.xlsx`);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!onImport) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const jsonData = XLSX.utils.sheet_to_json(ws);
+        await onImport(jsonData);
+        await fetchData();
+        if (onDataChanged) await onDataChanged();
+        alert('Import successful!');
+      } catch (err: any) {
+        alert(`Import failed: ${err.message}`);
+      } finally {
+        setIsImporting(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const method = editingItem ? 'PUT' : 'POST';
+    const url = editingItem ? `${apiPath}/${editingItem.id}` : apiPath;
+    let payload = formData;
+    try {
+      payload = prepareSubmitData ? await prepareSubmitData(formData, editingItem) : formData;
+    } catch (err: any) {
+      alert(`Error: ${err.message || 'Operation failed'}`);
+      return;
+    }
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'include'
+    });
+    if (res.ok) {
+      const savedItem = await res.json();
+      try {
+        if (afterSubmit) {
+          await afterSubmit(savedItem, formData, editingItem);
+        }
+      } catch (err: any) {
+        alert(`Saved ${type}, but follow-up setup failed: ${err.message || 'Operation failed'}`);
+      }
+      setIsModalOpen(false);
+      setEditingItem(null);
+      setFormData({});
+      await fetchData();
+      if (onDataChanged) await onDataChanged();
+    } else {
+      const err = await res.json();
+      alert(`Error: ${err.error || 'Operation failed'}`);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    if (confirm('Are you sure you want to delete this record?')) {
+      const res = await fetch(`${apiPath}/${id}`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (res.ok) {
+        await fetchData();
+        if (onDataChanged) await onDataChanged();
+      } else {
+        const err = await res.json();
+        alert(`Error deleting record: ${err.error || 'Operation failed'}`);
+      }
+    }
+  };
+
+  const handleReset = async () => {
+    if (confirm(`Are you sure you want to reset all ${type} records? This action cannot be undone.`)) {
+      const res = await fetch(`${apiPath}/reset`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (res.ok) {
+        await fetchData();
+        if (onDataChanged) await onDataChanged();
+        alert('Module reset successful!');
+      } else {
+        const err = await res.json();
+        alert(`Error resetting module: ${err.error || 'Operation failed'}`);
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input
+            type="text"
+            placeholder={`Search ${type}...`}
+            className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+          />
+        </div>
+        <div className="flex items-center gap-3">
+          {onImport && (
+            <>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                accept=".xlsx, .xls"
+                className="hidden"
+              />
+              <button
+                onClick={downloadTemplate}
+                className="flex items-center gap-2 bg-slate-50 text-slate-600 border border-slate-200 px-4 py-2 rounded-lg font-bold hover:bg-slate-100 transition-all"
+              >
+                <FileText size={18} />
+                Template
+              </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isImporting}
+                className="flex items-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-2 rounded-lg font-bold hover:bg-emerald-100 transition-all disabled:opacity-50"
+              >
+                <FileSpreadsheet size={18} />
+                {isImporting ? 'Importing...' : 'Import Excel'}
+              </button>
+            </>
+          )}
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-200 px-4 py-2 rounded-lg font-bold hover:bg-rose-100 transition-all"
+          >
+            <Trash2 size={18} />
+            Reset
+          </button>
+          <button
+            onClick={() => { setEditingItem(null); setFormData({}); setIsModalOpen(true); }}
+            className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg font-bold hover:bg-slate-800 transition-all"
+          >
+            <Plus size={18} />
+            Create {type}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              {tableFields.map(f => (
+                <th key={f.key} className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">{f.label}</th>
+              ))}
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {data.map((item) => (
+              <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                {tableFields.map(f => (
+                  <td key={f.key} className="px-6 py-4 text-sm text-slate-600 font-medium">{getFieldDisplayValue(f, item)}</td>
+                ))}
+                <td className="px-6 py-4 text-right space-x-2">
+                  <button
+                    onClick={() => { setEditingItem(item); setFormData(prepareFormData ? prepareFormData(item) : item); setIsModalOpen(true); }}
+                    className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
+                  >
+                    <Edit2 size={16} />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(item.id)}
+                    className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden border border-slate-200">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white">
+              <h3 className="text-lg font-bold text-slate-800">{editingItem ? 'Edit' : 'Create'} {type}</h3>
+              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <form onSubmit={handleSubmit} className="p-6 space-y-4 bg-white max-h-[calc(90vh-80px)] overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4">
+                {formFields.filter(f => !f.show || f.show(formData, editingItem)).map(f => (
+                  <div key={f.key} className={cn("space-y-1", f.fullWidth && "col-span-2")}>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{f.label}</label>
+                    {f.type === 'select' ? (
+                      <select
+                        required={f.required !== false}
+                        value={formData[f.key] || ''}
+                        onChange={e => {
+                          const nextData = { ...formData, [f.key]: e.target.value };
+                          f.resetKeys?.forEach((key: string) => { nextData[key] = ''; });
+                          setFormData(nextData);
+                        }}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                      >
+                        <option value="">Select {f.label}</option>
+                        {getFieldOptions(f, formData).map((opt: any) => {
+                          const value = getOptionValue(opt);
+                          const label = getOptionLabel(opt);
+                          return <option key={value} value={value}>{label}</option>;
+                        })}
+                      </select>
+                    ) : (
+                      <input
+                        type={f.type || 'text'}
+                        required={f.required !== false}
+                        value={formData[f.key] || ''}
+                        onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+                        placeholder={`Enter ${f.label}`}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800"
+                >
+                  {editingItem ? 'Update' : 'Create'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- SPECIFIC MODULES ---
+
+function UserManagement() {
+  const fields = [
+    { key: 'full_name', label: 'Full Name' },
+    { key: 'employee_id', label: 'Employee ID' },
+    { key: 'role', label: 'Role', type: 'select', options: ['Administrator', 'Faculty', 'Department Coordinator', 'Maintenance Staff', 'Infrastructure Manager'] },
+    { key: 'email', label: 'Email Address' },
+    { key: 'department', label: 'Department' },
+    { key: 'password', label: 'Password', type: 'password' },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const payload = {
+        full_name: row['Full Name'],
+        employee_id: row['Employee ID']?.toString(),
+        role: row['Role'],
+        email: row['Email Address'],
+        department: row['Department'],
+        password: row['Password']?.toString() || 'Welcome123'
+      };
+      if (!payload.email || !payload.employee_id) continue;
+      await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return <GenericCRUD type="User" fields={fields} apiPath="/api/users" onImport={handleImport} />;
+}
+
+function CampusManagement() {
+  const fields = [
+    { key: 'campus_id', label: 'Campus ID' },
+    { key: 'name', label: 'Campus Name' },
+    { key: 'location', label: 'Location' },
+    { key: 'description', label: 'Description', fullWidth: true },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const payload = {
+        campus_id: row['Campus ID']?.toString(),
+        name: row['Campus Name'],
+        location: row['Location'],
+        description: row['Description']
+      };
+      if (!payload.campus_id || !payload.name) continue;
+      await fetch('/api/campuses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return <GenericCRUD type="Campus" fields={fields} apiPath="/api/campuses" onImport={handleImport} />;
+}
+
+function BuildingManagement() {
+  const [campuses, setCampuses] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('/api/campuses').then(res => res.json()).then(setCampuses);
+    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
+  }, []);
+
+  const getVisibleBlocksForBuilding = (building: any) =>
+    blocks.filter(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building));
+
+  const fields = [
+    { key: 'building_id', label: 'Building ID' },
+    { key: 'name', label: 'Building Name' },
+    { key: 'campus_id', label: 'Campus', type: 'select', options: campuses.map(c => ({ value: c.id, label: c.name })) },
+    {
+      key: 'structure_type',
+      label: 'Structure Type',
+      type: 'select',
+      render: (item: any) => getVisibleBlocksForBuilding(item).length > 0 ? 'Has blocks' : 'No blocks',
+      options: [
+        { value: 'direct', label: 'No blocks, floors directly under building' },
+        { value: 'blocks', label: 'Has blocks' },
+      ],
+    },
+    {
+      key: 'block_count',
+      label: 'Number of Blocks',
+      type: 'number',
+      required: false,
+      show: (formData: any) => formData.structure_type === 'blocks',
+      render: (item: any) => getVisibleBlocksForBuilding(item).length,
+    },
+    { key: 'description', label: 'Description', fullWidth: true },
+  ];
+
+  const prepareSubmitData = (data: any) => {
+    const existingBlockCount = data.id ? getVisibleBlocksForBuilding(data).length : 0;
+
+    if (data.structure_type === 'direct' && existingBlockCount > 0) {
+      throw new Error('This building already has blocks. Remove or edit the blocks before changing it to direct floors.');
+    }
+
+    if (data.structure_type === 'blocks' && (parseInt(data.block_count, 10) || 0) < 1) {
+      throw new Error('Please enter at least 1 block');
+    }
+
+    if (data.structure_type === 'blocks' && data.id && (parseInt(data.block_count, 10) || 0) < existingBlockCount) {
+      throw new Error('This building already has more blocks. Delete extra blocks before reducing the block count.');
+    }
+
+    const payload = { ...data };
+    delete payload.structure_type;
+    delete payload.block_count;
+    return payload;
+  };
+
+  const afterSubmit = async (savedBuilding: any, data: any, editingItem: any) => {
+    if (data.structure_type !== 'blocks') return;
+
+    const targetBuilding = editingItem ? { ...editingItem, ...data } : savedBuilding;
+    const existingBlockCount = editingItem ? getVisibleBlocksForBuilding(editingItem).length : 0;
+    const blockCount = Math.max(existingBlockCount, parseInt(data.block_count, 10) || 0);
+    const names = Array.from({ length: Math.max(0, blockCount - existingBlockCount) }, (_, index) => {
+      const blockIndex = existingBlockCount + index;
+      const letter = String.fromCharCode(65 + blockIndex);
+      return blockIndex < 26 ? `Block ${letter}` : `Block ${blockIndex + 1}`;
+    });
+
+    for (const name of names) {
+      const blockCode = name.toUpperCase().replace(/\s+/g, '-');
+      const res = await fetch('/api/blocks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          block_id: `${targetBuilding.building_id}-${blockCode}`,
+          name,
+          building_id: targetBuilding.id,
+          description: `${name} in ${targetBuilding.name}`,
+        }),
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || `Could not create ${name}`);
+      }
+
+      const createdBlock = await res.json();
+      setBlocks(prev => [...prev, createdBlock]);
+    }
+  };
+
+  const prepareFormData = (item: any) => {
+    const visibleBlockCount = getVisibleBlocksForBuilding(item).length;
+
+    return {
+      ...item,
+      structure_type: visibleBlockCount > 0 ? 'blocks' : 'direct',
+      block_count: visibleBlockCount,
+    };
+  };
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const campus = campuses.find(c => normalizeLookupValue(c.name) === normalizeLookupValue(getImportValue(row, ['Campus'])));
+      const structureType = normalizeLookupValue(getImportValue(row, ['Structure Type']));
+      const payload = {
+        building_id: row['Building ID']?.toString(),
+        name: row['Building Name'],
+        campus_id: campus?.id,
+        description: row['Description']
+      };
+      if (!payload.building_id || !payload.name || !payload.campus_id) continue;
+      const res = await fetch('/api/buildings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+
+      if (res.ok && (structureType === 'blocks' || structureType === 'has blocks')) {
+        const createdBuilding = await res.json();
+        const blockCount = parseInt(getImportValue(row, ['Number of Blocks']) as any, 10) || 0;
+
+        for (let index = 0; index < blockCount; index += 1) {
+          const letter = String.fromCharCode(65 + index);
+          const name = index < 26 ? `Block ${letter}` : `Block ${index + 1}`;
+          const blockCode = name.toUpperCase().replace(/\s+/g, '-');
+          await fetch('/api/blocks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              block_id: `${createdBuilding.building_id}-${blockCode}`,
+              name,
+              building_id: createdBuilding.id,
+              description: `${name} in ${createdBuilding.name}`,
+            }),
+            credentials: 'include'
+          });
+        }
+      }
+    }
+  };
+
+  return (
+    <GenericCRUD
+      type="Building"
+      fields={fields}
+      apiPath="/api/buildings"
+      onImport={handleImport}
+      prepareSubmitData={prepareSubmitData}
+      afterSubmit={afterSubmit}
+      prepareFormData={prepareFormData}
+    />
+  );
+}
+
+function BlockManagement() {
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    fetch('/api/floors').then(res => res.json()).then(setFloors);
+  }, []);
+
+  const fields = [
+    { key: 'block_id', label: 'Block ID' },
+    { key: 'name', label: 'Block Name' },
+    { key: 'building_id', label: 'Building', type: 'select', options: buildings.map(b => ({ value: b.id, label: b.name })) },
+    {
+      key: 'floor_count',
+      label: 'Number of Floors',
+      type: 'number',
+      required: false,
+      render: (item: any) => floors.filter(f => f.block_id === item.id).length,
+    },
+    {
+      key: 'first_floor_number',
+      label: 'First Floor Number',
+      type: 'number',
+      formOnly: true,
+      required: false,
+    },
+    {
+      key: 'floor_range',
+      label: 'Floor Range',
+      tableOnly: true,
+      render: (item: any) => {
+        const blockFloors = floors
+          .filter(f => f.block_id === item.id)
+          .sort((a, b) => a.floor_number - b.floor_number);
+
+        if (blockFloors.length === 0) return 'No floors';
+        if (blockFloors.length === 1) return getFloorName(blockFloors[0].floor_number);
+        return `${getFloorName(blockFloors[0].floor_number)} - ${getFloorName(blockFloors[blockFloors.length - 1].floor_number)}`;
+      },
+    },
+    { key: 'description', label: 'Description', fullWidth: true },
+  ];
+
+  const getSortedFloorsForBlock = (blockId: number) =>
+    floors.filter(f => f.block_id === blockId).sort((a, b) => a.floor_number - b.floor_number);
+
+  const prepareSubmitData = (data: any) => {
+    const floorCount = parseInt(data.floor_count, 10) || 0;
+    const existingFloorCount = data.id ? getSortedFloorsForBlock(data.id).length : 0;
+    if (!data.id && floorCount < 1) {
+      throw new Error('Please enter at least 1 floor');
+    }
+
+    if (data.id && floorCount < existingFloorCount) {
+      throw new Error('This block already has more floors. Delete extra floors before reducing the floor count.');
+    }
+
+    const payload = { ...data };
+    delete payload.floor_count;
+    delete payload.first_floor_number;
+    delete payload.floor_range;
+    return payload;
+  };
+
+  const afterSubmit = async (savedBlock: any, data: any, editingItem: any) => {
+    const targetBlock = editingItem ? { ...editingItem, ...data } : savedBlock;
+    const floorCount = parseInt(data.floor_count, 10) || 0;
+    const firstFloorNumber = data.first_floor_number === '' || data.first_floor_number == null
+      ? 0
+      : parseInt(data.first_floor_number, 10);
+    const existingFloors = editingItem ? getSortedFloorsForBlock(targetBlock.id) : [];
+    const existingFloorNumbers = new Set(existingFloors.map(f => f.floor_number));
+    const createdFloors = [];
+
+    for (let index = 0; index < floorCount; index += 1) {
+      const floorNumber = firstFloorNumber + index;
+      if (existingFloorNumbers.has(floorNumber)) continue;
+
+      const res = await fetch('/api/floors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          floor_id: `${targetBlock.block_id}-F${floorNumber}`,
+          block_id: targetBlock.id,
+          floor_number: floorNumber,
+          description: `${getFloorName(floorNumber)} in ${targetBlock.name}`,
+        }),
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || `Could not create ${getFloorName(floorNumber)}`);
+      }
+
+      createdFloors.push(await res.json());
+    }
+
+    setFloors(prev => [...prev, ...createdFloors]);
+  };
+
+  const prepareFormData = (item: any) => {
+    const blockFloors = getSortedFloorsForBlock(item.id);
+
+    return {
+      ...item,
+      floor_count: blockFloors.length,
+      first_floor_number: blockFloors[0]?.floor_number ?? 0,
+    };
+  };
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+      const payload = {
+        block_id: row['Block ID']?.toString(),
+        name: row['Block Name'],
+        building_id: building?.id,
+        description: row['Description']
+      };
+      if (!payload.block_id || !payload.name || !payload.building_id) continue;
+      const res = await fetch('/api/blocks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+
+      if (!res.ok) continue;
+
+      const createdBlock = await res.json();
+      const floorCount = parseInt(getImportValue(row, ['Number of Floors']) as any, 10) || 0;
+      const firstFloorNumber = getImportValue(row, ['First Floor Number']) == null
+        ? 0
+        : parseInt(getImportValue(row, ['First Floor Number']) as any, 10);
+
+      for (let index = 0; index < floorCount; index += 1) {
+        const floorNumber = firstFloorNumber + index;
+        await fetch('/api/floors', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            floor_id: `${createdBlock.block_id}-F${floorNumber}`,
+            block_id: createdBlock.id,
+            floor_number: floorNumber,
+            description: `${getFloorName(floorNumber)} in ${createdBlock.name}`,
+          }),
+          credentials: 'include'
+        });
+      }
+    }
+  };
+
+  return (
+    <GenericCRUD
+      type="Block"
+      fields={fields}
+      apiPath="/api/blocks"
+      onImport={handleImport}
+      prepareSubmitData={prepareSubmitData}
+      afterSubmit={afterSubmit}
+      prepareFormData={prepareFormData}
+    />
+  );
+}
+
+const DIRECT_BUILDING_BLOCK_NAME = 'Main Block';
+
+const normalizeEntityName = (value: unknown) =>
+  value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
+
+const isImplicitBuildingBlock = (block: any, building?: any) => {
+  const blockName = normalizeEntityName(block?.name);
+  const buildingName = normalizeEntityName(building?.name);
+  return blockName === normalizeEntityName(DIRECT_BUILDING_BLOCK_NAME) ||
+    blockName === 'default block' ||
+    (!!buildingName && blockName === buildingName);
+};
+
+const getBlockDisplayLabel = (block: any, building?: any) =>
+  isImplicitBuildingBlock(block, building) ? 'Direct floors' : block?.name || 'Unknown Block';
+
+const getFloorName = (floorNumber: number | string) => {
+  const value = Number(floorNumber);
+  if (Number.isNaN(value)) return `Floor ${floorNumber}`;
+  if (value < 0) return `Basement ${Math.abs(value)}`;
+  if (value === 0) return 'Ground Floor';
+  return `Floor ${value}`;
+};
+
+const getFloorShortName = (floorNumber: number | string) => {
+  const value = Number(floorNumber);
+  if (Number.isNaN(value)) return floorNumber?.toString() || '';
+  if (value < 0) return `B${Math.abs(value)}`;
+  if (value === 0) return 'G';
+  return value.toString();
+};
+
+const getFloorDisplayLabel = (floor: any, blocks: any[], buildings: any[]) => {
+  const block = blocks.find(b => b.id === floor.block_id);
+  const building = buildings.find(b => b.id === block?.building_id);
+  const floorName = getFloorName(floor.floor_number);
+
+  if (!block || !building) return `${floorName} (Unknown Building)`;
+  if (isImplicitBuildingBlock(block, building)) return `${floorName} (${building.name})`;
+  return `${floorName} (${building.name} - ${block.name})`;
+};
+
+const ensureDirectBuildingBlock = async (buildingId: number | string, blocks: any[], buildings: any[]) => {
+  const building = buildings.find(b => b.id == buildingId);
+  const existingBlock = blocks.find(b => b.building_id == buildingId && isImplicitBuildingBlock(b, building));
+  if (existingBlock) return existingBlock.id;
+
+  const res = await fetch('/api/blocks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      block_id: `BLK-${buildingId}-MAIN`,
+      name: building?.name || DIRECT_BUILDING_BLOCK_NAME,
+      building_id: Number(buildingId),
+      description: 'Direct floors for this building',
+    }),
+    credentials: 'include'
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    const latestRes = await fetch('/api/blocks', { credentials: 'include' });
+    const latestBlocks = latestRes.ok ? await latestRes.json() : [];
+    const latestBlock = latestBlocks.find((block: any) =>
+      block.building_id == buildingId && isImplicitBuildingBlock(block, building)
+    );
+
+    if (latestBlock) return latestBlock.id;
+    throw new Error(data.error || 'Could not create direct building block');
+  }
+
+  return data.id;
+};
+
+function FloorManagement() {
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
+    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+  }, []);
+
+  const fields = [
+    { key: 'floor_id', label: 'Floor ID' },
+    {
+      key: 'building_id',
+      label: 'Building',
+      type: 'select',
+      resetKeys: ['block_id'],
+      options: buildings.map(b => ({ value: b.id, label: b.name })),
+      render: (item: any) => {
+        const block = blocks.find(b => b.id === item.block_id);
+        const building = buildings.find(b => b.id === block?.building_id);
+        return building?.name || 'Unknown';
+      }
+    },
+    {
+      key: 'block_id',
+      label: 'Block / Direct Floors',
+      type: 'select',
+      options: (formData: any) => {
+        const selectedBuildingId = formData.building_id ||
+          blocks.find(b => b.id === formData.block_id)?.building_id;
+
+        if (!selectedBuildingId) return [];
+
+        const building = buildings.find(b => b.id == selectedBuildingId);
+        const buildingBlocks = blocks.filter(b => b.building_id == selectedBuildingId);
+        const visibleBlocks = buildingBlocks.filter(b => !isImplicitBuildingBlock(b, building));
+        const directOption = {
+          value: '__direct__',
+          label: visibleBlocks.length > 0 ? 'Direct floors (no block)' : 'Direct floors',
+        };
+
+        return [
+          directOption,
+          ...visibleBlocks.map(b => ({ value: b.id, label: b.name })),
+        ];
+      },
+      render: (item: any) => {
+        const block = blocks.find(b => b.id === item.block_id);
+        const building = buildings.find(b => b.id === block?.building_id);
+        return getBlockDisplayLabel(block, building);
+      }
+    },
+    { key: 'floor_number', label: 'Floor Number', type: 'number' },
+    { key: 'description', label: 'Description', fullWidth: true },
+  ];
+
+  const prepareSubmitData = async (data: any, editingItem: any) => {
+    const payload = { ...data };
+    const selectedBuildingId = payload.building_id || blocks.find(b => b.id === editingItem?.block_id)?.building_id;
+
+    if (!selectedBuildingId) {
+      throw new Error('Please select a building');
+    }
+
+    if (!payload.block_id || payload.block_id === '__direct__') {
+      payload.block_id = await ensureDirectBuildingBlock(selectedBuildingId, blocks, buildings);
+    }
+
+    delete payload.building_id;
+    return payload;
+  };
+
+  const prepareFormData = (item: any) => {
+    const block = blocks.find(b => b.id === item.block_id);
+    const building = buildings.find(b => b.id === block?.building_id);
+
+    return {
+      ...item,
+      building_id: block?.building_id || '',
+      block_id: isImplicitBuildingBlock(block, building) ? '__direct__' : item.block_id,
+    };
+  };
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const building = buildings.find(b => normalizeEntityName(b.name) === normalizeEntityName(getImportValue(row, ['Building'])));
+      const block = blocks.find(b =>
+        normalizeEntityName(b.name) === normalizeEntityName(getImportValue(row, ['Block / Direct Floors', 'Block'])) &&
+        (!building || b.building_id === building.id)
+      );
+      const payload = {
+        floor_id: row['Floor ID']?.toString(),
+        block_id: block?.id || (building ? await ensureDirectBuildingBlock(building.id, blocks, buildings) : undefined),
+        floor_number: parseInt(row['Floor Number']) || 0,
+        description: row['Description']
+      };
+      if (!payload.floor_id || !payload.block_id) continue;
+      await fetch('/api/floors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return (
+    <GenericCRUD
+      type="Floor"
+      fields={fields}
+      apiPath="/api/floors"
+      onImport={handleImport}
+      prepareSubmitData={prepareSubmitData}
+      prepareFormData={prepareFormData}
+    />
+  );
+}
+
+function RoomManagement() {
+  const [floors, setFloors] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch('/api/floors').then(res => res.json()).then(setFloors);
+    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
+    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+  }, []);
+
+  const fields = [
+    { key: 'room_id', label: 'Room ID' },
+    { key: 'room_number', label: 'Room Number' },
+    {
+      key: 'building_id',
+      label: 'Building',
+      type: 'select',
+      resetKeys: ['block_id', 'floor_id'],
+      options: buildings.map(b => ({ value: b.id, label: b.name })),
+      render: (item: any) => {
+        const floor = floors.find(f => f.id === item.floor_id);
+        const block = blocks.find(b => b.id === floor?.block_id);
+        const building = buildings.find(b => b.id === block?.building_id);
+        return building?.name || 'Unknown';
+      },
+    },
+    {
+      key: 'block_id',
+      label: 'Block / Direct Floors',
+      type: 'select',
+      resetKeys: ['floor_id'],
+      show: (formData: any) => {
+        const building = buildings.find(b => b.id == formData.building_id);
+        if (!building) return false;
+        const buildingBlocks = blocks.filter(b => b.building_id == building.id);
+        return buildingBlocks.filter(b => !isImplicitBuildingBlock(b, building)).length > 0;
+      },
+      options: (formData: any) => {
+        const building = buildings.find(b => b.id == formData.building_id);
+        if (!building) return [];
+
+        const buildingBlocks = blocks.filter(b => b.building_id == building.id);
+        const visibleBlocks = buildingBlocks.filter(b => !isImplicitBuildingBlock(b, building));
+        const directBlock = buildingBlocks.find(b => isImplicitBuildingBlock(b, building));
+        const directHasFloors = directBlock && floors.some(f => f.block_id === directBlock.id);
+
+        return [
+          ...(directHasFloors ? [{ value: directBlock.id, label: 'Direct floors' }] : []),
+          ...visibleBlocks.map(b => ({ value: b.id, label: b.name })),
+        ];
+      },
+      render: (item: any) => {
+        const floor = floors.find(f => f.id === item.floor_id);
+        const block = blocks.find(b => b.id === floor?.block_id);
+        const building = buildings.find(b => b.id === block?.building_id);
+        return getBlockDisplayLabel(block, building);
+      },
+    },
+    { 
+      key: 'floor_id', 
+      label: 'Floor', 
+      type: 'select', 
+      options: (formData: any) => {
+        if (!formData.building_id) return [];
+
+        const building = buildings.find(b => b.id == formData.building_id);
+        const buildingBlocks = blocks.filter(b => b.building_id == formData.building_id);
+        const visibleBlocks = building ? buildingBlocks.filter(b => !isImplicitBuildingBlock(b, building)) : [];
+        const directBlock = building ? buildingBlocks.find(b => isImplicitBuildingBlock(b, building)) : null;
+
+        const allowedBlockIds = formData.block_id
+          ? [Number(formData.block_id)]
+          : visibleBlocks.length > 0
+            ? []
+            : directBlock
+              ? [directBlock.id]
+              : buildingBlocks.map(b => b.id);
+
+        return floors
+          .filter(f => allowedBlockIds.includes(f.block_id))
+          .map(f => ({ value: f.id, label: getFloorDisplayLabel(f, blocks, buildings) }));
+      },
+      render: (item: any) => {
+        const floor = floors.find(f => f.id === item.floor_id);
+        return floor ? getFloorDisplayLabel(floor, blocks, buildings) : 'Unknown Floor';
+      },
+    },
+    { key: 'room_type', label: 'Room Type', type: 'select', options: ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library'] },
+    { key: 'capacity', label: 'Capacity', type: 'number' },
+    { key: 'status', label: 'Status', type: 'select', options: ['Available', 'Maintenance'] },
+  ];
+
+  const prepareFormData = (item: any) => {
+    const floor = floors.find(f => f.id === item.floor_id);
+    const block = blocks.find(b => b.id === floor?.block_id);
+
+    return {
+      ...item,
+      building_id: block?.building_id || '',
+      block_id: block?.id || '',
+    };
+  };
+
+  const prepareSubmitData = (data: any) => {
+    const payload = { ...data };
+    delete payload.building_id;
+    delete payload.block_id;
+    return payload;
+  };
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+      const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
+      const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+      const block = blocks.find(b =>
+        (!building || b.building_id === building.id) &&
+        (
+          normalizeLookupValue(b.name) === normalizedBlockLabel ||
+          ((normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)' || !normalizedBlockLabel) && isImplicitBuildingBlock(b, building))
+        )
+      );
+      const floorValue = getImportValue(row, ['Floor', 'Floor ID']);
+      const floor = floors.find(f =>
+        (!block || f.block_id === block.id) &&
+        (
+          f.id?.toString() === floorValue?.toString() ||
+          f.floor_number?.toString() === floorValue?.toString() ||
+          normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue)
+        )
+      );
+      const payload = {
+        room_id: row['Room ID']?.toString(),
+        room_number: row['Room Number']?.toString(),
+        floor_id: floor?.id ?? parseInt(floorValue as any),
+        room_type: row['Room Type'],
+        capacity: parseInt(row['Capacity']) || 0,
+        status: row['Status'] || 'Available'
+      };
+      if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
+      await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return (
+    <GenericCRUD
+      type="Room"
+      fields={fields}
+      apiPath="/api/rooms"
+      onImport={handleImport}
+      prepareSubmitData={prepareSubmitData}
+      prepareFormData={prepareFormData}
+    />
+  );
+}
+
+function SchoolManagement() {
+  const fields = [
+    { key: 'school_id', label: 'School ID' },
+    { key: 'name', label: 'School Name' },
+    { key: 'type', label: 'Type', type: 'select', options: ['Engineering', 'Science', 'Arts', 'Business', 'Medical', 'Law', 'Architecture'] },
+    { key: 'description', label: 'Description', fullWidth: true },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const payload = {
+        school_id: row['School ID']?.toString(),
+        name: row['School Name'],
+        type: row['Type'],
+        description: row['Description']
+      };
+      if (!payload.school_id || !payload.name) continue;
+      await fetch('/api/schools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return <GenericCRUD type="School" fields={fields} apiPath="/api/schools" onImport={handleImport} />;
+}
+
+function DepartmentManagement() {
+  const [schools, setSchools] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('/api/schools').then(res => res.json()).then(setSchools);
+  }, []);
+
+  const fields = [
+    { key: 'department_id', label: 'Department ID' },
+    { key: 'name', label: 'Department Name' },
+    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schools.map(s => ({ value: s.id, label: s.name })) },
+    { key: 'type', label: 'Type', type: 'select', options: ['Academic', 'Research', 'Administrative', 'Support'] },
+    { key: 'description', label: 'Description', fullWidth: true },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const school = schools.find(s => s.name === row['School']);
+      const payload = {
+        department_id: row['Department ID']?.toString(),
+        name: row['Department Name'],
+        school_id: school?.id,
+        type: row['Type'],
+        description: row['Description']
+      };
+      if (!payload.department_id || !payload.name || !payload.school_id) continue;
+      await fetch('/api/departments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return <GenericCRUD type="Department" fields={fields} apiPath="/api/departments" onImport={handleImport} />;
+}
+
+function DepartmentAllocationManagement() {
+  const [schools, setSchools] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [allocations, setAllocations] = useState<any[]>([]);
+  const semesterOptions = ['Odd', 'Even'];
+
+  const normalizeSemester = (value: unknown) => {
+    const normalized = normalizeLookupValue(value);
+    if (!normalized) return '';
+    if (normalized.includes('odd') || normalized.includes('fall')) return 'Odd';
+    if (normalized.includes('even') || normalized.includes('spring') || normalized.includes('summer')) return 'Even';
+    return value?.toString().trim() || '';
+  };
+
+  const refreshAllocations = async () => {
+    const res = await fetch('/api/department_allocations', { credentials: 'include' });
+    const data = await res.json();
+    setAllocations(Array.isArray(data) ? data : []);
+  };
+
+  useEffect(() => {
+    fetch('/api/schools').then(res => res.json()).then(setSchools);
+    fetch('/api/departments').then(res => res.json()).then(setDepartments);
+    fetch('/api/rooms').then(res => res.json()).then(setRooms);
+    fetch('/api/floors').then(res => res.json()).then(setFloors);
+    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
+    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    refreshAllocations();
+  }, []);
+
+  const getRoomPath = (room: any) => {
+    const floor = floors.find(f => f.id === room.floor_id);
+    const block = blocks.find(b => b.id === floor?.block_id);
+    const building = buildings.find(b => b.id === block?.building_id);
+    return { floor, block, building };
+  };
+
+  const buildingHasVisibleBlocks = (buildingId: unknown) => {
+    const building = buildings.find(b => b.id == buildingId);
+    if (!building) return false;
+    return blocks.some(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building));
+  };
+
+  const getBlockOptionsForBuilding = (formData: any) => {
+    const building = buildings.find(b => b.id == formData.building_id);
+    if (!building) return [];
+    return blocks
+      .filter(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building))
+      .map(block => ({ value: block.id, label: block.name }));
+  };
+
+  const getAvailableRoomOptions = (formData: any) => {
+    const selectedRoomId = formData.room_id?.toString();
+    const allocatedRoomIds = new Set(
+      allocations
+        .filter(allocation => allocation.id !== formData.id)
+        .map(allocation => allocation.room_id?.toString())
+    );
+
+    return rooms
+      .filter(room => {
+        if (allocatedRoomIds.has(room.id?.toString()) && room.id?.toString() !== selectedRoomId) return false;
+
+        const { floor, block, building } = getRoomPath(room);
+        if (!floor || !block || !building) return false;
+        if (formData.building_id && building.id?.toString() !== formData.building_id?.toString()) return false;
+        if (formData.block_id && block.id?.toString() !== formData.block_id?.toString()) return false;
+        if (!formData.block_id && formData.building_id && buildingHasVisibleBlocks(formData.building_id)) return false;
+        return true;
+      })
+      .map(room => {
+        const { floor, block, building } = getRoomPath(room);
+        return {
+          value: room.id,
+          label: `${room.room_number} - ${getFloorDisplayLabel(floor, blocks, buildings)}`,
+        };
+      });
+  };
+
+  const fields = [
+    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schools.map(s => ({ value: s.id, label: s.name })) },
+    { 
+      key: 'department_id', 
+      label: 'Department', 
+      type: 'select', 
+      options: (formData: any) => {
+        return departments
+          .filter(d => d.school_id === parseInt(formData.school_id))
+          .map(d => ({ value: d.id, label: d.name }));
+      }
+    },
+    {
+      key: 'building_id',
+      label: 'Building',
+      type: 'select',
+      resetKeys: ['block_id', 'room_id'],
+      options: buildings.map(building => ({ value: building.id, label: building.name })),
+      render: (item: any) => {
+        const room = rooms.find(r => r.id === item.room_id);
+        return getRoomPath(room)?.building?.name || 'Unknown';
+      },
+    },
+    {
+      key: 'block_id',
+      label: 'Block',
+      type: 'select',
+      resetKeys: ['room_id'],
+      show: (formData: any) => buildingHasVisibleBlocks(formData.building_id),
+      options: getBlockOptionsForBuilding,
+      render: (item: any) => {
+        const room = rooms.find(r => r.id === item.room_id);
+        const { block, building } = getRoomPath(room);
+        return getBlockDisplayLabel(block, building);
+      },
+    },
+    { key: 'room_id', label: 'Room', type: 'select', options: getAvailableRoomOptions },
+    { key: 'semester', label: 'Semester', type: 'select', options: semesterOptions },
+    { key: 'room_type', label: 'Room Type', type: 'select', options: ['Classroom', 'Lab', 'Seminar Hall'] },
+    { key: 'capacity', label: 'Required Capacity', type: 'number' },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    const allocatedRoomIds = new Set(allocations.map(allocation => allocation.room_id?.toString()));
+
+    for (const row of data) {
+      const school = schools.find(s => s.name === row['School']);
+      const department = departments.find(d => d.name === row['Department']);
+      const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+      const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
+      const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+      const room = rooms.find(r => {
+        if (r.room_number !== getImportValue(row, ['Room', 'Room Number'])?.toString()) return false;
+        const { block, building: roomBuilding } = getRoomPath(r);
+        if (building && roomBuilding?.id !== building.id) return false;
+        if (normalizedBlockLabel) {
+          const wantsDirectBlock = normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)';
+          if (wantsDirectBlock && !isImplicitBuildingBlock(block, roomBuilding)) return false;
+          if (!wantsDirectBlock && normalizeLookupValue(block?.name) !== normalizedBlockLabel) return false;
+        }
+        return true;
+      });
+      
+      const payload = {
+        school_id: school?.id,
+        department_id: department?.id,
+        room_id: room?.id,
+        semester: normalizeSemester(row['Semester']),
+        room_type: row['Room Type'],
+        capacity: parseInt(row['Capacity']) || 0
+      };
+      
+      if (
+        !payload.school_id ||
+        !payload.department_id ||
+        !payload.room_id ||
+        !semesterOptions.includes(payload.semester) ||
+        allocatedRoomIds.has(payload.room_id.toString())
+      ) continue;
+      
+      const res = await fetch('/api/department_allocations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+
+      if (res.ok) allocatedRoomIds.add(payload.room_id.toString());
+    }
+  };
+
+  const prepareFormData = (item: any) => {
+    const room = rooms.find(r => r.id === item.room_id);
+    const { block, building } = getRoomPath(room);
+
+    return {
+      ...item,
+      building_id: building?.id || '',
+      block_id: block && !isImplicitBuildingBlock(block, building) ? block.id : '',
+    };
+  };
+
+  const prepareSubmitData = (data: any) => {
+    const payload = { ...data };
+    delete payload.building_id;
+    delete payload.block_id;
+    return payload;
+  };
+
+  return (
+    <GenericCRUD
+      type="Department Allocation"
+      fields={fields}
+      apiPath="/api/department_allocations"
+      onImport={handleImport}
+      onDataChanged={refreshAllocations}
+      prepareFormData={prepareFormData}
+      prepareSubmitData={prepareSubmitData}
+    />
+  );
+}
+
+function EquipmentManagement() {
+  const [rooms, setRooms] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('/api/rooms').then(res => res.json()).then(setRooms);
+  }, []);
+
+  const fields = [
+    { key: 'equipment_id', label: 'Equipment ID' },
+    { key: 'name', label: 'Equipment Name' },
+    { key: 'type', label: 'Type' },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: r.room_number })) },
+    { key: 'condition', label: 'Condition', type: 'select', options: ['Excellent', 'Good', 'Fair', 'Poor'] },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const room = rooms.find(r => r.room_number === row['Room Number']?.toString());
+      const payload = {
+        equipment_id: row['Equipment ID']?.toString(),
+        name: row['Equipment Name'],
+        type: row['Type'],
+        room_id: room?.id,
+        condition: row['Condition']
+      };
+      if (!payload.equipment_id || !payload.name || !payload.room_id) continue;
+      await fetch('/api/equipment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return <GenericCRUD type="Equipment" fields={fields} apiPath="/api/equipment" onImport={handleImport} />;
+}
+
+function SchedulingManagement() {
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    fetch('/api/rooms').then(res => res.json()).then(setRooms);
+    fetch('/api/departments').then(res => res.json()).then(setDepartments);
+  }, []);
+
+  const fields = [
+    { key: 'schedule_id', label: 'Schedule ID' },
+    { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
+    { key: 'course_code', label: 'Course Code' },
+    { key: 'course_name', label: 'Course Name' },
+    { key: 'faculty', label: 'Faculty' },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: r.room_number })) },
+    { key: 'day_of_week', label: 'Day', type: 'select', options: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] },
+    { key: 'start_time', label: 'Start Time', type: 'time' },
+    { key: 'end_time', label: 'End Time', type: 'time' },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const room = rooms.find(r => r.room_number === row['Room']?.toString());
+      const dept = departments.find(d => d.name === row['Department']);
+      
+      const payload = {
+        schedule_id: row['Schedule ID']?.toString(),
+        department_id: dept?.id,
+        course_code: row['Course Code'],
+        course_name: row['Course Name'],
+        faculty: row['Faculty'],
+        room_id: room?.id,
+        day_of_week: row['Day'],
+        start_time: formatExcelTime(row['Start Time']),
+        end_time: formatExcelTime(row['End Time'])
+      };
+
+      if (!payload.schedule_id || !payload.course_name || !payload.room_id) continue;
+
+      await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+    setRefreshKey(prev => prev + 1);
+  };
+
+  const handleFileUpload = async (file: File) => {
+    setIsExtracting(true);
+    try {
+      const ai = getGenAIClient();
+      let parts: any[] = [];
+
+      if (file.type === 'application/pdf') {
+        const reader = new FileReader();
+        const filePart = await new Promise<any>((resolve) => {
+          reader.onloadend = () => {
+            const base64 = (reader.result as string).split(',')[1];
+            resolve({
+              inlineData: {
+                data: base64,
+                mimeType: file.type,
+              },
+            });
+          };
+          reader.readAsDataURL(file);
+        });
+        parts.push(filePart);
+      } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        parts.push({ text: `Extracted text from DOCX document:\n\n${result.value}` });
+      } else {
+        throw new Error("Unsupported file type. Please upload a PDF or DOCX file.");
+      }
+
+      parts.push({ text: `Extract all timetable entries from this document. 
+      The document contains multiple sections (A1, A2, etc.). 
+      Extract info for ALL sections.
+      
+      Return a JSON array of objects with these fields:
+      - department (e.g., "Computer Science and Engineering")
+      - course_code (if available, else null)
+      - course_name (the subject name, e.g., "Computer Networks")
+      - faculty (the teacher's name)
+      - room (the room number, e.g., "322")
+      - day_of_week (Full name: Monday, Tuesday, etc.)
+      - start_time (24h format HH:mm, e.g., "09:00")
+      - end_time (24h format HH:mm, e.g., "09:55")
+      - student_count (estimate or null)
+      
+      Ensure you capture the Room No mentioned in the header of each timetable.
+      Only extract actual class sessions.
+      Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
+      The course_name must always be the real subject title.
+      If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ parts }],
+        config: { responseMimeType: "application/json" }
+      });
+
+      const extractedSchedules = parseAIResponse(response.text);
+      
+      if (Array.isArray(extractedSchedules)) {
+        const validSchedules = extractedSchedules
+          .map(sanitizeExtractedSchedule)
+          .filter(Boolean);
+
+        let importedCount = 0;
+
+        for (const schedule of validSchedules) {
+          const room = rooms.find(r =>
+            normalizeLookupValue(r.room_number) === normalizeLookupValue(schedule.room)
+          );
+          const dept = departments.find(d =>
+            normalizeLookupValue(d.name) === normalizeLookupValue(schedule.department)
+          );
+
+          if (!room) continue;
+
+          const payload = {
+            schedule_id: `SCH-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+            department_id: dept?.id ?? null,
+            course_code: schedule.course_code || null,
+            course_name: schedule.course_name,
+            faculty: schedule.faculty || 'TBA',
+            room_id: room.id,
+            day_of_week: schedule.day_of_week,
+            start_time: schedule.start_time,
+            end_time: schedule.end_time,
+            student_count: schedule.student_count ?? null,
+          };
+
+          const res = await fetch('/api/schedules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            credentials: 'include'
+          });
+
+          if (res.ok) importedCount += 1;
+        }
+        setRefreshKey(prev => prev + 1);
+
+        if (importedCount === 0) {
+          throw new Error('Timetable was read, but no rows could be matched to existing rooms. Check that the room numbers in the file match Room Management exactly.');
+        }
+
+        alert(`Successfully extracted and imported ${importedCount} schedule entries.`);
+      }
+    } catch (err: any) {
+      console.error(err);
+      let msg = err.message || 'Unknown error';
+      const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key/i.test(msg);
+      if (invalidKey) {
+        msg = `${msg}. Please set a valid VITE_GEMINI_API_KEY in .env and restart the app.`;
+      }
+      alert(`Failed to extract timetable: ${msg}`);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileUpload(e.dataTransfer.files[0]);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* AI Upload Zone */}
+      <div 
+        onDragEnter={handleDrag}
+        onDragLeave={handleDrag}
+        onDragOver={handleDrag}
+        onDrop={handleDrop}
+        className={cn(
+          "relative p-8 border-2 border-dashed rounded-2xl transition-all flex flex-col items-center justify-center text-center gap-4",
+          dragActive ? "border-emerald-500 bg-emerald-50/50" : "border-slate-200 bg-white",
+          isExtracting && "opacity-50 pointer-events-none"
+        )}
+      >
+        <div className={cn(
+          "w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg transition-colors",
+          dragActive ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-400"
+        )}>
+          {isExtracting ? (
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+          ) : (
+            <Sparkles size={32} />
+          )}
+        </div>
+        <div>
+          <h3 className="text-lg font-bold text-slate-800">AI Timetable Importer</h3>
+          <p className="text-sm text-slate-500 max-w-md mx-auto mt-1">
+            Drag and drop your PDF or DOCX timetable here. Our AI will automatically extract all schedules and populate the database.
+          </p>
+        </div>
+        <input 
+          type="file" 
+          className="absolute inset-0 opacity-0 cursor-pointer" 
+          accept=".pdf,.docx"
+          onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+        />
+        {isExtracting && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/80 rounded-2xl">
+            <div className="flex flex-col items-center gap-3">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500"></div>
+              <p className="text-sm font-bold text-slate-800">AI is analyzing your document...</p>
+              <p className="text-xs text-slate-500 italic">This may take a few seconds</p>
+            </div>
+          </div>
+        )}
+      </div>
+      <GenericCRUD key={refreshKey} type="Schedule" fields={fields} apiPath="/api/schedules" onImport={handleImport} />
+    </div>
+  );
+}
+
+function BookingManagement() {
+  const { user } = useAuth();
+  const getToday = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = (now.getMonth() + 1).toString().padStart(2, '0');
+    const day = now.getDate().toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const addHoursToTime = (time: string, duration: string) => {
+    const [hours, minutes] = time.split(':').map(Number);
+    const end = new Date();
+    end.setHours(hours, minutes || 0, 0, 0);
+    end.setMinutes(end.getMinutes() + Math.round((parseFloat(duration) || 1) * 60));
+    return `${end.getHours().toString().padStart(2, '0')}:${end.getMinutes().toString().padStart(2, '0')}`;
+  };
+
+  const isPastSearchTime = () => {
+    const selected = new Date(`${searchCriteria.date}T${searchCriteria.time}`);
+    return selected.getTime() < Date.now();
+  };
+
+  const [searchCriteria, setSearchCriteria] = useState({
+    date: getToday(),
+    time: '09:00',
+    durationUnit: 'hours',
+    duration: '1',
+    dailyDuration: '8',
+    members: '30',
+    buildingId: '',
+    blockId: '',
+    floorId: '',
+    roomType: '',
+    equipment: '',
+    sortBy: 'best-fit'
+  });
+  const [vacantRooms, setVacantRooms] = useState<any[]>([]);
+  const [combinedOptions, setCombinedOptions] = useState<any[]>([]);
+  const [myBookings, setMyBookings] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [equipment, setEquipment] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [bookingMessage, setBookingMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [bookingModal, setBookingModal] = useState<{ rooms: any[]; combined?: boolean } | null>(null);
+  const [bookingForm, setBookingForm] = useState({
+    eventName: '',
+    purpose: '',
+    departmentId: '',
+    equipmentRequired: '',
+    notes: '',
+    recurring: false,
+    recurringWeeks: '2'
+  });
+  const [statusTab, setStatusTab] = useState('Active');
+  const [bookingSearch, setBookingSearch] = useState('');
+  const [selectedRoomForSchedule, setSelectedRoomForSchedule] = useState<any>(null);
+  const [roomSchedule, setRoomSchedule] = useState<any>(null);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+
+  const fetchMyBookings = async () => {
+    const res = await fetch('/api/bookings', { credentials: 'include' });
+    const data = await res.json();
+    setMyBookings(data.filter((b: any) => b.faculty_name === user?.name || canApproveBookings));
+  };
+
+  useEffect(() => {
+    fetchMyBookings();
+    Promise.all([
+      fetch('/api/rooms', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/floors', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/blocks', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/buildings', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/equipment', { credentials: 'include' }).then(res => res.json())
+    ]).then(([roomData, floorData, blockData, buildingData, departmentData, equipmentData]) => {
+      setRooms(roomData);
+      setFloors(floorData);
+      setBlocks(blockData);
+      setBuildings(buildingData);
+      setDepartments(departmentData);
+      setEquipment(equipmentData);
+    }).catch(console.error);
+  }, []);
+
+  const canApproveBookings = user?.role === 'Administrator' || user?.role === 'Department Coordinator';
+  const activeDailyDuration = searchCriteria.durationUnit === 'hours' ? searchCriteria.duration : searchCriteria.dailyDuration;
+  const bookingEndTime = addHoursToTime(searchCriteria.time, activeDailyDuration);
+  const getBookingDates = () => {
+    const count = Math.max(1, parseInt(searchCriteria.duration, 10) || 1);
+    const totalDays = searchCriteria.durationUnit === 'weeks' ? count * 7 : searchCriteria.durationUnit === 'days' ? count : 1;
+    return Array.from({ length: totalDays }, (_, index) => {
+      const date = new Date(`${searchCriteria.date}T00:00:00`);
+      date.setDate(date.getDate() + index);
+      return date.toISOString().split('T')[0];
+    });
+  };
+  const getDurationLabel = () => {
+    if (searchCriteria.durationUnit === 'hours') {
+      if (searchCriteria.duration === '0.5') return `30 minutes (${searchCriteria.time} - ${bookingEndTime})`;
+      return `${searchCriteria.duration} hour${searchCriteria.duration === '1' ? '' : 's'} (${searchCriteria.time} - ${bookingEndTime})`;
+    }
+    const count = parseInt(searchCriteria.duration, 10) || 1;
+    const unit = searchCriteria.durationUnit === 'weeks' ? 'week' : 'day';
+    return `${count} ${unit}${count === 1 ? '' : 's'} (${searchCriteria.time} - ${bookingEndTime} each day)`;
+  };
+  const selectedBuilding = buildings.find(b => b.id == searchCriteria.buildingId);
+  const selectedBuildingBlocks = blocks.filter(block => block.building_id == searchCriteria.buildingId);
+  const visibleBlocks = selectedBuilding ? selectedBuildingBlocks.filter(block => !isImplicitBuildingBlock(block, selectedBuilding)) : [];
+  const directBlock = selectedBuilding ? selectedBuildingBlocks.find(block => isImplicitBuildingBlock(block, selectedBuilding)) : null;
+  const floorOptions = floors.filter(floor => {
+    if (!searchCriteria.buildingId) return true;
+    if (searchCriteria.blockId === '__direct__') return directBlock?.id === floor.block_id;
+    if (searchCriteria.blockId) return floor.block_id == searchCriteria.blockId;
+    return selectedBuildingBlocks.some(block => block.id === floor.block_id);
+  });
+  const roomTypes = Array.from(new Set(rooms.map(room => room.room_type).filter(Boolean))).sort();
+  const equipmentNames = Array.from(new Set(equipment.map(item => item.name).filter(Boolean))).sort();
+  const getRoomDetails = (room: any) => {
+    const fullRoom = rooms.find(r => r.id === room.id) || room;
+    const floor = floors.find(f => f.id === fullRoom.floor_id);
+    const block = floor ? blocks.find(b => b.id === floor.block_id) : null;
+    const building = block ? buildings.find(b => b.id === block.building_id) : null;
+    return { floor, block, building };
+  };
+  const getRoomPath = (room: any) => {
+    const { floor, block, building } = getRoomDetails(room);
+    const blockLabel = block && building && !isImplicitBuildingBlock(block, building) ? ` - ${block.name}` : '';
+    return `${building?.name || 'Building not set'}${blockLabel} - ${floor ? getFloorName(floor.floor_number) : 'Floor not set'}`;
+  };
+  const getRoomEquipment = (roomId: number) => equipment.filter(item => item.room_id === roomId).map(item => item.name).filter(Boolean);
+  const filterAndSortRooms = (roomList: any[]) => {
+    const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
+    return roomList.filter(room => {
+      const { floor, block, building } = getRoomDetails(room);
+      if (searchCriteria.buildingId && building?.id != searchCriteria.buildingId) return false;
+      if (searchCriteria.blockId === '__direct__' && block && building && !isImplicitBuildingBlock(block, building)) return false;
+      if (searchCriteria.blockId && searchCriteria.blockId !== '__direct__' && block?.id != searchCriteria.blockId) return false;
+      if (searchCriteria.floorId && floor?.id != searchCriteria.floorId) return false;
+      if (searchCriteria.roomType && room.room_type !== searchCriteria.roomType) return false;
+      if (searchCriteria.equipment && !getRoomEquipment(room.id).some(name => name.toLowerCase().includes(searchCriteria.equipment.toLowerCase()))) return false;
+      return true;
+    }).sort((a, b) => {
+      const aDetails = getRoomDetails(a);
+      const bDetails = getRoomDetails(b);
+      if (searchCriteria.sortBy === 'largest-capacity') return (b.capacity || 0) - (a.capacity || 0);
+      if (searchCriteria.sortBy === 'building') return (aDetails.building?.name || '').localeCompare(bDetails.building?.name || '');
+      if (searchCriteria.sortBy === 'room-number') return a.room_number.toString().localeCompare(b.room_number.toString(), undefined, { numeric: true });
+      return Math.abs((a.capacity || 0) - requestedCapacity) - Math.abs((b.capacity || 0) - requestedCapacity);
+    });
+  };
+  const getDisplayStatus = (booking: any) => {
+    const bookingEnd = new Date(`${booking.date}T${booking.end_time || booking.start_time || '00:00'}`);
+    return booking.status === 'Approved' && bookingEnd.getTime() < Date.now() ? 'Past' : booking.status || 'Pending';
+  };
+  const filteredBookings = myBookings.filter(booking => {
+    const displayStatus = getDisplayStatus(booking);
+    if (statusTab === 'Active' && displayStatus === 'Past') return false;
+    if (statusTab !== 'Active' && displayStatus !== statusTab) return false;
+    const query = bookingSearch.toLowerCase();
+    return !query || [booking.event_name, booking.room_number, booking.faculty_name, booking.date, displayStatus]
+      .some(value => value?.toString().toLowerCase().includes(query));
+  });
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBookingMessage(null);
+    if (isPastSearchTime()) {
+      setBookingMessage({ type: 'error', text: 'Please select a current or future date and time.' });
+      setVacantRooms([]);
+      setCombinedOptions([]);
+      setIsSearching(false);
+      return;
+    }
+    if ((parseFloat(searchCriteria.duration) || 0) <= 0 || (parseFloat(activeDailyDuration) || 0) <= 0 || (parseInt(searchCriteria.members, 10) || 0) <= 0) {
+      setBookingMessage({ type: 'error', text: 'Duration and members must be greater than zero.' });
+      return;
+    }
+
+    setLoading(true);
+    setIsSearching(true);
+    try {
+      const bookingDates = getBookingDates();
+      const availableByDate = await Promise.all(bookingDates.map(async date => {
+        const params = new URLSearchParams({
+          date,
+          time: searchCriteria.time,
+          duration: activeDailyDuration,
+          members: searchCriteria.members
+        });
+        const res = await fetch(`/api/rooms/vacant?${params.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Failed to search vacant rooms for ${date}.`);
+        return data;
+      }));
+      const commonRoomIds = availableByDate.reduce((common: Set<number> | null, roomList) => {
+        const ids = new Set(roomList.map((room: any) => room.id));
+        if (!common) return ids;
+        return new Set([...common].filter(id => ids.has(id)));
+      }, null);
+      const allCandidateRooms = availableByDate[0] || [];
+      const filteredRooms = filterAndSortRooms(allCandidateRooms.filter((room: any) => commonRoomIds?.has(room.id)));
+      setVacantRooms(filteredRooms);
+
+      const eventParams = new URLSearchParams({
+        date: searchCriteria.date,
+        startTime: searchCriteria.time,
+        endTime: bookingEndTime,
+        strength: searchCriteria.members
+      });
+      const eventRes = await fetch(`/api/events/search-rooms?${eventParams.toString()}`, { credentials: 'include' });
+      const eventData = eventRes.ok ? await eventRes.json() : { multiOptions: [] };
+      const filteredCombined = (eventData.multiOptions || [])
+        .map((option: any) => ({ ...option, rooms: filterAndSortRooms((option.rooms || []).filter((room: any) => commonRoomIds?.has(room.id))) }))
+        .filter((option: any) => option.rooms.length > 1 && option.rooms.reduce((sum: number, room: any) => sum + (room.capacity || 0), 0) >= (parseInt(searchCriteria.members, 10) || 0));
+      setCombinedOptions(filteredCombined);
+      if (filteredRooms.length === 0) {
+        setBookingMessage({
+          type: 'error',
+          text: filteredCombined.length > 0 ? 'No single room matched. Combined room options are available below.' : 'No rooms matched. Try removing filters, changing time, or lowering capacity.'
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      setBookingMessage({ type: 'error', text: 'Failed to search vacant rooms. Please try again.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openBookingModal = (bookingRooms: any[], combined = false) => {
+    setBookingForm({
+      eventName: '',
+      purpose: '',
+      departmentId: '',
+      equipmentRequired: searchCriteria.equipment,
+      notes: '',
+      recurring: false,
+      recurringWeeks: '2'
+    });
+    setBookingModal({ rooms: bookingRooms, combined });
+  };
+
+  const handleBook = async () => {
+    if (!bookingModal) return;
+    setBookingMessage(null);
+    if (isPastSearchTime()) {
+      setBookingMessage({ type: 'error', text: 'Please select a current or future date and time.' });
+      return;
+    }
+    if (!bookingForm.eventName.trim()) {
+      setBookingMessage({ type: 'error', text: 'Event name is required.' });
+      return;
+    }
+    const status = canApproveBookings ? 'Approved' : 'Pending';
+    const bookingDates = searchCriteria.durationUnit === 'hours' && bookingForm.recurring
+      ? Array.from({ length: Math.max(1, parseInt(bookingForm.recurringWeeks, 10) || 1) }, (_, week) => {
+        const bookingDate = new Date(`${searchCriteria.date}T00:00:00`);
+        bookingDate.setDate(bookingDate.getDate() + (week * 7));
+        return bookingDate.toISOString().split('T')[0];
+      })
+      : getBookingDates();
+    const errors: string[] = [];
+
+    for (let dateIndex = 0; dateIndex < bookingDates.length; dateIndex += 1) {
+      const date = bookingDates[dateIndex];
+      for (const room of bookingModal.rooms) {
+        const payload = {
+          request_id: `REQ-${Date.now()}-${dateIndex}-${room.id}`,
+          faculty_name: user?.name || 'Unknown',
+          department_id: bookingForm.departmentId || null,
+          event_name: bookingModal.combined ? `${bookingForm.eventName.trim()} (Room ${room.room_number})` : bookingForm.eventName.trim(),
+          purpose: bookingForm.purpose.trim(),
+          notes: bookingForm.notes.trim(),
+          student_count: parseInt(searchCriteria.members, 10),
+          room_type: room.room_type,
+          room_id: room.id,
+          equipment_required: bookingForm.equipmentRequired.trim(),
+          date,
+          start_time: searchCriteria.time,
+          end_time: bookingEndTime,
+          status
+        };
+        const res = await fetch('/api/bookings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          errors.push(`Room ${room.room_number}: ${err.error || 'Operation failed'}`);
+        }
+      }
+    }
+    setBookingModal(null);
+    await fetchMyBookings();
+    await handleSearch({ preventDefault: () => {} } as any);
+    setBookingMessage(errors.length ? { type: 'error', text: errors.join(' ') } : { type: 'success', text: status === 'Approved' ? 'Room booked successfully.' : 'Booking request submitted for approval.' });
+  };
+
+  const updateBookingStatus = async (booking: any, status: string) => {
+    const res = await fetch(`/api/bookings/${booking.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+      credentials: 'include'
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      setBookingMessage({ type: 'error', text: err.error || 'Failed to update booking.' });
+      return;
+    }
+    setBookingMessage({ type: 'success', text: status === 'Rejected' ? 'Booking cancelled.' : `Booking marked as ${status}.` });
+    await fetchMyBookings();
+  };
+
+  const exportBookings = () => {
+    const worksheet = XLSX.utils.json_to_sheet(filteredBookings.map(booking => ({
+      Event: booking.event_name,
+      Faculty: booking.faculty_name,
+      Room: booking.room_number,
+      Date: booking.date,
+      Time: `${booking.start_time} - ${booking.end_time}`,
+      Status: getDisplayStatus(booking),
+      Purpose: booking.purpose || '',
+      Notes: booking.notes || ''
+    })));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Bookings');
+    XLSX.writeFile(workbook, 'room-bookings-report.xlsx');
+  };
+
+  const fetchRoomSchedule = async (room: any) => {
+    setSelectedRoomForSchedule(room);
+    setIsScheduleModalOpen(true);
+    setRoomSchedule(null);
+    try {
+      const res = await fetch(`/api/rooms/${room.id}/schedule?date=${searchCriteria.date}`, { credentials: 'include' });
+      const data = await res.json();
+      setRoomSchedule(data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      {/* Search Section */}
+      <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+          <Search className="text-emerald-500" />
+          Find Vacant Rooms
+        </h3>
+        <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Date</label>
+            <input
+              type="date"
+              min={getToday()}
+              value={searchCriteria.date}
+              onChange={e => setSearchCriteria({ ...searchCriteria, date: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Start Time</label>
+            <input
+              type="time"
+              value={searchCriteria.time}
+              onChange={e => setSearchCriteria({ ...searchCriteria, time: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Duration Type</label>
+            <select
+              value={searchCriteria.durationUnit}
+              onChange={e => setSearchCriteria({ ...searchCriteria, durationUnit: e.target.value, duration: '1' })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="hours">Hours</option>
+              <option value="days">Days</option>
+              <option value="weeks">Weeks</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+              {searchCriteria.durationUnit === 'hours' ? 'Duration' : searchCriteria.durationUnit === 'days' ? 'Number of Days' : 'Number of Weeks'}
+            </label>
+            <select
+              value={searchCriteria.duration}
+              onChange={e => setSearchCriteria({ ...searchCriteria, duration: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              {searchCriteria.durationUnit === 'hours' ? (
+                <>
+                  <option value="0.5">30 minutes</option>
+                  <option value="1">1 hour</option>
+                  <option value="1.5">1.5 hours</option>
+                  <option value="2">2 hours</option>
+                  <option value="3">3 hours</option>
+                </>
+              ) : (
+                <>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="5">5</option>
+                  <option value="7">7</option>
+                </>
+              )}
+            </select>
+          </div>
+          {searchCriteria.durationUnit !== 'hours' && (
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Daily Hours</label>
+              <select
+                value={searchCriteria.dailyDuration}
+                onChange={e => setSearchCriteria({ ...searchCriteria, dailyDuration: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              >
+                <option value="1">1 hour / day</option>
+                <option value="2">2 hours / day</option>
+                <option value="4">4 hours / day</option>
+                <option value="8">8 hours / day</option>
+              </select>
+            </div>
+          )}
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Members (Capacity)</label>
+            <input
+              type="number"
+              value={searchCriteria.members}
+              onChange={e => setSearchCriteria({ ...searchCriteria, members: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{searchCriteria.durationUnit === 'hours' ? 'End Time' : 'Daily End Time'}</label>
+            <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-lg font-bold text-slate-700">{bookingEndTime}</div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Building</label>
+            <select
+              value={searchCriteria.buildingId}
+              onChange={e => setSearchCriteria({ ...searchCriteria, buildingId: e.target.value, blockId: '', floorId: '' })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">All Buildings</option>
+              {buildings.map(building => <option key={building.id} value={building.id}>{building.name}</option>)}
+            </select>
+          </div>
+          {searchCriteria.buildingId && visibleBlocks.length > 0 && (
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Block</label>
+              <select
+                value={searchCriteria.blockId}
+                onChange={e => setSearchCriteria({ ...searchCriteria, blockId: e.target.value, floorId: '' })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+              >
+                <option value="">All Blocks</option>
+                {directBlock && <option value="__direct__">Direct floors</option>}
+                {visibleBlocks.map(block => <option key={block.id} value={block.id}>{block.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Floor</label>
+            <select
+              value={searchCriteria.floorId}
+              onChange={e => setSearchCriteria({ ...searchCriteria, floorId: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">All Floors</option>
+              {floorOptions.map(floor => <option key={floor.id} value={floor.id}>{getFloorName(floor.floor_number)}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Room Type</label>
+            <select
+              value={searchCriteria.roomType}
+              onChange={e => setSearchCriteria({ ...searchCriteria, roomType: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">Any Type</option>
+              {roomTypes.map(type => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Equipment</label>
+            <select
+              value={searchCriteria.equipment}
+              onChange={e => setSearchCriteria({ ...searchCriteria, equipment: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">Any Equipment</option>
+              {equipmentNames.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Sort</label>
+            <select
+              value={searchCriteria.sortBy}
+              onChange={e => setSearchCriteria({ ...searchCriteria, sortBy: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="best-fit">Best fit</option>
+              <option value="largest-capacity">Largest capacity</option>
+              <option value="building">Building</option>
+              <option value="room-number">Room number</option>
+            </select>
+          </div>
+          {bookingMessage && (
+            <div className={cn(
+              "md:col-span-4 p-3 rounded-xl border text-sm font-bold",
+              bookingMessage.type === 'error' ? "bg-rose-50 border-rose-100 text-rose-700" : "bg-emerald-50 border-emerald-100 text-emerald-700"
+            )}>
+              {bookingMessage.text}
+            </div>
+          )}
+          <div className="md:col-span-4 mt-2">
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <Search size={18} />
+              {loading ? 'Searching...' : 'Check Vacant Rooms'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* Results Section */}
+      {isSearching && (
+        <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+          <h3 className="text-lg font-bold text-slate-800 mb-6">Vacant Rooms Found</h3>
+          {vacantRooms.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {vacantRooms.map(room => (
+                <div key={room.id} className="p-4 border border-slate-100 rounded-xl bg-slate-50 hover:border-emerald-200 transition-all">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h4 className="font-bold text-slate-800 text-lg">Room {room.room_number}</h4>
+                      <p className="text-xs text-slate-500">{getRoomPath(room)}</p>
+                    </div>
+                    <div className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded uppercase">
+                      {room.room_type}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 mb-4 text-sm text-slate-600">
+                    <div className="flex items-center gap-1">
+                      <Users size={14} />
+                      <span>Cap: {room.capacity}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-500 mb-4">Equipment: {getRoomEquipment(room.id).join(', ') || 'No equipment recorded'}</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => openBookingModal([room])}
+                      className="flex-1 py-2 bg-emerald-500 text-white font-bold rounded-lg hover:bg-emerald-600 transition-all text-sm"
+                    >
+                      Book Now
+                    </button>
+                    <button
+                      onClick={() => fetchRoomSchedule(room)}
+                      className="px-3 py-2 bg-slate-100 text-slate-600 font-bold rounded-lg hover:bg-slate-200 transition-all text-sm"
+                      title="View Day Schedule"
+                    >
+                      <Calendar size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 text-slate-400">
+              <DoorOpen size={48} className="mx-auto mb-4 opacity-20" />
+              <p>No vacant rooms found for the selected criteria.</p>
+            </div>
+          )}
+          {combinedOptions.length > 0 && (
+            <div className="mt-8 pt-6 border-t border-slate-100">
+              <h4 className="text-sm font-bold text-slate-800 mb-4">Combined Room Options</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {combinedOptions.map((option, index) => (
+                  <div key={index} className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
+                    <div className="flex justify-between items-start gap-3 mb-2">
+                      <div>
+                        <p className="font-bold text-blue-900">Option {index + 1}</p>
+                        <p className="text-xs text-blue-700">Total capacity: {option.rooms.reduce((sum: number, room: any) => sum + (room.capacity || 0), 0)}</p>
+                      </div>
+                      <button
+                        onClick={() => openBookingModal(option.rooms, true)}
+                        className="px-3 py-2 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700"
+                      >
+                        Book Together
+                      </button>
+                    </div>
+                    <p className="text-xs text-blue-800">{option.rooms.map((room: any) => `Room ${room.room_number}`).join(', ')}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* My Bookings Section */}
+      <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
+          <h3 className="text-lg font-bold text-slate-800">Current Bookings</h3>
+          <div className="flex flex-wrap gap-2">
+            {['Active', 'Pending', 'Approved', 'Rejected', 'Past'].map(tab => (
+              <button
+                key={tab}
+                onClick={() => setStatusTab(tab)}
+                className={cn(
+                  "px-3 py-2 rounded-lg text-xs font-bold border",
+                  statusTab === tab ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200"
+                )}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-col md:flex-row gap-3 mb-4">
+          <input
+            value={bookingSearch}
+            onChange={e => setBookingSearch(e.target.value)}
+            placeholder="Search bookings..."
+            className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+          />
+          <button
+            onClick={exportBookings}
+            className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg font-bold flex items-center justify-center gap-2"
+          >
+            <FileSpreadsheet size={16} />
+            Export
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="py-4 px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Event</th>
+                <th className="py-4 px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
+                <th className="py-4 px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date & Time</th>
+                <th className="py-4 px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
+                <th className="py-4 px-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredBookings.map(booking => {
+                const displayStatus = getDisplayStatus(booking);
+                return (
+                <tr key={booking.id} className="border-b border-slate-50 hover:bg-slate-50 transition-all">
+                  <td className="py-4 px-4">
+                    <p className="font-bold text-slate-800">{booking.event_name}</p>
+                    <p className="text-xs text-slate-500">{booking.faculty_name}</p>
+                    {booking.purpose && <p className="text-xs text-slate-400">{booking.purpose}</p>}
+                  </td>
+                  <td className="py-4 px-4 font-medium text-slate-700">Room {booking.room_number}</td>
+                  <td className="py-4 px-4">
+                    <p className="text-sm text-slate-700">{booking.date}</p>
+                    <p className="text-xs text-slate-500">{booking.start_time} - {booking.end_time}</p>
+                  </td>
+                  <td className="py-4 px-4">
+                    <span className={cn(
+                      "px-2 py-1 text-[10px] font-bold rounded uppercase",
+                      displayStatus === 'Approved' ? "bg-emerald-100 text-emerald-700" :
+                      displayStatus === 'Rejected' ? "bg-rose-100 text-rose-700" :
+                      displayStatus === 'Past' ? "bg-slate-100 text-slate-500" : "bg-orange-100 text-orange-700"
+                    )}>
+                      {displayStatus}
+                    </span>
+                  </td>
+                  <td className="py-4 px-4">
+                    <div className="flex flex-wrap gap-2">
+                      {canApproveBookings && displayStatus === 'Pending' && (
+                        <>
+                          <button onClick={() => updateBookingStatus(booking, 'Approved')} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Approve</button>
+                          <button onClick={() => updateBookingStatus(booking, 'Rejected')} className="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs font-bold">Reject</button>
+                        </>
+                      )}
+                      {displayStatus !== 'Past' && displayStatus !== 'Rejected' && (
+                        <button onClick={() => updateBookingStatus(booking, 'Rejected')} className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-bold">Cancel Booking</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                );
+              })}
+              {filteredBookings.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-slate-400 italic">No bookings found.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {bookingModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Book Room</h3>
+                <p className="text-xs text-slate-500">
+                  {bookingModal.rooms.map(room => `Room ${room.room_number}`).join(', ')} - {getDurationLabel()}
+                </p>
+              </div>
+              <button onClick={() => setBookingModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Event Name</label>
+                <input value={bookingForm.eventName} onChange={e => setBookingForm({ ...bookingForm, eventName: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Purpose</label>
+                <input value={bookingForm.purpose} onChange={e => setBookingForm({ ...bookingForm, purpose: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Department</label>
+                <select value={bookingForm.departmentId} onChange={e => setBookingForm({ ...bookingForm, departmentId: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500">
+                  <option value="">Select Department</option>
+                  {departments.map(dept => <option key={dept.id} value={dept.id}>{dept.name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Equipment Required</label>
+                <input value={bookingForm.equipmentRequired} onChange={e => setBookingForm({ ...bookingForm, equipmentRequired: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Notes</label>
+                <input value={bookingForm.notes} onChange={e => setBookingForm({ ...bookingForm, notes: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500" />
+              </div>
+              <div className="md:col-span-2 flex flex-col md:flex-row gap-3 md:items-center p-3 bg-slate-50 border border-slate-100 rounded-xl">
+                {searchCriteria.durationUnit === 'hours' ? (
+                  <>
+                    <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                      <input type="checkbox" checked={bookingForm.recurring} onChange={e => setBookingForm({ ...bookingForm, recurring: e.target.checked })} />
+                      Repeat weekly
+                    </label>
+                    {bookingForm.recurring && (
+                      <select value={bookingForm.recurringWeeks} onChange={e => setBookingForm({ ...bookingForm, recurringWeeks: e.target.value })} className="px-3 py-2 bg-white border border-slate-200 rounded-lg">
+                        <option value="2">2 weeks</option>
+                        <option value="4">4 weeks</option>
+                        <option value="8">8 weeks</option>
+                        <option value="16">16 weeks</option>
+                      </select>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm font-bold text-slate-700">This creates bookings for every covered date.</p>
+                )}
+                <p className="text-xs text-slate-500">{canApproveBookings ? 'This booking will be approved immediately.' : 'This booking will be submitted as pending.'}</p>
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setBookingModal(null)} className="flex-1 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">Cancel</button>
+              <button onClick={handleBook} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800">Submit Booking</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isScheduleModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Room {selectedRoomForSchedule?.room_number} Schedule</h3>
+                <p className="text-xs text-slate-500">{searchCriteria.date} • {new Date(searchCriteria.date).toLocaleDateString('en-US', { weekday: 'long' })}</p>
+              </div>
+              <button onClick={() => setIsScheduleModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            </div>
+            <div className="p-6 max-h-[60vh] overflow-y-auto">
+              {!roomSchedule ? (
+                <div className="flex justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500"></div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div>
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Academic Schedules</h4>
+                    {roomSchedule.schedules.length > 0 ? (
+                      <div className="space-y-2">
+                        {roomSchedule.schedules.map((s: any) => (
+                          <div key={s.id} className="p-3 bg-blue-50 border border-blue-100 rounded-xl flex justify-between items-center">
+                            <div>
+                              <p className="font-bold text-blue-800 text-sm">{s.course_name}</p>
+                              <p className="text-xs text-blue-600">{s.faculty}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs font-bold text-blue-700">{s.start_time} - {s.end_time}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">No academic schedules for this day.</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Event Bookings</h4>
+                    {roomSchedule.bookings.length > 0 ? (
+                      <div className="space-y-2">
+                        {roomSchedule.bookings.map((b: any) => (
+                          <div key={b.id} className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl flex justify-between items-center">
+                            <div>
+                              <p className="font-bold text-emerald-800 text-sm">{b.event_name}</p>
+                              <p className="text-xs text-emerald-600">{b.faculty_name}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs font-bold text-emerald-700">{b.start_time} - {b.end_time}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">No event bookings for this day.</p>
+                    )}
+                  </div>
+
+                  <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      <span className="font-bold text-slate-700">Note:</span> Only approved schedules and bookings are shown. Available time slots are those not covered by the entries above.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                onClick={() => setIsScheduleModalOpen(false)}
+                className="px-6 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition-all"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MaintenanceManagement() {
+  const [rooms, setRooms] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('/api/rooms').then(res => res.json()).then(setRooms);
+  }, []);
+
+  const fields = [
+    { key: 'maintenance_id', label: 'Maintenance ID' },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: r.room_number })) },
+    { key: 'equipment_name', label: 'Equipment' },
+    { key: 'status', label: 'Status', type: 'select', options: ['Pending', 'In Progress', 'Completed'] },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const room = rooms.find(r => r.room_number === row['Room Number']?.toString());
+      const payload = {
+        maintenance_id: row['Maintenance ID']?.toString(),
+        room_id: room?.id,
+        equipment_name: row['Equipment'],
+        status: row['Status'] || 'Pending'
+      };
+      if (!payload.maintenance_id || !payload.room_id) continue;
+      await fetch('/api/maintenance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+    }
+  };
+
+  return <GenericCRUD type="Maintenance" fields={fields} apiPath="/api/maintenance" onImport={handleImport} />;
+}
+
+function AIAllocation() {
+  const [formData, setFormData] = useState({
+    eventType: 'Lecture',
+    roomType: 'Classroom',
+    preferredBuilding: '',
+    preferredBlock: '',
+    equipmentRequired: { required: false, types: [] as string[] },
+    accessibilityRequired: { required: false, types: [] as string[] },
+    floorPreference: { required: false, floor: 'Ground Floor' },
+    studentCount: '',
+    date: new Date().toISOString().split('T')[0],
+    startTime: '09:00',
+    duration: '1'
+  });
+  const [result, setResult] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleAllocate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const [rRes, bRes, eRes, sRes, bkRes] = await Promise.all([
+        fetch('/api/rooms', { credentials: 'include' }),
+        fetch('/api/buildings', { credentials: 'include' }),
+        fetch('/api/equipment', { credentials: 'include' }),
+        fetch('/api/schedules', { credentials: 'include' }),
+        fetch('/api/bookings', { credentials: 'include' })
+      ]);
+      
+      const rooms = await rRes.json();
+      const buildings = await bRes.json();
+      const equipment = await eRes.json();
+      const schedules = await sRes.json();
+      const bookings = await bkRes.json();
+
+      const ai = getGenAIClient();
+      const model = ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `As a Senior Campus Operations AI, perform a high-precision room allocation.
+        
+        REQUEST:
+        - Event: ${formData.eventType} (${formData.roomType})
+        - Capacity Needed: ${formData.studentCount} students
+        - Timing: ${formData.date} at ${formData.startTime} for ${formData.duration} hours
+        - Preferences: Building: ${formData.preferredBuilding || 'Any'}, Block: ${formData.preferredBlock || 'Any'}, Floor: ${formData.floorPreference?.required ? formData.floorPreference.floor : 'Any'}
+        - Requirements: Equipment: ${formData.equipmentRequired?.required ? formData.equipmentRequired.types.join(', ') : 'None'}, Accessibility: ${formData.accessibilityRequired?.required ? formData.accessibilityRequired.types.join(', ') : 'None'}
+        
+        DATA CONTEXT:
+        - Rooms: ${JSON.stringify(rooms)}
+        - Buildings: ${JSON.stringify(buildings)}
+        - Equipment: ${JSON.stringify(equipment)}
+        - Schedules: ${JSON.stringify(schedules)}
+        - Bookings: ${JSON.stringify(bookings)}
+        
+        PRECISION LOGIC:
+        1. HARD CONSTRAINTS:
+           - Room must be 'Available'.
+           - Capacity must be >= Student Count.
+           - NO overlap with Schedules (match day_of_week, check time range).
+           - NO overlap with Bookings (match date, check time range).
+           - Must meet ALL 'Accessibility' requirements if specified.
+        
+        2. EFFECTIVENESS SCORING (0-100):
+           - [30pts] Capacity Efficiency: 30pts if capacity is 100-115% of student count. Deduct 2pts for every 10% over.
+           - [20pts] Equipment Match: 20pts if ALL required equipment is present AND condition is 'Good'. 10pts if present but condition is 'Fair'.
+           - [20pts] Location Preference: 10pts for Building match, 10pts for Block match.
+           - [15pts] Floor/Accessibility: 15pts if matches floor preference or accessibility needs perfectly.
+           - [15pts] Maintenance Health: Deduct 10pts if room has any 'Pending' maintenance issues in the last 30 days.
+        
+        OUTPUT FORMAT (JSON):
+        {
+          "recommendedRoom": "Room Name (Building - Block)",
+          "roomDetails": { "room_number": "...", "building": "...", "floor": "...", "capacity": 0, "block": "..." },
+          "alternativeRooms": ["Room A", "Room B"],
+          "allocationScore": 0-100,
+          "reasoning": "Detailed breakdown of the score and why this is the most effective choice."
+        }` ,
+        config: { responseMimeType: "application/json" }
+      });
+
+      const response = await model;
+      setResult(parseAIResponse(response.text));
+    } catch (err: any) {
+      console.error(err);
+      setResult({ error: err.message || "Failed to generate allocation. Please check your connection and try again." });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleEquipment = (type: string) => {
+    const current = formData.equipmentRequired.types;
+    const next = current.includes(type) ? current.filter(t => t !== type) : [...current, type];
+    setFormData({ ...formData, equipmentRequired: { ...formData.equipmentRequired, types: next } });
+  };
+
+  const toggleAccessibility = (type: string) => {
+    const current = formData.accessibilityRequired.types;
+    const next = current.includes(type) ? current.filter(t => t !== type) : [...current, type];
+    setFormData({ ...formData, accessibilityRequired: { ...formData.accessibilityRequired, types: next } });
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 pb-12">
+      <div className="lg:col-span-1 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center gap-3">
+          <div className="p-2 bg-emerald-50 rounded-lg">
+            <BrainCircuit className="text-emerald-500" size={20} />
+          </div>
+          Smart Allocation Input
+        </h3>
+        <form onSubmit={handleAllocate} className="space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Event Type</label>
+              <select
+                value={formData.eventType}
+                onChange={e => setFormData({ ...formData, eventType: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
+              >
+                {['Lecture', 'Seminar', 'Meeting', 'Workshop', 'Others'].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Room Type</label>
+              <select
+                value={formData.roomType}
+                onChange={e => setFormData({ ...formData, roomType: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
+              >
+                {['Classroom', 'Seminar Hall', 'Conference Room', 'Lab', 'Smart Classroom'].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Preferred Building</label>
+              <select
+                value={formData.preferredBuilding}
+                onChange={e => setFormData({ ...formData, preferredBuilding: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
+              >
+                <option value="">No Preference</option>
+                {['M-Plazza', 'NAB', 'MNS'].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Campus Block</label>
+              <select
+                value={formData.preferredBlock}
+                onChange={e => setFormData({ ...formData, preferredBlock: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
+              >
+                <option value="">No Preference</option>
+                {['East', 'West', 'North', 'South', 'Others'].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Equipment Required?</label>
+            <div className="flex gap-6">
+              {['Yes', 'No'].map(opt => (
+                <label key={opt} className="flex items-center gap-2.5 cursor-pointer group">
+                  <input 
+                    type="radio" 
+                    checked={(opt === 'Yes') === formData.equipmentRequired.required} 
+                    onChange={() => setFormData({ ...formData, equipmentRequired: { ...formData.equipmentRequired, required: opt === 'Yes' } })}
+                    className="w-4 h-4 accent-emerald-500"
+                  />
+                  <span className="text-sm font-medium text-slate-600 group-hover:text-slate-900 transition-colors">{opt}</span>
+                </label>
+              ))}
+            </div>
+            {formData.equipmentRequired.required && (
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl grid grid-cols-2 gap-3">
+                {['Projector', 'Smart Board', 'Sound System', 'Computers', 'AC', 'Others'].map(eq => (
+                  <label key={eq} className="flex items-center gap-2.5 cursor-pointer group">
+                    <input 
+                      type="checkbox" 
+                      checked={formData.equipmentRequired.types.includes(eq)}
+                      onChange={() => toggleEquipment(eq)}
+                      className="w-4 h-4 rounded accent-emerald-500"
+                    />
+                    <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 transition-colors">{eq}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Accessibility Needs?</label>
+            <div className="flex gap-6">
+              {['Yes', 'No'].map(opt => (
+                <label key={opt} className="flex items-center gap-2.5 cursor-pointer group">
+                  <input 
+                    type="radio" 
+                    checked={(opt === 'Yes') === formData.accessibilityRequired.required} 
+                    onChange={() => setFormData({ ...formData, accessibilityRequired: { ...formData.accessibilityRequired, required: opt === 'Yes' } })}
+                    className="w-4 h-4 accent-emerald-500"
+                  />
+                  <span className="text-sm font-medium text-slate-600 group-hover:text-slate-900 transition-colors">{opt}</span>
+                </label>
+              ))}
+            </div>
+            {formData.accessibilityRequired.required && (
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl grid grid-cols-2 gap-3">
+                {['Wheelchair Access', 'Elevator Nearby', 'Braille Signage', 'Hearing Loop', 'Others'].map(acc => (
+                  <label key={acc} className="flex items-center gap-2.5 cursor-pointer group">
+                    <input 
+                      type="checkbox" 
+                      checked={formData.accessibilityRequired.types.includes(acc)}
+                      onChange={() => toggleAccessibility(acc)}
+                      className="w-4 h-4 rounded accent-emerald-500"
+                    />
+                    <span className="text-xs font-medium text-slate-600 group-hover:text-slate-900 transition-colors">{acc}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Expected Strength</label>
+              <input 
+                type="number" 
+                placeholder="e.g. 60"
+                value={formData.studentCount}
+                onChange={e => setFormData({ ...formData, studentCount: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Event Date</label>
+              <input 
+                type="date" 
+                value={formData.date}
+                onChange={e => setFormData({ ...formData, date: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
+              />
+            </div>
+          </div>
+
+          <button 
+            type="submit"
+            disabled={loading}
+            className="w-full py-4 bg-slate-900 text-white rounded-2xl font-bold hover:bg-slate-800 transition-all disabled:opacity-50 flex items-center justify-center gap-3 shadow-xl shadow-slate-900/10"
+          >
+            {loading ? (
+              <>
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Processing Allocation...
+              </>
+            ) : (
+              <>
+                <Zap size={20} className="text-emerald-400" />
+                Run AI Allocation
+              </>
+            )}
+          </button>
+        </form>
+      </div>
+
+      <div className="lg:col-span-2 space-y-8">
+        {result ? (
+          result.error ? (
+            <div className="bg-rose-50 border border-rose-200 p-8 rounded-3xl text-center">
+              <div className="w-16 h-16 bg-rose-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <AlertCircle className="text-rose-600" size={32} />
+              </div>
+              <h4 className="text-lg font-bold text-rose-900 mb-2">Allocation Failed</h4>
+              <p className="text-sm text-rose-700">{result.error}</p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-white p-10 rounded-[40px] border border-slate-200 shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-8">
+                  <div className="flex flex-col items-end">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Match Score</span>
+                    <span className={cn(
+                      "text-4xl font-black",
+                      result.allocationScore > 80 ? "text-emerald-500" : 
+                      result.allocationScore > 50 ? "text-amber-500" : "text-rose-500"
+                    )}>
+                      {result.allocationScore}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-6 mb-10">
+                  <div className="w-20 h-20 bg-emerald-50 rounded-3xl flex items-center justify-center border border-emerald-100">
+                    <CheckCircle2 className="text-emerald-500" size={40} />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-emerald-600 uppercase tracking-widest mb-1">Top Recommendation</h4>
+                    <h2 className="text-3xl font-bold text-slate-900">{result.recommendedRoom}</h2>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-10">
+                  <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Building</p>
+                    <p className="text-sm font-bold text-slate-800">{result.roomDetails.building}</p>
+                  </div>
+                  <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Block</p>
+                    <p className="text-sm font-bold text-slate-800">{result.roomDetails.block}</p>
+                  </div>
+                  <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Floor</p>
+                    <p className="text-sm font-bold text-slate-800">{result.roomDetails.floor}</p>
+                  </div>
+                  <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Capacity</p>
+                    <p className="text-sm font-bold text-slate-800">{result.roomDetails.capacity} Seats</p>
+                  </div>
+                </div>
+
+                <div className="p-8 bg-slate-900 rounded-3xl text-white">
+                  <h4 className="text-sm font-bold text-emerald-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                    <Info size={16} />
+                    AI Reasoning
+                  </h4>
+                  <p className="text-sm text-slate-300 leading-relaxed font-medium">{result.reasoning}</p>
+                </div>
+
+                <div className="mt-10 pt-10 border-t border-slate-100">
+                  <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Alternative Options</h4>
+                  <div className="flex flex-wrap gap-3">
+                    {result.alternativeRooms.map((room: string) => (
+                      <span key={room} className="px-5 py-2.5 bg-slate-50 text-slate-700 rounded-xl text-xs font-bold border border-slate-100 hover:border-emerald-200 transition-all cursor-pointer">
+                        {room}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </>
+          )
+        ) : (
+          <div className="h-full bg-slate-50 rounded-[40px] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center p-12 text-center">
+            <div className="w-24 h-24 bg-white rounded-3xl shadow-sm flex items-center justify-center mb-8">
+              <Sparkles className="text-slate-200" size={48} />
+            </div>
+            <h4 className="text-xl font-bold text-slate-400 mb-2">Awaiting Allocation Request</h4>
+            <p className="text-sm text-slate-400 max-w-[300px]">Fill in the details and click "Run AI Allocation" to find the perfect space.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsDashboard() {
+  const [utilizationData, setUtilizationData] = useState<any[]>([]);
+  const [frequencyData, setFrequencyData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [uRes, fRes] = await Promise.all([
+          fetch('/api/analytics/utilization-trends', { credentials: 'include' }),
+          fetch('/api/analytics/booking-frequency', { credentials: 'include' })
+        ]);
+        setUtilizationData(await uRes.json());
+        setFrequencyData(await fRes.json());
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  if (loading) return <div className="p-8 text-center text-slate-400">Loading Analytics...</div>;
+
+  const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
+  return (
+    <div className="space-y-8">
+      {/* Summary Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600">
+              <Activity size={20} />
+            </div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg Utilization</span>
+          </div>
+          <p className="text-3xl font-bold text-slate-800">
+            {Math.round(utilizationData.reduce((acc, curr) => acc + curr.utilization, 0) / (utilizationData.length || 1))}%
+          </p>
+          <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
+            <TrendingUp size={12} className="text-emerald-500" />
+            +4.2% from last month
+          </p>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
+              <Calendar size={20} />
+            </div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Bookings</span>
+          </div>
+          <p className="text-3xl font-bold text-slate-800">
+            {frequencyData.reduce((acc, curr) => acc + curr.count, 0)}
+          </p>
+          <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
+            <TrendingUp size={12} className="text-emerald-500" />
+            +12% from last month
+          </p>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div className="p-2 bg-amber-50 rounded-lg text-amber-600">
+              <Zap size={20} />
+            </div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Peak Hours</span>
+          </div>
+          <p className="text-3xl font-bold text-slate-800">10 AM - 2 PM</p>
+          <p className="text-xs text-slate-500 mt-2">Highest demand period</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-lg font-bold text-slate-800">Top 10 Room Utilization (%)</h3>
+            <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600">
+              <TrendingUp size={20} />
+            </div>
+          </div>
+          <div className="h-80 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={utilizationData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)' }}
+                  cursor={{ fill: '#f8fafc' }}
+                />
+                <Bar dataKey="utilization" fill="#10b981" radius={[6, 6, 0, 0]} barSize={32} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-lg font-bold text-slate-800">Booking Frequency by Building</h3>
+            <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
+              <PieChartIcon size={20} />
+            </div>
+          </div>
+          <div className="h-80 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={frequencyData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={70}
+                  outerRadius={100}
+                  paddingAngle={8}
+                  dataKey="count"
+                >
+                  {frequencyData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)' }}
+                />
+                <Legend verticalAlign="bottom" height={36} iconType="circle" />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportGeneration() {
+  const [utilizationData, setUtilizationData] = useState<any>(null);
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
+  const [loading, setLoading] = useState(true);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
+
+  const methodologyData = [
+    { 
+      title: "Room Utilization Rate (RUR)", 
+      formula: "(Hours Scheduled / Total Available Hours) × 100", 
+      description: "Measures the time-based usage of a room against a standard 40-hour academic week.",
+      target: "75% - 85%"
+    },
+    { 
+      title: "Seat Occupancy Rate (SOR)", 
+      formula: "(Actual Student Count / Room Capacity) × 100", 
+      description: "Evaluates how effectively the physical space is filled during scheduled sessions.",
+      target: "65% - 80%"
+    },
+    { 
+      title: "Capacity Fit Ratio (CFR)", 
+      formula: "Expected Event Strength / Total Allocated Capacity", 
+      description: "Used for ad hoc events to ensure the right-sized room is selected to avoid space waste.",
+      target: "0.90+"
+    },
+    { 
+      title: "Idle-Time Percentage", 
+      formula: "100% - RUR", 
+      description: "Identifies the percentage of time a room remains vacant during operational hours.",
+      target: "< 20%"
+    }
+  ];
+
+  const fetchUtilization = async () => {
+    try {
+      const res = await fetch('/api/reports/utilization', { credentials: 'include' });
+      const data = await res.json();
+      setUtilizationData(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUtilization();
+  }, []);
+
+  const generateSuggestions = async () => {
+    if (!utilizationData) return;
+    setIsGeneratingSuggestions(true);
+    try {
+      // Summarize data to avoid token limits
+      const summarizedData = utilizationData.roomReports.map((r: any) => ({
+        room: r.room_number,
+        util: r.utilization,
+        dept: r.department
+      })).sort((a: any, b: any) => a.util - b.util).slice(0, 20); // Focus on bottom 20 underutilized rooms
+
+      const ai = getGenAIClient();
+      const prompt = `
+        As an Infrastructure Optimization Expert, analyze the following campus room utilization data (bottom 20 underutilized rooms) and provide 3-5 specific, actionable suggestions to maximize utilization.
+        
+        Data: ${JSON.stringify(summarizedData)}
+        
+        Format your response as a JSON array of objects: [{ "title": "...", "suggestion": "...", "impact": "High/Medium/Low" }]
+      `;
+
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+      });
+
+      const suggestions = parseAIResponse(result.text);
+      setSuggestions(suggestions);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsGeneratingSuggestions(false);
+    }
+  };
+
+  const kpis = [
+    { label: 'Campus-wide RUR', value: `${Math.round(utilizationData?.roomReports.reduce((acc: any, r: any) => acc + r.utilization, 0) / (utilizationData?.roomReports.length || 1))}%`, trend: '+4%', status: 'Good' },
+    { label: 'Avg Seat Occupancy', value: '52%', trend: '-2%', status: 'Low' },
+    { label: 'Space Waste Index', value: '14%', trend: '-5%', status: 'Improving' },
+    { label: 'Event Success Rate', value: '92%', trend: '+1%', status: 'Excellent' },
+  ];
+
+  if (loading) return <div className="p-8 text-center text-slate-400">Loading utilization data...</div>;
+
+  return (
+    <div className="space-y-8">
+      <div className="flex gap-1 p-1 bg-slate-100 rounded-2xl w-fit">
+        {(['utilization', 'methodology', 'kpis'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={cn(
+              "px-8 py-2.5 rounded-xl text-xs font-bold transition-all capitalize",
+              activeTab === tab ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+            )}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'utilization' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2 space-y-8">
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center gap-3">
+                <div className="p-2 bg-emerald-50 rounded-lg">
+                  <Building2 className="text-emerald-500" size={20} />
+                </div>
+                School Utilization Overview
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {utilizationData?.schoolReports.map((school: any) => (
+                  <div key={school.name} className="p-6 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-emerald-200 transition-all">
+                    <div className="flex justify-between items-center mb-4">
+                      <span className="text-sm font-bold text-slate-700">{school.name}</span>
+                      <span className={cn(
+                        "text-xs font-bold px-3 py-1 rounded-full",
+                        school.avgUtilization > 70 ? "bg-emerald-100 text-emerald-700" : 
+                        school.avgUtilization > 40 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700"
+                      )}>
+                        {school.avgUtilization}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                      <div 
+                        className={cn(
+                          "h-full transition-all duration-700 ease-out",
+                          school.avgUtilization > 70 ? "bg-emerald-500" : 
+                          school.avgUtilization > 40 ? "bg-amber-500" : "bg-rose-500"
+                        )}
+                        style={{ width: `${school.avgUtilization}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center mt-4">
+                      <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">{school.deptCount} Departments</p>
+                      <button className="text-[10px] font-bold text-emerald-600 hover:underline uppercase tracking-widest">Details</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center gap-3">
+                <div className="p-2 bg-blue-50 rounded-lg">
+                  <Layers className="text-blue-500" size={20} />
+                </div>
+                Department Utilization
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                      <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">School</th>
+                      <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                      <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {utilizationData?.deptReports.map((dept: any) => (
+                      <tr key={dept.name} className="hover:bg-slate-50/50 transition-colors group">
+                        <td className="py-5 text-sm font-bold text-slate-700">{dept.name}</td>
+                        <td className="py-5 text-sm text-slate-500">{dept.school}</td>
+                        <td className="py-5 text-sm text-slate-500">{dept.roomCount}</td>
+                        <td className="py-5 text-right">
+                          <span className={cn(
+                            "text-xs font-bold px-3 py-1 rounded-lg",
+                            dept.avgUtilization > 70 ? "bg-emerald-50 text-emerald-600" : 
+                            dept.avgUtilization > 40 ? "bg-amber-50 text-amber-600" : "bg-rose-50 text-rose-600"
+                          )}>
+                            {dept.avgUtilization}%
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-8">
+            <div className="bg-slate-900 text-white p-8 rounded-3xl shadow-2xl shadow-slate-900/20 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-3xl -mr-16 -mt-16"></div>
+              <div className="flex items-center justify-between mb-8 relative z-10">
+                <h3 className="text-lg font-bold flex items-center gap-3">
+                  <div className="p-2 bg-emerald-500/20 rounded-lg">
+                    <Sparkles className="text-emerald-400" size={20} />
+                  </div>
+                  AI Optimization
+                </h3>
+                <button 
+                  onClick={generateSuggestions}
+                  disabled={isGeneratingSuggestions}
+                  className="p-2.5 bg-white/10 hover:bg-white/20 rounded-xl transition-all disabled:opacity-50 group"
+                >
+                  <Zap size={18} className={cn(isGeneratingSuggestions ? "animate-pulse text-emerald-400" : "group-hover:scale-110 transition-transform")} />
+                </button>
+              </div>
+              
+              <div className="space-y-4 relative z-10">
+                {suggestions.length > 0 ? suggestions.map((s, i) => (
+                  <div key={i} className="p-5 bg-white/5 rounded-2xl border border-white/10 hover:bg-white/10 transition-all group">
+                    <div className="flex justify-between items-start mb-3">
+                      <h4 className="text-sm font-bold text-emerald-400 group-hover:text-emerald-300 transition-colors">{s.title}</h4>
+                      <span className={cn(
+                        "text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-widest",
+                        s.impact === 'High' ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"
+                      )}>
+                        {s.impact}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed font-medium">{s.suggestion}</p>
+                  </div>
+                )) : (
+                  <div className="text-center py-12">
+                    <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-white/10">
+                      <BrainCircuit className="text-slate-700" size={32} />
+                    </div>
+                    <p className="text-sm text-slate-400 font-medium max-w-[200px] mx-auto">Click the lightning bolt to generate AI insights.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">Export Reports</h3>
+              <div className="space-y-3">
+                <button className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
+                  <div className="flex items-center gap-4">
+                    <div className="p-2 bg-white rounded-lg shadow-sm">
+                      <FileText className="text-rose-500" size={20} />
+                    </div>
+                    <span className="text-sm font-bold">Utilization Summary</span>
+                  </div>
+                  <ChevronRight size={18} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
+                </button>
+                <button className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
+                  <div className="flex items-center gap-4">
+                    <div className="p-2 bg-white rounded-lg shadow-sm">
+                      <FileSpreadsheet className="text-emerald-500" size={20} />
+                    </div>
+                    <span className="text-sm font-bold">Raw Usage Data</span>
+                  </div>
+                  <ChevronRight size={18} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'methodology' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {methodologyData.map((item) => (
+            <div key={item.title} className="bg-white p-10 rounded-[40px] border border-slate-200 shadow-sm space-y-6 group hover:border-emerald-500 transition-all">
+              <h4 className="text-xl font-bold text-slate-800">{item.title}</h4>
+              <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100 font-mono text-sm text-emerald-600 group-hover:bg-emerald-50 transition-colors">
+                {item.formula}
+              </div>
+              <p className="text-sm text-slate-600 leading-relaxed font-medium">{item.description}</p>
+              <div className="flex items-center gap-3 pt-4 border-t border-slate-50">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Recommended Target:</span>
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-xl">{item.target}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'kpis' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {kpis.map((kpi) => (
+            <div key={kpi.label} className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">{kpi.label}</p>
+              <div className="flex items-end justify-between">
+                <h3 className="text-4xl font-bold text-slate-800 tracking-tight">{kpi.value}</h3>
+                <div className={cn(
+                  "flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg",
+                  kpi.trend.startsWith('+') ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"
+                )}>
+                  {kpi.trend.startsWith('+') ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                  {kpi.trend}
+                </div>
+              </div>
+              <div className="mt-6 flex items-center gap-3">
+                <div className={cn(
+                  "w-2.5 h-2.5 rounded-full",
+                  kpi.status === 'Excellent' || kpi.status === 'Good' || kpi.status === 'Improving' ? "bg-emerald-500" : "bg-amber-500"
+                )}></div>
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{kpi.status}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TimetableBuilder() {
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [selectedRoom, setSelectedRoom] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+
+  const classTimeSlots = [
+    { start_time: '09:00', end_time: '09:55' },
+    { start_time: '09:55', end_time: '10:50' },
+    { start_time: '11:10', end_time: '12:05' },
+    { start_time: '12:05', end_time: '13:00' },
+    { start_time: '14:15', end_time: '15:10' },
+    { start_time: '15:10', end_time: '16:05' },
+  ];
+
+  const timeToMinutes = (time?: string) => {
+    const match = time?.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+  };
+
+  const expandScheduleForDisplay = (schedule: any) => {
+    const scheduleStart = timeToMinutes(schedule.start_time);
+    const scheduleEnd = timeToMinutes(schedule.end_time);
+
+    if (scheduleStart == null || scheduleEnd == null) return [schedule];
+
+    const matchingSlots = classTimeSlots.filter(slot => {
+      const slotStart = timeToMinutes(slot.start_time);
+      const slotEnd = timeToMinutes(slot.end_time);
+      return slotStart != null && slotEnd != null && slotStart >= scheduleStart && slotEnd <= scheduleEnd;
+    });
+
+    if (matchingSlots.length <= 1) return [schedule];
+
+    return matchingSlots.map((slot, index) => ({
+      ...schedule,
+      ...slot,
+      display_id: `${schedule.id}-slot-${index}`,
+    }));
+  };
+
+  const fetchData = async () => {
+    try {
+      const [sRes, rRes, dRes] = await Promise.all([
+        fetch('/api/schedules', { credentials: 'include' }),
+        fetch('/api/rooms', { credentials: 'include' }),
+        fetch('/api/departments', { credentials: 'include' })
+      ]);
+      const sData = await sRes.json();
+      const rData = await rRes.json();
+      const dData = await dRes.json();
+      setSchedules(sData);
+      setRooms(rData);
+      setDepartments(dData);
+      if (rData.length > 0 && !selectedRoom) {
+        setSelectedRoom(rData[0].room_number);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const handleDelete = async (id: number) => {
+    if (confirm('Remove this class from the timetable?')) {
+      const res = await fetch(`/api/schedules/${id}`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (res.ok) {
+        fetchData();
+      }
+    }
+  };
+
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  const getSchedulesForDay = (day: string) => {
+    const activeRoom = rooms.find(r => r.room_number === selectedRoom);
+
+    return schedules
+      .filter(s => {
+        if (s.day_of_week !== day) return false;
+        if (activeRoom && s.room_id != null) return s.room_id === activeRoom.id;
+        return s.room === selectedRoom;
+      })
+      .map(s => ({
+        ...s,
+        department_name: departments.find(d => d.id === s.department_id)?.name ?? s.department,
+      }))
+      .flatMap(expandScheduleForDisplay)
+      .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+  };
+
+  if (loading) return <div className="p-8 text-center text-slate-400 font-medium">Loading Timetable...</div>;
+
+  return (
+    <div className="space-y-8">
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex justify-between items-center">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white">
+            <Clock size={24} />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-slate-800">Timetable View</h3>
+            <p className="text-xs text-slate-500">Visualizing schedules with precise timing slots</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+          <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Room:</span>
+          <select 
+            value={selectedRoom}
+            onChange={(e) => setSelectedRoom(e.target.value)}
+            className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
+          >
+            {rooms.map(r => (
+              <option key={r.id} value={r.room_number}>Room {r.room_number} ({r.building})</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
+        {days.map(day => {
+          const daySchedules = getSchedulesForDay(day);
+          return (
+            <div key={day} className="space-y-4">
+              <div className="flex items-center justify-between px-2">
+                <h4 className="font-bold text-slate-800">{day}</h4>
+                <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{daySchedules.length} Classes</span>
+              </div>
+              
+              <div className="space-y-3">
+                {daySchedules.length > 0 ? daySchedules.map((s) => (
+                  <div key={s.display_id ?? s.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all group relative">
+                    <button 
+                      onClick={() => handleDelete(s.id)}
+                      className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X size={14} />
+                    </button>
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                      <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">{s.start_time} - {s.end_time}</span>
+                    </div>
+                    <h5 className="text-sm font-bold text-slate-800 mb-1 line-clamp-1">{s.course_name}</h5>
+                    <p className="text-[10px] text-slate-500 font-medium mb-2">{s.course_code} • {s.faculty}</p>
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-50">
+                      <span className="text-[10px] font-bold text-slate-400">{s.department_name}</span>
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
+                        <Users size={10} />
+                        {s.student_count}
+                      </div>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="py-12 text-center border-2 border-dashed border-slate-100 rounded-xl">
+                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">No Classes</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// --- DIGITAL TWIN MODULE ---
+
+function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmapMode }: any) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  
+  // Calculate building color based on heatmap or status
+  const getBuildingColor = () => {
+    if (heatmapMode) {
+      const buildingRooms = rooms.filter((r: any) => r.building === building.name);
+      const occupiedCount = buildingRooms.filter((r: any) => r.status === 'Occupied' || r.status === 'Scheduled').length;
+      const ratio = buildingRooms.length > 0 ? occupiedCount / buildingRooms.length : 0;
+      if (ratio > 0.7) return '#ef4444'; // Red - High
+      if (ratio > 0.3) return '#f59e0b'; // Yellow - Medium
+      return '#10b981'; // Green - Low
+    }
+    return isSelected ? '#10b981' : '#334155';
+  };
+
+  const hasAlert = maintenance.some((m: any) => {
+    const room = rooms.find((r: any) => r.room_number === m.room_number);
+    return room && room.building === building.name && m.status !== 'Completed';
+  });
+
+  return (
+    <group position={building.position || [0, 0, 0]}>
+      <mesh 
+        ref={meshRef} 
+        onClick={(e) => { e.stopPropagation(); onClick(building); }}
+        onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { document.body.style.cursor = 'default'; }}
+      >
+        <boxGeometry args={[2, building.floors_count * 0.5, 2]} />
+        <meshStandardMaterial 
+          color={getBuildingColor()} 
+          metalness={0.5} 
+          roughness={0.2} 
+          emissive={isSelected ? '#10b981' : '#000000'}
+          emissiveIntensity={isSelected ? 0.5 : 0}
+        />
+      </mesh>
+      
+      {hasAlert && (
+        <Float speed={5} rotationIntensity={0.5} floatIntensity={0.5}>
+          <mesh position={[0, (building.floors_count * 0.5) / 2 + 0.5, 0]}>
+            <sphereGeometry args={[0.2, 16, 16]} />
+            <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={2} />
+          </mesh>
+        </Float>
+      )}
+
+      <Text
+        position={[0, (building.floors_count * 0.5) / 2 + 0.8, 0]}
+        fontSize={0.3}
+        color="white"
+        anchorX="center"
+        anchorY="middle"
+      >
+        {building.name}
+      </Text>
+    </group>
+  );
+}
+
+function DigitalTwin() {
+  const [campuses, setCampuses] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [maintenance, setMaintenance] = useState<any[]>([]);
+  
+  const [selectedBuilding, setSelectedBuilding] = useState<any>(null);
+  const [selectedBlock, setSelectedBlock] = useState<any>(null);
+  const [selectedFloor, setSelectedFloor] = useState<any>(null);
+  
+  const [viewMode, setViewMode] = useState<'2D' | '3D'>('2D');
+  const [heatmapMode, setHeatmapMode] = useState(false);
+  const [aiRecommendations, setAiRecommendations] = useState<any>(null);
+  const [loadingAi, setLoadingAi] = useState(false);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      const [cRes, bRes, blRes, fRes, rRes, mRes] = await Promise.all([
+        fetch('/api/campuses', { credentials: 'include' }),
+        fetch('/api/buildings', { credentials: 'include' }),
+        fetch('/api/blocks', { credentials: 'include' }),
+        fetch('/api/floors', { credentials: 'include' }),
+        fetch('/api/rooms', { credentials: 'include' }),
+        fetch('/api/maintenance', { credentials: 'include' })
+      ]);
+      const [cData, bData, blData, fData, rData, mData] = await Promise.all([
+        cRes.json(), bRes.json(), blRes.json(), fRes.json(), rRes.json(), mRes.json()
+      ]);
+      
+      setCampuses(cData);
+      setBlocks(blData);
+      setFloors(fData);
+      setBuildings(bData);
+      setRooms(rData);
+      setMaintenance(mData);
+    };
+    fetchData();
+  }, []);
+
+  const runAiOptimization = async () => {
+    setLoadingAi(true);
+    try {
+      const ai = getGenAIClient();
+      const model = ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analyze this campus infrastructure data and provide optimization recommendations:
+        Campuses: ${JSON.stringify(campuses)}
+        Buildings: ${JSON.stringify(buildings)}
+        Blocks: ${JSON.stringify(blocks)}
+        Floors: ${JSON.stringify(floors)}
+        Rooms: ${JSON.stringify(rooms)}
+        Maintenance: ${JSON.stringify(maintenance)}
+        
+        Return a JSON object with:
+        - recommendations (array of strings)
+        - futureForecast (string)
+        - efficiencyScore (number 0-100)
+        - simulationImpact (string)`,
+        config: { responseMimeType: "application/json" }
+      });
+      const result = await model;
+      setAiRecommendations(JSON.parse(result.text));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingAi(false);
+    }
+  };
+
+  const stats = {
+    totalRooms: rooms.length,
+    availableRooms: rooms.filter(r => r.status === 'Available').length,
+    maintenanceRooms: rooms.filter(r => r.status === 'Maintenance').length,
+    utilization: Math.round((rooms.filter(r => r.status !== 'Available').length / (rooms.length || 1)) * 100),
+    totalBuildings: buildings.length,
+    totalBlocks: blocks.length
+  };
+
+  const getBlocksForBuilding = (buildingId: number) =>
+    blocks.filter(block => block.building_id === buildingId);
+
+  const getVisibleBlocksForBuilding = (building: any) =>
+    getBlocksForBuilding(building.id).filter(block => !isImplicitBuildingBlock(block, building));
+
+  const getDirectBlockForBuilding = (building: any) =>
+    getBlocksForBuilding(building.id).find(block => isImplicitBuildingBlock(block, building));
+
+  const getFloorsForBlock = (blockId: number) =>
+    floors.filter(floor => floor.block_id === blockId);
+
+  const getRoomsForBuilding = (building: any) => {
+    const buildingBlockIds = getBlocksForBuilding(building.id).map(block => block.id);
+    const buildingFloorIds = floors.filter(floor => buildingBlockIds.includes(floor.block_id)).map(floor => floor.id);
+    return rooms.filter(room => buildingFloorIds.includes(room.floor_id));
+  };
+
+  const selectedBuildingVisibleBlocks = selectedBuilding ? getVisibleBlocksForBuilding(selectedBuilding) : [];
+  const selectedBuildingDirectBlock = selectedBuilding ? getDirectBlockForBuilding(selectedBuilding) : null;
+  const selectedBuildingBlockOptions =
+    selectedBuilding && selectedBuildingDirectBlock && selectedBuildingVisibleBlocks.length > 0 && getFloorsForBlock(selectedBuildingDirectBlock.id).length > 0
+      ? [selectedBuildingDirectBlock, ...selectedBuildingVisibleBlocks]
+      : selectedBuildingVisibleBlocks;
+  const shouldShowBlockLevel = selectedBuildingBlockOptions.length > 0;
+  const activeBlock = selectedBlock || (!shouldShowBlockLevel ? selectedBuildingDirectBlock : null);
+
+  return (
+    <div className="space-y-8">
+      {/* Digital Twin Header Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-500">
+            <DoorOpen size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Rooms</p>
+            <p className="text-xl font-bold text-slate-800">{stats.totalRooms}</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-500">
+            <Activity size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Utilization</p>
+            <p className="text-xl font-bold text-slate-800">{stats.utilization}%</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-500">
+            <Wrench size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Maintenance</p>
+            <p className="text-xl font-bold text-slate-800">{stats.maintenanceRooms}</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-500">
+            <Building2 size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Buildings</p>
+            <p className="text-xl font-bold text-slate-800">{stats.totalBuildings}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+            <button 
+              onClick={() => setViewMode('2D')}
+              className={cn(
+                "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                viewMode === '2D' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              2D View
+            </button>
+            <button 
+              onClick={() => setViewMode('3D')}
+              className={cn(
+                "px-4 py-2 rounded-lg text-xs font-bold transition-all",
+                viewMode === '3D' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              3D View
+            </button>
+          </div>
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
+          <button 
+            onClick={() => { setSelectedBuilding(null); setSelectedBlock(null); setSelectedFloor(null); }}
+            className="hover:text-emerald-500 transition-colors"
+          >
+            Campus
+          </button>
+          {selectedBuilding && (
+            <>
+              <ChevronRight size={16} />
+              <button 
+                onClick={() => { setSelectedBlock(null); setSelectedFloor(null); }}
+                className="hover:text-emerald-500 transition-colors"
+              >
+                {selectedBuilding.name}
+              </button>
+            </>
+          )}
+          {selectedBlock && (
+            <>
+              <ChevronRight size={16} />
+              <button 
+                onClick={() => { setSelectedFloor(null); }}
+                className="hover:text-emerald-500 transition-colors"
+              >
+                {selectedBlock.name}
+              </button>
+            </>
+          )}
+          {selectedFloor && (
+            <>
+              <ChevronRight size={16} />
+              <span className="text-slate-800">{getFloorName(selectedFloor.floor_number)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-2">
+          <button 
+            onClick={() => setHeatmapMode(!heatmapMode)}
+            className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all", heatmapMode ? "bg-emerald-500 text-white" : "bg-white text-slate-600 border border-slate-200")}
+          >
+            Heatmap {heatmapMode ? 'ON' : 'OFF'}
+          </button>
+          <button 
+            onClick={runAiOptimization}
+            disabled={loadingAi}
+            className="bg-slate-900 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-slate-800 transition-all flex items-center gap-2"
+          >
+            <BrainCircuit size={14} />
+            {loadingAi ? 'Analyzing...' : 'AI Optimization'}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-slate-900 rounded-[40px] min-h-[600px] relative overflow-hidden border border-slate-800 shadow-2xl">
+        {/* Digital Twin Background Grid */}
+        <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ 
+          backgroundImage: 'radial-gradient(#10b981 1px, transparent 1px)', 
+          backgroundSize: '40px 40px' 
+        }} />
+        
+        {viewMode === '3D' && !selectedBuilding && (
+          <div className="absolute inset-0 z-0">
+            <Canvas shadows camera={{ position: [10, 10, 10], fov: 45 }}>
+              <PerspectiveCamera makeDefault position={[15, 15, 15]} />
+              <OrbitControls enablePan={true} enableZoom={true} maxPolarAngle={Math.PI / 2.1} />
+              <Environment preset="city" />
+              <ambientLight intensity={0.5} />
+              <pointLight position={[10, 10, 10]} intensity={1} castShadow />
+              <ContactShadows position={[0, 0, 0]} opacity={0.4} scale={20} blur={2} far={4.5} />
+              
+              <group>
+                {buildings.map((b, i) => (
+                  <Building3D 
+                    key={b.id} 
+                    building={{...b, position: [((i % 3) - 1) * 8, 0, (Math.floor(i / 3) - 1) * 8]}} 
+                    rooms={rooms}
+                    maintenance={maintenance}
+                    onClick={setSelectedBuilding}
+                    isSelected={selectedBuilding?.id === b.id}
+                    heatmapMode={heatmapMode}
+                  />
+                ))}
+              </group>
+              
+              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]} receiveShadow>
+                <planeGeometry args={[100, 100]} />
+                <meshStandardMaterial color="#0f172a" />
+              </mesh>
+              <gridHelper args={[100, 50, '#1e293b', '#1e293b']} position={[0, 0, 0]} />
+            </Canvas>
+          </div>
+        )}
+
+        <div className={cn("p-12 relative z-10", viewMode === '3D' && !selectedBuilding && "pointer-events-none")}>
+          {!selectedBuilding ? (
+            <div className={cn("grid grid-cols-1 md:grid-cols-3 gap-8", viewMode === '3D' && "opacity-0 invisible")}>
+            {buildings.map(b => {
+              const visibleBlocks = getVisibleBlocksForBuilding(b);
+              const buildingRooms = getRoomsForBuilding(b);
+
+              return (
+                <div 
+                  key={b.id} 
+                  onClick={() => setSelectedBuilding(b)}
+                  className="group cursor-pointer bg-slate-800/40 border border-slate-700/50 p-8 rounded-[40px] hover:bg-slate-800 hover:border-emerald-500 transition-all transform hover:-translate-y-2 backdrop-blur-sm"
+                >
+                  <div className="w-full aspect-video bg-slate-700/50 rounded-3xl mb-8 flex items-center justify-center relative overflow-hidden border border-slate-600/30">
+                    <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <Building2 size={64} className="text-slate-500 group-hover:text-emerald-500 transition-all group-hover:scale-110" />
+                  </div>
+                  <h4 className="text-2xl font-bold text-white mb-3">{b.name}</h4>
+                  <p className="text-sm text-slate-400 mb-6 leading-relaxed">{b.description}</p>
+                  <div className="flex items-center justify-between pt-6 border-t border-slate-700/50">
+                    <div className="flex gap-4">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Blocks</span>
+                        <span className="text-sm font-bold text-white">{visibleBlocks.length || 'Direct'}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Rooms</span>
+                        <span className="text-sm font-bold text-white">{buildingRooms.length}</span>
+                      </div>
+                    </div>
+                    <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center text-slate-500 group-hover:text-emerald-500 group-hover:bg-emerald-500/10 transition-all">
+                      <ChevronRight size={20} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : shouldShowBlockLevel && !selectedBlock ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative z-10">
+            {selectedBuildingBlockOptions.map(bl => (
+              <div 
+                key={bl.id} 
+                onClick={() => setSelectedBlock(bl)}
+                className="group cursor-pointer bg-slate-800/50 border border-slate-700 p-8 rounded-3xl hover:bg-slate-800 hover:border-emerald-500 transition-all"
+              >
+                <div className="w-full h-48 bg-slate-700 rounded-2xl mb-6 flex items-center justify-center">
+                  <LayoutGrid size={48} className="text-slate-500 group-hover:text-emerald-500" />
+                </div>
+                <h4 className="text-xl font-bold text-white mb-2">{getBlockDisplayLabel(bl, selectedBuilding)}</h4>
+                <p className="text-sm text-slate-400">{bl.description}</p>
+              </div>
+            ))}
+          </div>
+        ) : !selectedFloor ? (
+          <div className="space-y-4 relative z-10 max-w-2xl mx-auto">
+            {floors.filter(f => f.block_id === activeBlock?.id).sort((a,b) => a.floor_number - b.floor_number).map(f => (
+              <div 
+                key={f.id} 
+                onClick={() => setSelectedFloor(f)}
+                className="group cursor-pointer bg-slate-800/50 border border-slate-700 p-6 rounded-2xl hover:bg-slate-800 hover:border-emerald-500 transition-all flex items-center justify-between"
+              >
+                <div className="flex items-center gap-6">
+                  <div className="w-16 h-16 bg-slate-700 rounded-2xl flex items-center justify-center font-bold text-2xl text-white group-hover:bg-emerald-500/20 group-hover:text-emerald-500 transition-all">
+                    {getFloorShortName(f.floor_number)}
+                  </div>
+                  <div>
+                    <h4 className="text-lg font-bold text-white">{getFloorName(f.floor_number)}</h4>
+                    <p className="text-sm text-slate-400">{f.description}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Rooms</p>
+                    <p className="text-sm font-bold text-white">{rooms.filter(r => r.floor_id === f.id).length}</p>
+                  </div>
+                  <ChevronRight className="text-slate-500 group-hover:text-emerald-500" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6 relative z-10">
+            {rooms.filter(r => r.floor_id === selectedFloor.id).map(r => (
+              <div 
+                key={r.id} 
+                className={cn(
+                  "p-6 rounded-2xl border transition-all relative group cursor-default",
+                  r.status === 'Available' ? "bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20" :
+                  r.status.includes('Occupied') ? "bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20" :
+                  "bg-slate-700/50 border-slate-600"
+                )}
+              >
+                <div className="flex justify-between items-start mb-4">
+                  <span className="text-lg font-bold text-white">{r.room_number}</span>
+                  <div className={cn(
+                    "w-3 h-3 rounded-full",
+                    r.status === 'Available' ? "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.6)]" : "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.6)]"
+                  )} />
+                </div>
+                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{r.room_type}</p>
+                <div className="flex items-center justify-between mt-4">
+                  <span className="text-[10px] font-bold text-slate-500">CAP: {r.capacity}</span>
+                  {maintenance.some(m => m.room_id === r.id && m.status !== 'Completed') && (
+                    <AlertTriangle size={14} className="text-amber-500" />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+
+    {aiRecommendations && (
+        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="flex items-center justify-between mb-8">
+            <h3 className="text-xl font-bold text-slate-800 flex items-center gap-3">
+              <div className="p-2 bg-emerald-100 rounded-lg">
+                <BrainCircuit className="text-emerald-600" size={24} />
+              </div>
+              AI Infrastructure Insights
+            </h3>
+            <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-xl border border-slate-100">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Efficiency Score:</span>
+              <span className="text-lg font-bold text-emerald-600">{aiRecommendations.efficiencyScore}%</span>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="space-y-4">
+              <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Strategic Recommendations</h4>
+              {aiRecommendations.recommendations.map((rec: string, i: number) => (
+                <div key={i} className="flex gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-emerald-200 transition-all">
+                  <div className="w-8 h-8 bg-white rounded-lg border border-slate-200 flex items-center justify-center text-sm font-bold text-slate-400 group-hover:text-emerald-500 group-hover:border-emerald-500 transition-all">
+                    {i + 1}
+                  </div>
+                  <p className="text-sm text-slate-700 font-medium leading-relaxed">{rec}</p>
+                </div>
+              ))}
+            </div>
+            <div className="space-y-6">
+              <div className="p-6 bg-indigo-50 border border-indigo-100 rounded-2xl">
+                <h4 className="text-sm font-bold text-indigo-900 uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <TrendingUp size={16} />
+                  Future Forecast
+                </h4>
+                <p className="text-sm text-indigo-800 leading-relaxed font-medium">{aiRecommendations.futureForecast}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
