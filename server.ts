@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -9,6 +10,9 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -219,6 +223,7 @@ const ensureBookingColumns = () => {
   ensureColumn("bookings", "notes", "TEXT");
   ensureColumn("bookings", "recommended_by", "TEXT");
   ensureColumn("bookings", "decided_by", "TEXT");
+  ensureColumn("bookings", "request_group_id", "TEXT");
 };
 
 ensureBookingColumns();
@@ -242,12 +247,127 @@ const ensureNotificationsTable = () => {
   ensureColumn("notifications", "target_department", "TEXT");
 };
 
+const ensureNotificationReadsTable = () => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS notification_reads (
+      notification_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (notification_id, user_id),
+      FOREIGN KEY(notification_id) REFERENCES notifications(id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+  `);
+};
+
 ensureNotificationsTable();
+ensureNotificationReadsTable();
 
 const createNotification = (targetRole: string | null, targetName: string | null, title: string, message: string, targetDepartment: string | null = null) => {
   ensureNotificationsTable();
   db.prepare("INSERT INTO notifications (target_role, target_name, target_department, title, message) VALUES (?, ?, ?, ?, ?)")
     .run(targetRole, targetName, targetDepartment, title, message);
+};
+
+const getDepartmentNameById = (departmentId?: string | number | null) => {
+  if (!departmentId) return null;
+  const department = db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId) as any;
+  return department?.name || null;
+};
+
+const backfillNotificationsIfEmpty = () => {
+  ensureNotificationsTable();
+  ensureNotificationReadsTable();
+  const notificationCount = db.prepare("SELECT COUNT(*) as count FROM notifications").get() as any;
+  if ((notificationCount?.count || 0) > 0) return;
+
+  const bookings = db.prepare("SELECT * FROM bookings ORDER BY id ASC").all() as any[];
+  for (const booking of bookings) {
+    const bookingLabel = booking.event_name || "room request";
+    const bookingTime = booking.date && booking.start_time && booking.end_time
+      ? `${booking.date} from ${booking.start_time} to ${booking.end_time}`
+      : booking.date || "the selected slot";
+    const departmentName = getDepartmentNameById(booking.department_id);
+
+    if (booking.status === "Pending") {
+      createNotification(null, booking.faculty_name, "Room request submitted", `${bookingLabel} was submitted for approval for ${bookingTime}.`);
+      notifyBookingAuthorities(booking, "New room request", `${booking.faculty_name} requested ${bookingLabel} on ${bookingTime}.`);
+      continue;
+    }
+
+    if (booking.status === "HOD Recommended") {
+      createNotification(null, booking.faculty_name, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
+      createNotification("Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
+      createNotification("Deputy Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
+      if (departmentName) {
+        createNotification("HOD", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`, departmentName);
+      }
+      continue;
+    }
+
+    if (booking.status === "Approved") {
+      createNotification(null, booking.faculty_name, "Room booking approved", `${bookingLabel} was approved for ${bookingTime}.`);
+      continue;
+    }
+
+    if (booking.status === "Rejected" || booking.status === "Postponed") {
+      createNotification(null, booking.faculty_name, `Request ${booking.status}`, `${bookingLabel} was marked as ${booking.status.toLowerCase()} for ${bookingTime}.`);
+    }
+  }
+};
+
+const getNotificationAudienceParams = (user: any) => {
+  const normalizedRole = user?.role || null;
+  const normalizedName = user?.name?.toString().trim().toLowerCase() || null;
+  const normalizedDepartment = user?.department?.toString().trim().toLowerCase() || null;
+
+  return { normalizedRole, normalizedName, normalizedDepartment };
+};
+
+const getNotificationsForUser = (user: any, limit = 20) => {
+  ensureNotificationsTable();
+  ensureNotificationReadsTable();
+  const { normalizedRole, normalizedName, normalizedDepartment } = getNotificationAudienceParams(user);
+
+  return db.prepare(`
+    SELECT
+      n.*,
+      CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END as is_read
+    FROM notifications n
+    LEFT JOIN notification_reads nr
+      ON nr.notification_id = n.id
+      AND nr.user_id = ?
+    WHERE (n.target_role IS NULL AND n.target_name IS NULL AND n.target_department IS NULL)
+      OR (n.target_role = ? AND n.target_department IS NULL)
+      OR LOWER(TRIM(COALESCE(n.target_name, ''))) = ?
+      OR (n.target_role = ? AND LOWER(TRIM(COALESCE(n.target_department, ''))) = ?)
+    ORDER BY n.created_at DESC, n.id DESC
+    LIMIT ?
+  `).all(user.id, normalizedRole, normalizedName, normalizedRole, normalizedDepartment, limit);
+};
+
+const markAllNotificationsRead = (user: any, notificationIds?: number[]) => {
+  ensureNotificationsTable();
+  ensureNotificationReadsTable();
+  const normalizedIds = Array.isArray(notificationIds)
+    ? notificationIds.map(id => parseInt(id as any, 10)).filter(id => Number.isInteger(id) && id > 0)
+    : [];
+  const visibleNotificationIds = getNotificationsForUser(user, 1000)
+    .map((notification: any) => notification.id)
+    .filter((id: number) => normalizedIds.length === 0 || normalizedIds.includes(id));
+
+  if (visibleNotificationIds.length === 0) return;
+
+  const insertRead = db.prepare(`
+    INSERT OR IGNORE INTO notification_reads (notification_id, user_id, read_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+  `);
+
+  const markReadTransaction = db.transaction((ids: number[]) => {
+    ids.forEach(id => insertRead.run(id, user.id));
+  });
+
+  markReadTransaction(visibleNotificationIds);
 };
 
 app.use(express.json());
@@ -314,17 +434,17 @@ app.get("/api/auth/me", (req, res) => {
 });
 
 app.get("/api/notifications", authenticate, (req: any, res) => {
-  ensureNotificationsTable();
-  const notifications = db.prepare(`
-    SELECT * FROM notifications
-    WHERE (target_role IS NULL AND target_name IS NULL AND target_department IS NULL)
-    OR target_role = ?
-    OR target_name = ?
-    OR (target_role = ? AND target_department = ?)
-    ORDER BY created_at DESC
-    LIMIT 20
-  `).all(req.user.role, req.user.name, req.user.role, req.user.department || null);
+  const notifications = getNotificationsForUser(req.user);
   res.json(notifications);
+});
+
+app.post("/api/notifications/read-all", authenticate, (req: any, res) => {
+  try {
+    markAllNotificationsRead(req.user, req.body?.notificationIds);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.post("/api/auth/forgot-password", (req, res) => {
@@ -513,6 +633,8 @@ const notifyBookingAuthorities = (booking: any, title: string, message: string) 
   createNotification("Deputy Dean (P&M)", null, title, message);
 };
 
+backfillNotificationsIfEmpty();
+
 const createCrudRoutes = (tableName: string, idField: string = "id") => {
   app.get(`/api/${tableName}`, authenticate, (req, res) => {
     if (tableName === "bookings") {
@@ -620,6 +742,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "bookings") {
         const message = `${req.body.faculty_name} requested ${req.body.event_name || "a room"} on ${req.body.date} from ${req.body.start_time} to ${req.body.end_time}.`;
         if (req.body.status === "Pending") {
+          createNotification(null, req.body.faculty_name, "Room request submitted", `${req.body.event_name || "Your room request"} was submitted for approval.`);
           notifyBookingAuthorities(req.body, "New room request", message);
           const competingRequests = getCompetingOpenBookingRequests(req.body, info.lastInsertRowid);
           if (competingRequests.length > 0) {

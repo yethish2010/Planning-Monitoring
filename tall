@@ -1,0 +1,12 @@
+warning: in the working copy of '.env.example', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'server.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/App.tsx', LF will be replaced by CRLF the next time Git touches it
+ .env.example      |   4 [32m+[m[31m-[m
+ campus.db         | Bin [31m135168[m -> [32m135168[m bytes
+ package-lock.json |  64 [32m++++++[m[31m-[m
+ package.json      |   3 [32m+[m[31m-[m
+ server.ts         | 143 [32m+++++++++++++[m[31m--[m
+ src/App.tsx       | 516 [32m++++++++++++++++++++++++++++++++++++++++++++++++[m[31m------[m
+ 6 files changed, 657 insertions(+), 73 deletions(-)

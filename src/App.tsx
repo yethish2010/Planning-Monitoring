@@ -144,7 +144,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/auth/me')
+    fetch('/api/auth/me', { credentials: 'include' })
       .then(res => res.json())
       .then(data => {
         if (data.user) setUser(data.user);
@@ -154,7 +154,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = (userData: any) => setUser(userData);
   const logout = () => {
-    fetch('/api/auth/logout', { method: 'POST' }).then(() => setUser(null));
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => setUser(null));
   };
 
   return (
@@ -306,41 +306,185 @@ function Header({ title }: { title: string }) {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
+  const [isRefreshingNotifications, setIsRefreshingNotifications] = useState(false);
+  const [locallyReadNotificationIds, setLocallyReadNotificationIds] = useState<number[]>([]);
+  const notificationPanelRef = useRef<HTMLDivElement | null>(null);
+  const notificationPanelOpenRef = useRef(false);
+  const notificationReadStorageKey = user?.id ? `notifications-read-${user.id}` : null;
 
-  const fetchNotifications = async () => {
+  const persistLocallyReadNotificationIds = (notificationIds: number[]) => {
+    const uniqueIds = Array.from(new Set(notificationIds.filter(id => Number.isInteger(id) && id > 0)));
+    setLocallyReadNotificationIds(uniqueIds);
+    if (!notificationReadStorageKey) return;
+
     try {
-      const res = await fetch('/api/notifications', { credentials: 'include' });
-      const data = res.ok ? await res.json() : [];
-      setNotifications(Array.isArray(data) ? data : []);
+      window.localStorage.setItem(notificationReadStorageKey, JSON.stringify(uniqueIds));
     } catch {
-      setNotifications([]);
+      // Ignore storage errors and keep the in-memory state.
     }
   };
 
   useEffect(() => {
-    fetchNotifications();
-    const interval = window.setInterval(fetchNotifications, 10000);
+    if (!notificationReadStorageKey) {
+      setLocallyReadNotificationIds([]);
+      return;
+    }
+
+    try {
+      const storedIds = JSON.parse(window.localStorage.getItem(notificationReadStorageKey) || '[]');
+      const validIds = Array.isArray(storedIds)
+        ? storedIds.map(id => parseInt(id, 10)).filter(id => Number.isInteger(id) && id > 0)
+        : [];
+      setLocallyReadNotificationIds(validIds);
+    } catch {
+      setLocallyReadNotificationIds([]);
+    }
+  }, [notificationReadStorageKey]);
+
+  useEffect(() => {
+    notificationPanelOpenRef.current = open;
+  }, [open]);
+
+  useEffect(() => {
+    const handleDocumentPointerDown = (event: MouseEvent) => {
+      if (!notificationPanelRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    if (open) {
+      document.addEventListener('mousedown', handleDocumentPointerDown);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleDocumentPointerDown);
+    };
+  }, [open]);
+
+  const isNotificationRead = (notification: any) =>
+    notification?.is_read === 1 ||
+    notification?.is_read === true ||
+    notification?.is_read === '1' ||
+    locallyReadNotificationIds.includes(notification?.id);
+
+  const applyLocalReadState = (items: any[]) =>
+    items.map(notification => (
+      locallyReadNotificationIds.includes(notification.id)
+        ? { ...notification, is_read: 1 }
+        : notification
+    ));
+
+  const fetchNotifications = async () => {
+    if (!user) {
+      setNotifications([]);
+      return [];
+    }
+
+    try {
+      const res = await fetch('/api/notifications', { credentials: 'include', cache: 'no-store' });
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        const mergedNotifications = applyLocalReadState(data);
+        setNotifications(mergedNotifications);
+        return mergedNotifications;
+      }
+      return [];
+    } catch {
+      // Preserve the current list if a background refresh fails.
+      return [];
+    }
+  };
+
+  const markNotificationsAsRead = async (sourceNotifications?: any[]) => {
+    const items = sourceNotifications || notifications;
+    const unreadIds = items
+      .filter((notification: any) => !isNotificationRead(notification))
+      .map((notification: any) => notification.id)
+      .filter((id: any) => Number.isInteger(id) && id > 0);
+
+    if (!user || unreadIds.length === 0) return;
+
+    const nextLocallyReadIds = Array.from(new Set([...locallyReadNotificationIds, ...unreadIds]));
+    persistLocallyReadNotificationIds(nextLocallyReadIds);
+    setNotifications(currentNotifications =>
+      currentNotifications.map(notification => (
+        unreadIds.includes(notification.id)
+          ? { ...notification, is_read: 1 }
+          : notification
+      ))
+    );
+
+    try {
+      const res = await fetch('/api/notifications/read-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ notificationIds: unreadIds }),
+      });
+      if (!res.ok) return;
+    } catch {
+      // Keep the local read state so the badge stays cleared for the current user session.
+    }
+  };
+
+  const refreshNotifications = async () => {
+    if (!user) return;
+
+    setIsRefreshingNotifications(true);
+    try {
+      const items = await fetchNotifications();
+      if (open && items.length > 0) {
+        await markNotificationsAsRead(items);
+      }
+    } finally {
+      setIsRefreshingNotifications(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+    const syncNotifications = async () => {
+      const items = await fetchNotifications();
+      if (notificationPanelOpenRef.current && items.length > 0) {
+        await markNotificationsAsRead(items);
+      }
+    };
+
+    syncNotifications();
+    const interval = window.setInterval(syncNotifications, 10000);
     return () => window.clearInterval(interval);
-  }, [user?.role, user?.name]);
+  }, [user?.id, user?.role, user?.name]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    refreshNotifications();
+  }, [open]);
+
+  const unreadCount = notifications.filter((notification: any) => !isNotificationRead(notification)).length;
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 sticky top-0 z-10">
       <h2 className="text-lg font-bold text-slate-800">{title}</h2>
       <div className="flex items-center gap-4">
-        <div className="relative">
+        <div ref={notificationPanelRef} className="relative">
           <button
-            onClick={() => {
-              const nextOpen = !open;
-              setOpen(nextOpen);
-              if (nextOpen) fetchNotifications();
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpen(currentOpen => !currentOpen);
             }}
+            type="button"
             className="p-2 text-slate-400 hover:text-slate-600 relative"
             title="Notifications"
           >
             <Bell size={20} />
-            {notifications.length > 0 && (
+            {unreadCount > 0 && (
               <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 bg-rose-500 text-white text-[10px] font-bold rounded-full border-2 border-white flex items-center justify-center">
-                {notifications.length > 9 ? '9+' : notifications.length}
+                {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}
           </button>
@@ -348,11 +492,19 @@ function Header({ title }: { title: string }) {
             <div className="absolute right-0 top-12 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-50 overflow-hidden">
               <div className="p-3 border-b border-slate-100 flex items-center justify-between">
                 <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Notifications</p>
-                <button onClick={fetchNotifications} className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 uppercase tracking-widest">Refresh</button>
+                <button
+                  onClick={async () => {
+                    await refreshNotifications();
+                  }}
+                  type="button"
+                  className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 uppercase tracking-widest"
+                >
+                  {isRefreshingNotifications ? 'Refreshing...' : 'Refresh'}
+                </button>
               </div>
               <div className="max-h-80 overflow-y-auto">
                 {notifications.slice(0, 8).map(notification => (
-                  <div key={notification.id} className="p-3 border-b border-slate-50">
+                  <div key={notification.id} className={cn("p-3 border-b border-slate-50", !isNotificationRead(notification) && "bg-emerald-50/40")}>
                     <p className="text-sm font-semibold text-slate-700">{notification.title}</p>
                     <p className="text-xs text-slate-500 mt-1">{notification.message}</p>
                   </div>
@@ -2906,7 +3058,7 @@ function SchedulingManagement() {
       - faculty (the teacher's name)
       - room (the room number, e.g., "322")
       - day_of_week (Full name: Monday, Tuesday, etc.)
-      - start_time (24h format HH:mm, e.g., "09:00")
+      - start_time (24h format HH:mm, e.g., "09:00") 
       - end_time (24h format HH:mm, e.g., "09:55")
       - student_count (estimate or null)
       
@@ -3179,6 +3331,65 @@ function BookingManagement() {
     const unit = searchCriteria.durationUnit === 'weeks' ? 'week' : 'day';
     return `${count} ${unit}${count === 1 ? '' : 's'} (${searchCriteria.time} - ${bookingEndTime} each day)`;
   };
+  const getBookingItems = (booking: any) => booking.bookingItems || [booking];
+  function getBookingRoomNumber(booking: any) {
+    return booking.room_numbers?.join(', ') || booking.room_number || rooms.find(room => room.id == booking.room_id)?.room_number || 'Not selected';
+  }
+  const groupedBookings = useMemo(() => {
+    const groups = new Map<string, any[]>();
+
+    myBookings.forEach((booking: any) => {
+      const key = booking.request_group_id || `single-${booking.id}`;
+      const existing = groups.get(key) || [];
+      existing.push(booking);
+      groups.set(key, existing);
+    });
+
+    return Array.from(groups.entries()).map(([key, group]) => {
+      const items = [...group].sort((a, b) => {
+        const dateCompare = (a.date || '').localeCompare(b.date || '');
+        if (dateCompare !== 0) return dateCompare;
+        return (a.start_time || '').localeCompare(b.start_time || '');
+      });
+      const primary = items[0];
+      const roomNumbers = Array.from(new Set(items.map(item => getBookingRoomNumber(item)).filter(Boolean)));
+      const dates = Array.from(new Set(items.map(item => item.date).filter(Boolean)));
+      const statuses = Array.from(new Set(items.map(item => item.status).filter(Boolean)));
+
+      return {
+        ...primary,
+        id: primary.id,
+        request_group_id: key.startsWith('single-') ? null : key,
+        bookingItems: items,
+        room_numbers: roomNumbers,
+        booking_dates: dates,
+        grouped_count: items.length,
+        grouped_room_count: roomNumbers.length,
+        room_number: roomNumbers.join(', '),
+        status: statuses.length === 1 ? statuses[0] : primary.status,
+      };
+    });
+  }, [myBookings]);
+  const getBookingDateLabel = (booking: any) => {
+    const dates = booking.booking_dates || [booking.date];
+    if (!dates.length) return 'Date not set';
+    if (dates.length === 1) return dates[0];
+
+    const sortedDates = [...dates].sort();
+    const isConsecutive = sortedDates.every((date: string, index: number) => {
+      if (index === 0) return true;
+      const previous = new Date(`${sortedDates[index - 1]}T00:00:00`);
+      const current = new Date(`${date}T00:00:00`);
+      return Math.round((current.getTime() - previous.getTime()) / 86400000) === 1;
+    });
+
+    if (isConsecutive) {
+      return `${sortedDates[0]} to ${sortedDates[sortedDates.length - 1]}`;
+    }
+
+    return `${sortedDates[0]} +${sortedDates.length - 1} more date${sortedDates.length > 2 ? 's' : ''}`;
+  };
+  const getBookingTimeLabel = (booking: any) => `${booking.start_time} - ${booking.end_time}`;
   const selectedBuilding = buildings.find(b => b.id == searchCriteria.buildingId);
   const selectedBuildingBlocks = blocks.filter(block => block.building_id == searchCriteria.buildingId);
   const visibleBlocks = selectedBuilding ? selectedBuildingBlocks.filter(block => !isImplicitBuildingBlock(block, selectedBuilding)) : [];
@@ -3203,8 +3414,6 @@ function BookingManagement() {
     const blockLabel = block && building && !isImplicitBuildingBlock(block, building) ? ` - ${block.name}` : '';
     return `${building?.name || 'Building not set'}${blockLabel} - ${floor ? getFloorName(floor.floor_number) : 'Floor not set'}`;
   };
-  const getBookingRoomNumber = (booking: any) =>
-    booking.room_number || rooms.find(room => room.id == booking.room_id)?.room_number || 'Not selected';
   const getRoomEquipment = (roomId: number) => equipment.filter(item => item.room_id === roomId).map(item => item.name).filter(Boolean);
   const filterAndSortRooms = (roomList: any[]) => {
     const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
@@ -3227,10 +3436,12 @@ function BookingManagement() {
     });
   };
   const getDisplayStatus = (booking: any) => {
-    const bookingEnd = new Date(`${booking.date}T${booking.end_time || booking.start_time || '00:00'}`);
+    const bookingDates = booking.booking_dates || [booking.date];
+    const lastDate = [...bookingDates].filter(Boolean).sort().at(-1) || booking.date;
+    const bookingEnd = new Date(`${lastDate}T${booking.end_time || booking.start_time || '00:00'}`);
     return booking.status === 'Approved' && bookingEnd.getTime() < Date.now() ? 'Past' : booking.status || 'Pending';
   };
-  const filteredBookings = myBookings.filter(booking => {
+  const filteredBookings = groupedBookings.filter(booking => {
     const displayStatus = getDisplayStatus(booking);
     if (user?.role === 'HOD') {
       const bookingDepartmentName = booking.department_name || departments.find(department => department.id === booking.department_id)?.name;
@@ -3239,7 +3450,7 @@ function BookingManagement() {
     if (statusTab === 'Active' && displayStatus === 'Past') return false;
     if (statusTab !== 'Active' && displayStatus !== statusTab) return false;
     const query = bookingSearch.toLowerCase();
-    return !query || [booking.event_name, getBookingRoomNumber(booking), booking.faculty_name, booking.date, displayStatus]
+    return !query || [booking.event_name, getBookingRoomNumber(booking), booking.faculty_name, getBookingDateLabel(booking), displayStatus]
       .some(value => value?.toString().toLowerCase().includes(query));
   });
 
@@ -3346,6 +3557,9 @@ function BookingManagement() {
         return formatLocalDate(bookingDate);
       })
       : getBookingDates();
+    const requestGroupId = bookingDates.length > 1 || bookingModal.rooms.length > 1
+      ? `REQ-GROUP-${Date.now()}`
+      : null;
     const errors: string[] = [];
 
     for (let dateIndex = 0; dateIndex < bookingDates.length; dateIndex += 1) {
@@ -3353,9 +3567,10 @@ function BookingManagement() {
       for (const room of bookingModal.rooms) {
         const payload = {
           request_id: `REQ-${Date.now()}-${dateIndex}-${room.id}`,
+          request_group_id: requestGroupId,
           faculty_name: user?.name || 'Unknown',
           department_id: bookingForm.departmentId || null,
-          event_name: bookingModal.combined ? `${bookingForm.eventName.trim()} (Room ${room.room_number})` : bookingForm.eventName.trim(),
+          event_name: bookingForm.eventName.trim(),
           purpose: bookingForm.purpose.trim(),
           notes: bookingForm.notes.trim(),
           student_count: parseInt(searchCriteria.members, 10),
@@ -3382,19 +3597,36 @@ function BookingManagement() {
     setBookingModal(null);
     await fetchMyBookings();
     await handleSearch({ preventDefault: () => {} } as any);
-    setBookingMessage(errors.length ? { type: 'error', text: errors.join(' ') } : { type: 'success', text: status === 'Approved' ? 'Room booked successfully.' : 'Booking request submitted for approval.' });
+    setBookingMessage(errors.length
+      ? { type: 'error', text: errors.join(' ') }
+      : {
+          type: 'success',
+          text: status === 'Approved'
+            ? 'Room booking saved successfully.'
+            : requestGroupId
+              ? 'Booking request submitted as a single grouped request.'
+              : 'Booking request submitted for approval.'
+        });
   };
 
   const updateBookingStatus = async (booking: any, status: string) => {
-    const res = await fetch(`/api/bookings/${booking.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-      credentials: 'include'
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      setBookingMessage({ type: 'error', text: err.error || 'Failed to update booking.' });
+    const bookingItems = getBookingItems(booking);
+    const errors: string[] = [];
+
+    for (const item of bookingItems) {
+      const res = await fetch(`/api/bookings/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+        credentials: 'include'
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        errors.push(err.error || `Failed to update booking for ${getBookingRoomNumber(item)} on ${item.date}.`);
+      }
+    }
+    if (errors.length) {
+      setBookingMessage({ type: 'error', text: errors.join(' ') });
       return;
     }
     setBookingMessage({
@@ -3410,13 +3642,21 @@ function BookingManagement() {
 
   const deleteBookingRequest = async (booking: any) => {
     if (!confirm(`Delete request "${booking.event_name || 'room request'}"? This cannot be undone.`)) return;
-    const res = await fetch(`/api/bookings/${booking.id}`, {
-      method: 'DELETE',
-      credentials: 'include'
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      setBookingMessage({ type: 'error', text: err.error || 'Failed to delete request.' });
+    const bookingItems = getBookingItems(booking);
+    const errors: string[] = [];
+
+    for (const item of bookingItems) {
+      const res = await fetch(`/api/bookings/${item.id}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        errors.push(err.error || `Failed to delete request for ${getBookingRoomNumber(item)} on ${item.date}.`);
+      }
+    }
+    if (errors.length) {
+      setBookingMessage({ type: 'error', text: errors.join(' ') });
       return;
     }
     setBookingMessage({ type: 'success', text: 'Request deleted successfully.' });
@@ -3428,8 +3668,8 @@ function BookingManagement() {
       Event: booking.event_name,
       Faculty: booking.faculty_name,
       Room: getBookingRoomNumber(booking),
-      Date: booking.date,
-      Time: `${booking.start_time} - ${booking.end_time}`,
+      Date: getBookingDateLabel(booking),
+      Time: getBookingTimeLabel(booking),
       Status: getDisplayStatus(booking),
       Purpose: booking.purpose || '',
       Notes: booking.notes || ''
@@ -3789,7 +4029,7 @@ function BookingManagement() {
               {filteredBookings.map(booking => {
                 const displayStatus = getDisplayStatus(booking);
                 return (
-                <tr key={booking.id} className="border-b border-slate-50 hover:bg-slate-50 transition-all">
+                <tr key={booking.request_group_id || booking.id} className="border-b border-slate-50 hover:bg-slate-50 transition-all">
                   <td className="py-4 px-4">
                     <p className="font-bold text-slate-800">{booking.event_name}</p>
                     <p className="text-xs text-slate-500">{booking.faculty_name}</p>
@@ -3797,8 +4037,11 @@ function BookingManagement() {
                   </td>
                   <td className="py-4 px-4 font-medium text-slate-700">{getBookingRoomNumber(booking)}</td>
                   <td className="py-4 px-4">
-                    <p className="text-sm text-slate-700">{booking.date}</p>
-                    <p className="text-xs text-slate-500">{booking.start_time} - {booking.end_time}</p>
+                    <p className="text-sm text-slate-700">{getBookingDateLabel(booking)}</p>
+                    <p className="text-xs text-slate-500">{getBookingTimeLabel(booking)}</p>
+                    {booking.grouped_count > 1 && (
+                      <p className="text-xs text-slate-400">{booking.grouped_count} booking entries in this request</p>
+                    )}
                   </td>
                   <td className="py-4 px-4">
                     <span className={cn(
@@ -3838,7 +4081,7 @@ function BookingManagement() {
                         <button onClick={() => updateBookingStatus(booking, 'Pending')} className="px-2 py-1 bg-orange-50 text-orange-700 rounded text-xs font-bold">Reopen Request</button>
                       )}
                       {displayStatus === 'Past' && (
-                        <button onClick={() => openBookingModal([{ id: booking.room_id, room_number: getBookingRoomNumber(booking), room_type: booking.room_type }])} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Book Again</button>
+                        <button onClick={() => openBookingModal(getBookingItems(booking).map((item: any) => ({ id: item.room_id, room_number: getBookingRoomNumber(item), room_type: item.room_type })), booking.grouped_room_count > 1)} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Book Again</button>
                       )}
                       <button onClick={() => deleteBookingRequest(booking)} className="px-2 py-1 bg-rose-50 text-rose-700 rounded text-xs font-bold">Delete</button>
                     </div>
@@ -3914,7 +4157,7 @@ function BookingManagement() {
                     )}
                   </>
                 ) : (
-                  <p className="text-sm font-bold text-slate-700">This creates bookings for every covered date.</p>
+                  <p className="text-sm font-bold text-slate-700">This creates one grouped request that covers every selected date.</p>
                 )}
                 <p className="text-xs text-slate-500">{canApproveBookings ? 'This booking will be approved immediately.' : 'This booking will be submitted as pending.'}</p>
               </div>
@@ -4512,6 +4755,7 @@ function AnalyticsDashboard() {
   const approvedRequests = filteredBookings.filter(item => item.status === 'Approved').length;
   const maintenanceRisks = filteredRoomReports.filter((item: any) => item.maintenanceIssues > 0).length;
   const unmappedRooms = filteredRoomReports.filter((item: any) => item.department === 'Unmapped').length;
+  const totalRiskRooms = filteredRoomReports.filter((item: any) => item.maintenanceIssues > 0 || item.department === 'Unmapped').length;
   const hourBuckets = filteredBookings.reduce((acc: Record<string, number>, booking) => {
     const hour = booking.start_time?.slice(0, 2);
     if (!hour) return acc;
@@ -4649,8 +4893,8 @@ function AnalyticsDashboard() {
             <div className="p-2 bg-rose-50 rounded-lg text-rose-600"><AlertTriangle size={20} /></div>
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Risks</span>
           </div>
-          <p className="text-3xl font-bold text-slate-800">{maintenanceRisks}</p>
-          <p className="text-xs text-slate-500 mt-2">{unmappedRooms} unmapped rooms</p>
+          <p className="text-3xl font-bold text-slate-800">{totalRiskRooms}</p>
+          <p className="text-xs text-slate-500 mt-2">{maintenanceRisks} maintenance risks, {unmappedRooms} unmapped rooms</p>
         </div>
       </div>
 
@@ -4781,6 +5025,7 @@ function ReportGeneration() {
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
   const [loading, setLoading] = useState(true);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
+  const [selectedSchool, setSelectedSchool] = useState<any>(null);
   const [filters, setFilters] = useState({
     reportType: 'room_utilization',
     dateFrom: '',
@@ -4932,6 +5177,19 @@ function ReportGeneration() {
   ].filter(Boolean))).sort();
   const flagOptions = Array.from(new Set(roomReports.flatMap((room: any) => room.flags || []))).sort();
   const bookingStatusOptions = ['Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected'];
+  const schoolSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.school).filter(Boolean))).map((school) => {
+    const schoolRooms = filteredRoomReports.filter((room: any) => room.school === school);
+    const schoolDepartments = Array.from(new Set(schoolRooms.map((room: any) => room.department).filter((department: string) => department && department !== 'Unmapped')));
+
+    return {
+      name: school,
+      roomCount: schoolRooms.length,
+      deptCount: schoolDepartments.length,
+      avgUtilization: Math.round(schoolRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (schoolRooms.length || 1)),
+      totalCapacity: schoolRooms.reduce((acc: number, room: any) => acc + Number(room.capacity || 0), 0),
+      unmappedRooms: schoolRooms.filter((room: any) => room.department === 'Unmapped').length,
+    };
+  }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
   const buildingSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.building))).map(building => {
     const buildingRooms = filteredRoomReports.filter((room: any) => room.building === building);
     return {
@@ -4979,6 +5237,57 @@ function ReportGeneration() {
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Utilization Report');
     XLSX.writeFile(workbook, 'utilization-report.xlsx');
   };
+  const exportSchoolSummaryReport = () => {
+    const worksheet = XLSX.utils.json_to_sheet(schoolSummary.map((school: any) => ({
+      School: school.name,
+      Departments: school.deptCount,
+      Rooms: school.roomCount,
+      'Total Capacity': school.totalCapacity,
+      'Avg Utilization': `${school.avgUtilization}%`,
+      'Unmapped Rooms': school.unmappedRooms,
+    })));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'School Summary');
+    XLSX.writeFile(workbook, 'school-utilization-summary.xlsx');
+  };
+  const exportRawUsageData = () => {
+    const worksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
+      Room: room.room_number,
+      Building: room.building,
+      Block: room.block || '',
+      Floor: getFloorName(room.floor_number),
+      Department: room.department,
+      School: room.school,
+      Type: room.room_type,
+      Capacity: room.capacity,
+      Status: room.status,
+      Utilization: room.utilization,
+      ScheduledHours: room.scheduledHours,
+      BookedHours: room.bookedHours,
+      MaintenanceIssues: room.maintenanceIssues,
+      BookingStatuses: (room.bookingStatuses || []).join(', '),
+      BookingDates: (room.bookingDates || []).join(', '),
+      Flags: (room.flags || []).join(', '),
+    })));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Raw Usage Data');
+    XLSX.writeFile(workbook, 'raw-usage-data.xlsx');
+  };
+  const selectedSchoolRooms = selectedSchool
+    ? filteredRoomReports.filter((room: any) => room.school === selectedSchool.name)
+    : [];
+  const selectedSchoolDepartments = selectedSchool
+    ? Array.from(new Set(selectedSchoolRooms.map((room: any) => room.department).filter(Boolean))).map((department) => {
+        const departmentRooms = selectedSchoolRooms.filter((room: any) => room.department === department);
+        return {
+          name: department,
+          roomCount: departmentRooms.length,
+          avgUtilization: Math.round(departmentRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (departmentRooms.length || 1)),
+          totalCapacity: departmentRooms.reduce((acc: number, room: any) => acc + Number(room.capacity || 0), 0),
+        };
+      }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization)
+    : [];
+  const selectedSchoolTopRooms = [...selectedSchoolRooms].sort((a: any, b: any) => b.utilization - a.utilization).slice(0, 5);
 
   return (
     <div className="space-y-8">
@@ -5083,7 +5392,7 @@ function ReportGeneration() {
                 School Utilization Overview
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {utilizationData?.schoolReports.map((school: any) => (
+                {schoolSummary.map((school: any) => (
                   <div key={school.name} className="p-6 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-emerald-200 transition-all">
                     <div className="flex justify-between items-center mb-4">
                       <span className="text-sm font-bold text-slate-700">{school.name}</span>
@@ -5107,10 +5416,21 @@ function ReportGeneration() {
                     </div>
                     <div className="flex justify-between items-center mt-4">
                       <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">{school.deptCount} Departments</p>
-                      <button className="text-[10px] font-bold text-emerald-600 hover:underline uppercase tracking-widest">Details</button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSchool(school)}
+                        className="text-[10px] font-bold text-emerald-600 hover:underline uppercase tracking-widest"
+                      >
+                        Details
+                      </button>
                     </div>
                   </div>
                 ))}
+                {schoolSummary.length === 0 && (
+                  <div className="md:col-span-2 p-8 text-center text-sm text-slate-400 italic border border-dashed border-slate-200 rounded-2xl">
+                    No school utilization data matches the selected filters.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -5328,7 +5648,7 @@ function ReportGeneration() {
             <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
               <h3 className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">Export Reports</h3>
               <div className="space-y-3">
-                <button className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
+                <button onClick={exportSchoolSummaryReport} className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
                   <div className="flex items-center gap-4">
                     <div className="p-2 bg-white rounded-lg shadow-sm">
                       <FileText className="text-rose-500" size={20} />
@@ -5337,7 +5657,7 @@ function ReportGeneration() {
                   </div>
                   <ChevronRight size={18} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
                 </button>
-                <button className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
+                <button onClick={exportRawUsageData} className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
                   <div className="flex items-center gap-4">
                     <div className="p-2 bg-white rounded-lg shadow-sm">
                       <FileSpreadsheet className="text-emerald-500" size={20} />
@@ -5346,6 +5666,97 @@ function ReportGeneration() {
                   </div>
                   <ChevronRight size={18} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedSchool && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800">{selectedSchool.name}</h3>
+                <p className="text-sm text-slate-500">
+                  {selectedSchool.roomCount} rooms, {selectedSchool.deptCount} departments, {selectedSchool.avgUtilization}% average utilization
+                </p>
+              </div>
+              <button type="button" onClick={() => setSelectedSchool(null)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6 space-y-6 overflow-y-auto max-h-[calc(90vh-88px)]">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Departments</p>
+                  <p className="text-2xl font-bold text-slate-800">{selectedSchool.deptCount}</p>
+                </div>
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</p>
+                  <p className="text-2xl font-bold text-slate-800">{selectedSchool.roomCount}</p>
+                </div>
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Capacity</p>
+                  <p className="text-2xl font-bold text-slate-800">{selectedSchool.totalCapacity}</p>
+                </div>
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Unmapped Rooms</p>
+                  <p className="text-2xl font-bold text-slate-800">{selectedSchool.unmappedRooms}</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5">
+                <h4 className="text-sm font-bold text-slate-800 mb-4">Department Breakdown</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200">
+                        <th className="pb-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                        <th className="pb-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Capacity</th>
+                        <th className="pb-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {selectedSchoolDepartments.map((department: any) => (
+                        <tr key={department.name}>
+                          <td className="py-3 text-sm font-semibold text-slate-700">{department.name}</td>
+                          <td className="py-3 text-sm text-slate-500">{department.roomCount}</td>
+                          <td className="py-3 text-sm text-slate-500">{department.totalCapacity}</td>
+                          <td className="py-3 text-sm font-bold text-slate-700 text-right">{department.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                      {selectedSchoolDepartments.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="py-6 text-center text-sm text-slate-400 italic">No department data available for this school.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5">
+                <h4 className="text-sm font-bold text-slate-800 mb-4">Top Rooms</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {selectedSchoolTopRooms.map((room: any) => (
+                    <div key={`${room.building}-${room.room_number}`} className="p-4 bg-white rounded-xl border border-slate-100">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-slate-800">Room {room.room_number}</p>
+                          <p className="text-xs text-slate-500">{room.department} • {room.room_type}</p>
+                        </div>
+                        <span className="text-xs font-bold px-3 py-1 rounded-lg bg-emerald-50 text-emerald-600">
+                          {room.utilization}%
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {selectedSchoolTopRooms.length === 0 && (
+                    <p className="text-sm text-slate-400 italic">No room utilization data is available for this school.</p>
+                  )}
+                </div>
               </div>
             </div>
           </div>
