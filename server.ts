@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
-import path from "path";
+import path, { dirname } from "path";
 import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
@@ -9,10 +9,10 @@ import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = dirname(__filename);
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
