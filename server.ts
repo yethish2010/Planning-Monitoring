@@ -1150,12 +1150,11 @@ app.get("/api/events/search-rooms", authenticate, (req, res) => {
 app.get("/api/reports/utilization", authenticate, (req, res) => {
   try {
     const rooms = db.prepare(`
-      SELECT r.*, bld.name as building_name, b.name as block_name, f.floor_number, da.department_id
+      SELECT r.*, bld.name as building_name, b.name as block_name, f.floor_number
       FROM rooms r
       JOIN floors f ON r.floor_id = f.id
       JOIN blocks b ON f.block_id = b.id
       JOIN buildings bld ON b.building_id = bld.id
-      LEFT JOIN department_allocations da ON r.id = da.room_id
     `).all() as any[];
     const schedules = db.prepare("SELECT * FROM schedules").all() as any[];
     const bookings = db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
@@ -1163,6 +1162,11 @@ app.get("/api/reports/utilization", authenticate, (req, res) => {
     const maintenance = db.prepare("SELECT * FROM maintenance").all() as any[];
     const departments = db.prepare("SELECT * FROM departments").all() as any[];
     const schools = db.prepare("SELECT * FROM schools").all() as any[];
+    const allocations = db.prepare(`
+      SELECT room_id, department_id, school_id, id
+      FROM department_allocations
+      ORDER BY id DESC
+    `).all() as any[];
 
     const calculateHours = (start: string, end: string) => {
       if (!start || !end) return 0;
@@ -1171,12 +1175,29 @@ app.get("/api/reports/utilization", authenticate, (req, res) => {
       return (h2 + m2 / 60) - (h1 + m1 / 60);
     };
 
+    const latestAllocationByRoom = new Map<number, any>();
+    allocations.forEach((allocation) => {
+      if (!latestAllocationByRoom.has(allocation.room_id)) {
+        latestAllocationByRoom.set(allocation.room_id, allocation);
+      }
+    });
+
     const reports = rooms.map(room => {
       const roomSchedules = schedules.filter(s => s.room_id === room.id);
       const roomBookings = bookings.filter(b => b.room_id === room.id);
       const allRoomBookings = allBookings.filter(b => b.room_id === room.id);
-      const department = departments.find(dept => dept.id === room.department_id);
-      const school = schools.find(item => item.id === department?.school_id);
+      const allocation = latestAllocationByRoom.get(room.id);
+      const inferredDepartmentCounts = new Map<number, number>();
+      [...roomSchedules, ...allRoomBookings].forEach((entry: any) => {
+        if (!entry.department_id) return;
+        inferredDepartmentCounts.set(entry.department_id, (inferredDepartmentCounts.get(entry.department_id) || 0) + 1);
+      });
+      const inferredDepartmentId = Array.from(inferredDepartmentCounts.entries())
+        .sort((a, b) => b[1] - a[1])[0]?.[0];
+      const resolvedDepartmentId = allocation?.department_id || inferredDepartmentId || null;
+      const department = departments.find(dept => dept.id === resolvedDepartmentId);
+      const resolvedSchoolId = allocation?.school_id || department?.school_id || null;
+      const school = schools.find(item => item.id === resolvedSchoolId);
       const maintenanceIssues = maintenance.filter(item => item.room_id === room.id && item.status !== "Completed").length;
 
       const scheduledHours = roomSchedules.reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
@@ -1195,7 +1216,7 @@ app.get("/api/reports/utilization", authenticate, (req, res) => {
         building: room.building_name,
         block: room.block_name,
         floor_number: room.floor_number,
-        department_id: room.department_id,
+        department_id: resolvedDepartmentId,
         department: department?.name || "Unmapped",
         school: school?.name || "Unmapped",
         room_type: room.room_type,

@@ -1086,17 +1086,21 @@ function DashboardHome() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [utilizationTrend, setUtilizationTrend] = useState<any[]>([]);
+  const [schoolUsage, setSchoolUsage] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [sRes, uRes] = await Promise.all([
+        const [sRes, uRes, reportRes] = await Promise.all([
           fetch('/api/dashboard/stats', { credentials: 'include' }),
-          fetch('/api/analytics/utilization-trends', { credentials: 'include' })
+          fetch('/api/analytics/utilization-trends', { credentials: 'include' }),
+          fetch('/api/reports/utilization', { credentials: 'include' })
         ]);
         setStats(await sRes.json());
         const utilizationData = await uRes.json();
         setUtilizationTrend(Array.isArray(utilizationData) ? utilizationData : []);
+        const reportData = await reportRes.json();
+        setSchoolUsage(Array.isArray(reportData?.schoolReports) ? reportData.schoolReports : []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -1105,6 +1109,46 @@ function DashboardHome() {
     };
     fetchData();
   }, []);
+
+  const peakUtilization = useMemo(() => {
+    if (!Array.isArray(utilizationTrend) || utilizationTrend.length === 0) return 0;
+    return utilizationTrend.reduce((peak: number, item: any) => Math.max(peak, Number(item?.utilization) || 0), 0);
+  }, [utilizationTrend]);
+
+  const schoolUsageItems = useMemo(() => {
+    const colorClasses = ['bg-emerald-500', 'bg-blue-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500'];
+    return (Array.isArray(schoolUsage) ? schoolUsage : [])
+      .filter((school: any) => school?.name)
+      .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))
+      .map((school: any, index: number) => ({
+        name: school.name,
+        value: Number(school.avgUtilization) || 0,
+        deptCount: Number(school.deptCount) || 0,
+        color: colorClasses[index % colorClasses.length],
+      }));
+  }, [schoolUsage]);
+
+  const insightMessage = useMemo(() => {
+    const topSchool = schoolUsageItems[0];
+    if (!topSchool) {
+      return 'No school utilization data is available yet. Add room allocations, schedules, or approved bookings to populate live insights.';
+    }
+
+    const detailParts = [
+      `${topSchool.name} is currently at ${topSchool.value}% average utilization.`,
+      `${stats?.availableNow || 0} rooms are available right now.`,
+    ];
+
+    if ((stats?.pendingBookings || 0) > 0) {
+      detailParts.push(`${stats.pendingBookings} booking request${stats.pendingBookings === 1 ? '' : 's'} ${stats.pendingBookings === 1 ? 'is' : 'are'} still pending.`);
+    }
+
+    if ((stats?.equipmentIssues || 0) > 0) {
+      detailParts.push(`${stats.equipmentIssues} maintenance issue${stats.equipmentIssues === 1 ? '' : 's'} need attention.`);
+    }
+
+    return detailParts.join(' ');
+  }, [schoolUsageItems, stats]);
 
   const statCards = [
     { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50' },
@@ -1147,12 +1191,12 @@ function DashboardHome() {
           <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
             <div className="flex items-center justify-between mb-8">
               <div>
-                <h3 className="text-xl font-bold text-slate-800">Campus Utilization Trend</h3>
-                <p className="text-sm text-slate-500">Real-time monitoring of infrastructure demand</p>
+                <h3 className="text-xl font-bold text-slate-800">Top Room Utilization</h3>
+                <p className="text-sm text-slate-500">Live room usage based on schedules and approved bookings</p>
               </div>
               <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-xl border border-slate-100">
                 <Activity size={16} className="text-emerald-500" />
-                <span className="text-xs font-bold text-slate-600">Peak: 84%</span>
+                <span className="text-xs font-bold text-slate-600">Peak: {peakUtilization}%</span>
               </div>
             </div>
             <div className="h-80 w-full">
@@ -1237,7 +1281,7 @@ function DashboardHome() {
             </div>
             <h3 className="text-xl font-bold mb-4 relative z-10">AI Insights</h3>
             <p className="text-sm text-slate-400 leading-relaxed mb-6 relative z-10">
-              Infrastructure efficiency is up by 12% this week. Consider reallocating Block B rooms for the upcoming seminar.
+              {insightMessage}
             </p>
             <button className="w-full py-3 bg-emerald-500 text-white rounded-2xl font-bold text-sm hover:bg-emerald-600 transition-all relative z-10">
               View Analysis
@@ -1246,23 +1290,28 @@ function DashboardHome() {
 
           <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm">
             <h3 className="text-lg font-bold text-slate-800 mb-6">Usage by School</h3>
-            <div className="space-y-6">
-              {[
-                { name: 'School of Engineering', value: 85, color: 'bg-emerald-500' },
-                { name: 'School of Business', value: 62, color: 'bg-blue-500' },
-                { name: 'School of Design', value: 45, color: 'bg-amber-500' },
-              ].map(school => (
-                <div key={school.name} className="space-y-2">
-                  <div className="flex justify-between text-xs font-bold">
-                    <span className="text-slate-600">{school.name}</span>
-                    <span className="text-slate-900">{school.value}%</span>
+            {schoolUsageItems.length > 0 ? (
+              <div className="space-y-6">
+                {schoolUsageItems.map((school) => (
+                  <div key={school.name} className="space-y-2">
+                    <div className="flex justify-between gap-4 text-xs font-bold">
+                      <div className="min-w-0">
+                        <span className="block text-slate-600 truncate">{school.name}</span>
+                        <span className="block text-[10px] uppercase tracking-widest text-slate-400">
+                          {school.deptCount} department{school.deptCount === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <span className="text-slate-900">{school.value}%</span>
+                    </div>
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div className={cn("h-full rounded-full", school.color)} style={{ width: `${school.value}%` }} />
+                    </div>
                   </div>
-                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                    <div className={cn("h-full rounded-full", school.color)} style={{ width: `${school.value}%` }} />
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-slate-400 italic">No school utilization data is available yet.</div>
+            )}
           </div>
         </div>
       </div>
