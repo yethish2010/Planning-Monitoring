@@ -1032,6 +1032,13 @@ app.get("/api/rooms/vacant", authenticate, (req, res) => {
     return res.status(400).json({ error: "Date, time, and duration are required" });
   }
 
+  const minimumCapacity = members !== undefined
+    ? parseInt(members as string, 10)
+    : null;
+  if (members !== undefined && (!Number.isInteger(minimumCapacity) || minimumCapacity < 0)) {
+    return res.status(400).json({ error: "Members must be a valid non-negative number." });
+  }
+
   if (isPastDateTime(date as string, time as string)) {
     return res.status(400).json({ error: "Past search times are not allowed." });
   }
@@ -1048,11 +1055,9 @@ app.get("/api/rooms/vacant", authenticate, (req, res) => {
   const requestedEnd = `${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}`;
 
   // Find all rooms
-  let roomsQuery = "SELECT * FROM rooms WHERE status = 'Available'";
-  if (members) {
-    roomsQuery += ` AND capacity >= ${members}`;
-  }
-  const allRooms = db.prepare(roomsQuery).all() as any[];
+  const allRooms = minimumCapacity !== null
+    ? db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND capacity >= ?").all(minimumCapacity) as any[]
+    : db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
 
   // Filter out rooms that have schedules
   const busySchedules = db.prepare(`
@@ -1082,7 +1087,24 @@ app.get("/api/rooms/vacant", authenticate, (req, res) => {
 
 app.get("/api/events/search-rooms", authenticate, (req, res) => {
   const { date, startTime, endTime, strength } = req.query;
-  const targetStrength = parseInt(strength as string) || 0;
+
+  if (!date || !startTime || !endTime || !strength) {
+    return res.status(400).json({ error: "Date, start time, end time, and strength are required." });
+  }
+
+  if (isPastDateTime(date as string, startTime as string)) {
+    return res.status(400).json({ error: "Past event searches are not allowed." });
+  }
+
+  if ((startTime as string) >= (endTime as string)) {
+    return res.status(400).json({ error: "End time must be later than start time." });
+  }
+
+  const targetStrength = parseInt(strength as string, 10);
+  if (!Number.isInteger(targetStrength) || targetStrength <= 0) {
+    return res.status(400).json({ error: "Strength must be a valid positive number." });
+  }
+
   const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
 
   try {
