@@ -43,3 +43,15 @@ Recommended hosting for the current architecture:
 - A small VPS
 
 Static-only hosts such as GitHub Pages or Netlify are not suitable for this backend.
+
+## GitHub Pages
+
+This repository now includes a GitHub Pages workflow for publishing the frontend bundle only.
+To make `https://yethish2010.github.io/mbu-planning/` work correctly, configure these repository settings:
+
+1. In GitHub Pages settings, use `GitHub Actions` as the source.
+2. Add a repository variable named `VITE_API_BASE_URL` that points to your deployed backend, for example `https://your-api-host.example.com`.
+3. Add a repository secret named `VITE_GEMINI_API_KEY` if the frontend should use Gemini features in production.
+4. On the backend host, set `FRONTEND_ORIGIN=https://yethish2010.github.io` so cookie-based auth can work from the Pages domain.
+
+GitHub Pages will only host the frontend. The Express and SQLite backend still needs a real server host.

@@ -17,9 +17,12 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
+const isProduction = process.env.NODE_ENV === "production";
 const databasePath = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
   : path.join(process.cwd(), "campus.db");
+const normalizeOrigin = (value?: string | null) => value?.trim().replace(/\/+$/, "") || "";
+const FRONTEND_ORIGIN = normalizeOrigin(process.env.FRONTEND_ORIGIN);
 
 const databaseDir = path.dirname(databasePath);
 if (!fs.existsSync(databaseDir)) {
@@ -372,6 +375,29 @@ const markAllNotificationsRead = (user: any, notificationIds?: number[]) => {
 
 app.use(express.json());
 app.use(cookieParser());
+app.use((req, res, next) => {
+  const requestOrigin = normalizeOrigin(typeof req.headers.origin === "string" ? req.headers.origin : "");
+
+  if (FRONTEND_ORIGIN && requestOrigin === FRONTEND_ORIGIN) {
+    res.header("Access-Control-Allow-Origin", requestOrigin);
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.header("Vary", "Origin");
+
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+  }
+
+  next();
+});
+
+const getAuthCookieOptions = () => ({
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
+});
 
 // Auth Middleware
 const authenticate = (req: any, res: any, next: any) => {
@@ -409,16 +435,12 @@ app.post("/api/auth/login", (req, res) => {
   }
   const sessionUser = getUserSessionPayload(user);
   const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
-  res.cookie("token", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  });
+  res.cookie("token", token, getAuthCookieOptions());
   res.json({ user: sessionUser });
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie("token");
+  res.clearCookie("token", getAuthCookieOptions());
   res.json({ success: true });
 });
 
@@ -466,11 +488,7 @@ app.post("/api/auth/change-password", authenticate, (req: any, res) => {
   const user: any = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
   const sessionUser = getUserSessionPayload(user);
   const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
-  res.cookie("token", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  });
+  res.cookie("token", token, getAuthCookieOptions());
   res.json({ user: sessionUser });
 });
 

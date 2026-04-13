@@ -1,5 +1,5 @@
 import { useState, useEffect, createContext, useContext, useRef, useMemo, Fragment, Component } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, Users, Building2, Layers, DoorOpen, 
   Wrench, Calendar, Clock, BookOpen, BrainCircuit, 
@@ -128,6 +128,11 @@ const formatLocalDate = (date: Date) => {
   const day = date.getDate().toString().padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
+
+const AppRouter = (((import.meta as any).env?.VITE_ROUTER_MODE || '').toString().toLowerCase() === 'hash'
+  || ((import.meta as any).env?.BASE_URL || '/') !== '/')
+  ? HashRouter
+  : BrowserRouter;
 
 // --- AUTH CONTEXT ---
 interface AuthContextType {
@@ -884,7 +889,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ErrorBoundary>
-        <Router>
+        <AppRouter>
           <ForcePasswordChangeModal />
           <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -1036,7 +1041,7 @@ export default function App() {
             </ProtectedRoute>
           } />
         </Routes>
-      </Router>
+      </AppRouter>
       </ErrorBoundary>
     </AuthProvider>
   );
