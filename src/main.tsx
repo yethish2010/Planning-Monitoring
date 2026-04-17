@@ -3,10 +3,14 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 
-const apiBaseUrl = ((import.meta as any).env?.VITE_API_BASE_URL || '')
+const configuredApiBaseUrl = ((import.meta as any).env?.VITE_API_BASE_URL || '')
   .toString()
   .trim()
   .replace(/\/+$/, '');
+const defaultApiBaseUrl = typeof window !== 'undefined' && window.location.hostname === 'yethish2010.github.io'
+  ? 'https://mbu-planning.vercel.app'
+  : '';
+const apiBaseUrl = configuredApiBaseUrl || defaultApiBaseUrl;
 
 if (apiBaseUrl && typeof window !== 'undefined') {
   const nativeFetch = window.fetch.bind(window);

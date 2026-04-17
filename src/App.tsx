@@ -140,30 +140,68 @@ interface AuthContextType {
   login: (userData: any) => void;
   logout: () => void;
   loading: boolean;
+  authServiceMessage: string;
+  clearAuthServiceMessage: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+const getAuthServiceMessage = (status?: number) => {
+  if (status === 404) {
+    return 'Authentication service is unavailable. Verify that the frontend is pointing to the deployed backend API.';
+  }
+
+  return 'Unable to reach the authentication service. Check the backend deployment and VITE_API_BASE_URL configuration.';
+};
+
+const readJsonResponse = async (res: Response) => {
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) return null;
+
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+};
+
 function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [authServiceMessage, setAuthServiceMessage] = useState('');
 
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' })
-      .then(res => res.json())
-      .then(data => {
-        if (data.user) setUser(data.user);
+      .then(async res => {
+        const data = await readJsonResponse(res);
+
+        if (res.ok && data?.user) {
+          setUser(data.user);
+          setAuthServiceMessage('');
+          return;
+        }
+
+        if (res.status !== 401) {
+          setAuthServiceMessage(getAuthServiceMessage(res.status));
+        }
+      })
+      .catch(() => {
+        setAuthServiceMessage(getAuthServiceMessage());
       })
       .finally(() => setLoading(false));
   }, []);
 
-  const login = (userData: any) => setUser(userData);
+  const login = (userData: any) => {
+    setUser(userData);
+    setAuthServiceMessage('');
+  };
   const logout = () => {
     fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).then(() => setUser(null));
   };
+  const clearAuthServiceMessage = () => setAuthServiceMessage('');
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, loading, authServiceMessage, clearAuthServiceMessage }}>
       {children}
     </AuthContext.Provider>
   );
@@ -551,22 +589,41 @@ function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const { login } = useAuth();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { login, authServiceMessage, clearAuthServiceMessage } = useAuth();
   const navigate = useNavigate();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    const data = await res.json();
-    if (data.user) {
-      login(data.user);
-      navigate('/');
-    } else {
-      setError(data.error);
+    setError('');
+    clearAuthServiceMessage();
+    setIsSubmitting(true);
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password })
+      });
+      const data = await readJsonResponse(res);
+
+      if (res.ok && data?.user) {
+        login(data.user);
+        navigate('/');
+        return;
+      }
+
+      if (res.status === 401) {
+        setError(data?.error || 'Invalid credentials');
+        return;
+      }
+
+      setError(data?.error || getAuthServiceMessage(res.status));
+    } catch {
+      setError(getAuthServiceMessage());
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -582,6 +639,12 @@ function LoginPage() {
         </div>
         
         <form onSubmit={handleLogin} className="p-8 space-y-6">
+          {authServiceMessage && !error && (
+            <div className="p-3 bg-amber-50 border border-amber-100 text-amber-700 text-sm rounded-lg flex items-center gap-2">
+              <Info size={16} />
+              {authServiceMessage}
+            </div>
+          )}
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-100 text-rose-600 text-sm rounded-lg flex items-center gap-2">
               <AlertTriangle size={16} />
@@ -639,9 +702,10 @@ function LoginPage() {
             </button>
             <button
               type="submit"
-              className="flex-1 px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-900/20 transition-all"
+              disabled={isSubmitting}
+              className="flex-1 px-6 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 shadow-lg shadow-slate-900/20 transition-all disabled:cursor-not-allowed disabled:opacity-70"
             >
-              Login
+              {isSubmitting ? 'Signing in...' : 'Login'}
             </button>
           </div>
         </form>

@@ -18,11 +18,34 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
 const isProduction = process.env.NODE_ENV === "production";
+const isVercelRuntime = process.env.VERCEL === "1";
+const defaultDatabasePath = isVercelRuntime
+  ? path.join("/tmp", "campus.db")
+  : path.join(process.cwd(), "campus.db");
 const databasePath = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
-  : path.join(process.cwd(), "campus.db");
-const normalizeOrigin = (value?: string | null) => value?.trim().replace(/\/+$/, "") || "";
-const FRONTEND_ORIGIN = normalizeOrigin(process.env.FRONTEND_ORIGIN);
+  : defaultDatabasePath;
+const normalizeOrigin = (value?: string | null) => {
+  const trimmed = value?.trim();
+  if (!trimmed) return "";
+
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return trimmed.replace(/\/+$/, "");
+  }
+};
+const allowedOrigins = new Set(
+  [
+    process.env.FRONTEND_ORIGIN,
+    process.env.APP_URL,
+    "https://yethish2010.github.io",
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ]
+    .map(normalizeOrigin)
+    .filter(Boolean)
+);
 
 const databaseDir = path.dirname(databasePath);
 if (!fs.existsSync(databaseDir)) {
@@ -378,7 +401,7 @@ app.use(cookieParser());
 app.use((req, res, next) => {
   const requestOrigin = normalizeOrigin(typeof req.headers.origin === "string" ? req.headers.origin : "");
 
-  if (FRONTEND_ORIGIN && requestOrigin === FRONTEND_ORIGIN) {
+  if (requestOrigin && allowedOrigins.has(requestOrigin)) {
     res.header("Access-Control-Allow-Origin", requestOrigin);
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -1500,4 +1523,12 @@ async function startServer() {
   launchServer();
 }
 
-startServer();
+const isDirectExecution = process.argv[1]
+  ? path.resolve(process.argv[1]) === __filename
+  : false;
+
+if (isDirectExecution) {
+  startServer();
+}
+
+export default app;

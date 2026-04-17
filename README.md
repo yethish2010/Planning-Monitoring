@@ -51,6 +51,7 @@ To make `https://yethish2010.github.io/mbu-planning/` work correctly, configure 
 
 1. In GitHub Pages settings, use `GitHub Actions` as the source.
 2. Add a repository variable named `VITE_API_BASE_URL` that points to your deployed backend, for example `https://your-api-host.example.com`.
+   If you use this repository's Vercel project as the backend, the frontend now defaults to `https://mbu-planning.vercel.app` when it is running on GitHub Pages.
 3. Add a repository secret named `VITE_GEMINI_API_KEY` if the frontend should use Gemini features in production.
 4. On the backend host, set `FRONTEND_ORIGIN=https://yethish2010.github.io` so cookie-based auth can work from the Pages domain.
 
