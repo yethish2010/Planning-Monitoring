@@ -5234,16 +5234,17 @@ function ReportGeneration() {
     }
   };
 
+  const roomReports = Array.isArray(utilizationData?.roomReports) ? utilizationData.roomReports : [];
+  const deptReports = Array.isArray(utilizationData?.deptReports) ? utilizationData.deptReports : [];
+
   const kpis = [
-    { label: 'Campus-wide RUR', value: `${Math.round(utilizationData?.roomReports.reduce((acc: any, r: any) => acc + r.utilization, 0) / (utilizationData?.roomReports.length || 1))}%`, trend: '+4%', status: 'Good' },
+    { label: 'Campus-wide RUR', value: `${Math.round(roomReports.reduce((acc: any, r: any) => acc + r.utilization, 0) / (roomReports.length || 1))}%`, trend: '+4%', status: 'Good' },
     { label: 'Avg Seat Occupancy', value: '52%', trend: '-2%', status: 'Low' },
     { label: 'Space Waste Index', value: '14%', trend: '-5%', status: 'Improving' },
     { label: 'Event Success Rate', value: '92%', trend: '+1%', status: 'Excellent' },
   ];
 
   if (loading) return <div className="p-8 text-center text-slate-400">Loading utilization data...</div>;
-
-  const roomReports = utilizationData?.roomReports || [];
   const dateMatches = (dates: string[] = []) => {
     if (!filters.dateFrom && !filters.dateTo) return true;
     return dates.some(date => {
@@ -5281,7 +5282,7 @@ function ReportGeneration() {
     .filter((floor: any) => floor !== undefined && floor !== null)))
     .sort((a: any, b: any) => Number(a) - Number(b));
   const departmentOptions = Array.from(new Set([
-    ...(utilizationData?.deptReports || []).map((department: any) => department.name),
+    ...deptReports.map((department: any) => department.name),
     ...roomReports.map((room: any) => room.department)
   ].filter(Boolean))).sort();
   const roomTypeOptions = Array.from(new Set([
@@ -5570,7 +5571,7 @@ function ReportGeneration() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {utilizationData?.deptReports.map((dept: any) => (
+                    {deptReports.map((dept: any) => (
                       <tr key={dept.name} className="hover:bg-slate-50/50 transition-colors group">
                         <td className="py-5 text-sm font-bold text-slate-700">{dept.name}</td>
                         <td className="py-5 text-sm text-slate-500">{dept.school}</td>

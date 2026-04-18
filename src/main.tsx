@@ -142,6 +142,7 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
   if (pathname === '/api/reports/utilization' && method === 'GET') {
     return createJsonResponse({
       schoolReports: [],
+      deptReports: [],
       roomReports: [],
       overallUtilization: 0,
     });
