@@ -993,6 +993,16 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     try {
       const existingItem = db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      if (tableName === "departments") {
+        const allocationCount = (db.prepare("SELECT COUNT(*) as count FROM department_allocations WHERE department_id = ?").get(req.params.id) as any)?.count || 0;
+        const scheduleCount = (db.prepare("SELECT COUNT(*) as count FROM schedules WHERE department_id = ?").get(req.params.id) as any)?.count || 0;
+        const bookingCount = (db.prepare("SELECT COUNT(*) as count FROM bookings WHERE department_id = ?").get(req.params.id) as any)?.count || 0;
+        if (allocationCount > 0 || scheduleCount > 0 || bookingCount > 0) {
+          return res.status(400).json({
+            error: `Cannot delete department. It has ${allocationCount} allocation(s), ${scheduleCount} schedule(s), and ${bookingCount} booking(s). Please delete these first or use cascade delete.`
+          });
+        }
+      }
       db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
       if (tableName === "bookings" && existingItem) {
         const actor = (req as any).user.name;
