@@ -11,6 +11,8 @@ const isGitHubPages = typeof window !== 'undefined' && window.location.hostname 
 const apiBaseUrl = configuredApiBaseUrl;
 
 const STATIC_SESSION_STORAGE_KEY = 'smart-campus-static-session';
+const STATIC_DB_STORAGE_KEY = 'smart-campus-static-db-v1';
+const STATIC_DB_COUNTER_STORAGE_KEY = 'smart-campus-static-db-counter-v1';
 const staticAdminUser = {
   id: 1,
   email: 'admin@smartcampus.ai',
@@ -32,6 +34,22 @@ const createJsonResponse = (payload: unknown, init?: ResponseInit) =>
     },
     ...init,
   });
+
+const STATIC_CRUD_TABLES = new Set([
+  'users',
+  'campuses',
+  'buildings',
+  'blocks',
+  'floors',
+  'rooms',
+  'schools',
+  'departments',
+  'department_allocations',
+  'equipment',
+  'schedules',
+  'bookings',
+  'maintenance',
+]);
 
 const getStoredStaticSession = () => {
   if (typeof window === 'undefined') return null;
@@ -56,6 +74,54 @@ const persistStaticSession = (user: typeof staticAdminUser | null) => {
   } catch {
     // Ignore storage errors in static demo mode.
   }
+};
+
+const getStoredStaticDb = () => {
+  if (typeof window === 'undefined') return {};
+
+  try {
+    const rawValue = window.localStorage.getItem(STATIC_DB_STORAGE_KEY);
+    const parsedValue = rawValue ? JSON.parse(rawValue) : {};
+    return parsedValue && typeof parsedValue === 'object' ? parsedValue : {};
+  } catch {
+    return {};
+  }
+};
+
+const persistStaticDb = (dbState: Record<string, any[]>) => {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(STATIC_DB_STORAGE_KEY, JSON.stringify(dbState));
+  } catch {
+    // Ignore storage errors in static demo mode.
+  }
+};
+
+const getNextStaticId = () => {
+  if (typeof window === 'undefined') return Date.now();
+
+  try {
+    const rawValue = window.localStorage.getItem(STATIC_DB_COUNTER_STORAGE_KEY);
+    const nextValue = (rawValue ? Number(rawValue) : 1) || 1;
+    window.localStorage.setItem(STATIC_DB_COUNTER_STORAGE_KEY, String(nextValue + 1));
+    return nextValue;
+  } catch {
+    return Date.now();
+  }
+};
+
+const getStaticCrudMatch = (pathname: string) => {
+  const segments = pathname.split('/').filter(Boolean);
+  if (segments[0] !== 'api') return null;
+
+  const tableName = segments[1];
+  if (!tableName || !STATIC_CRUD_TABLES.has(tableName)) return null;
+
+  return {
+    tableName,
+    idSegment: segments[2] || '',
+  };
 };
 
 const getRequestMethod = (input: RequestInfo | URL, init?: RequestInit) =>
@@ -89,6 +155,7 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
   const method = getRequestMethod(input, init);
   const path = getRequestPath(input);
   const pathname = path.split('?')[0];
+  const isAuthenticated = !!getStoredStaticSession();
 
   if (pathname === '/api/auth/login' && method === 'POST') {
     const requestBody = await readRequestJsonBody(input, init);
@@ -124,6 +191,10 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
     return createJsonResponse({ user });
   }
 
+  if (pathname.startsWith('/api/') && !isAuthenticated) {
+    return createJsonResponse({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   if (pathname === '/api/dashboard/stats' && method === 'GET') {
     return createJsonResponse({
       totalBuildings: 0,
@@ -154,6 +225,59 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
 
   if (pathname === '/api/notifications/read-all' && method === 'POST') {
     return createJsonResponse({ success: true });
+  }
+
+  const crudMatch = getStaticCrudMatch(pathname);
+  if (crudMatch) {
+    const dbState = getStoredStaticDb();
+    const currentRows = Array.isArray(dbState[crudMatch.tableName]) ? dbState[crudMatch.tableName] : [];
+
+    if (method === 'GET' && !crudMatch.idSegment) {
+      return createJsonResponse(currentRows);
+    }
+
+    if (method === 'POST' && !crudMatch.idSegment) {
+      const requestBody = await readRequestJsonBody(input, init);
+      const createdRow = {
+        id: getNextStaticId(),
+        ...(requestBody || {}),
+      };
+      dbState[crudMatch.tableName] = [...currentRows, createdRow];
+      persistStaticDb(dbState);
+      return createJsonResponse(createdRow);
+    }
+
+    if (method === 'PUT' && crudMatch.idSegment) {
+      const requestBody = await readRequestJsonBody(input, init);
+      const targetId = crudMatch.idSegment.toString();
+      let didUpdate = false;
+
+      dbState[crudMatch.tableName] = currentRows.map((row: any) => {
+        if (row?.id?.toString() !== targetId) return row;
+        didUpdate = true;
+        return { ...row, ...(requestBody || {}) };
+      });
+
+      if (!didUpdate) {
+        return createJsonResponse({ error: 'Record not found' }, { status: 404 });
+      }
+
+      persistStaticDb(dbState);
+      return createJsonResponse({ success: true });
+    }
+
+    if (method === 'DELETE' && crudMatch.idSegment === 'reset') {
+      dbState[crudMatch.tableName] = [];
+      persistStaticDb(dbState);
+      return createJsonResponse({ success: true });
+    }
+
+    if (method === 'DELETE' && crudMatch.idSegment) {
+      const targetId = crudMatch.idSegment.toString();
+      dbState[crudMatch.tableName] = currentRows.filter((row: any) => row?.id?.toString() !== targetId);
+      persistStaticDb(dbState);
+      return createJsonResponse({ success: true });
+    }
   }
 
   if (pathname.startsWith('/api/')) {
