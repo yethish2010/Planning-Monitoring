@@ -116,6 +116,8 @@ db.exec(`
     room_number TEXT NOT NULL,
     floor_id INTEGER NOT NULL,
     room_type TEXT NOT NULL,
+    lab_name TEXT,
+    restroom_type TEXT,
     capacity INTEGER NOT NULL,
     accessibility TEXT,
     status TEXT DEFAULT 'Available',
@@ -253,10 +255,52 @@ const ensureBookingColumns = () => {
 };
 
 ensureBookingColumns();
+ensureColumn("rooms", "lab_name", "TEXT");
+ensureColumn("rooms", "restroom_type", "TEXT");
 ensureColumn("users", "responsibilities", "TEXT");
 ensureColumn("users", "access_limits", "TEXT");
 ensureColumn("users", "access_paths", "TEXT");
 ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+
+const normalizeRoomTypeValue = (value: any) => {
+  const normalized = value?.toString().trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "restroom" || normalized === "restrooms") return "Restroom";
+  if (normalized === "lab" || normalized === "laboratory") return "Lab";
+  return value?.toString().trim() || "";
+};
+
+const normalizeRestroomTypeValue = (value: any) => {
+  const normalized = value?.toString().trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "male" || normalized === "boys" || normalized === "men") return "Male";
+  if (normalized === "female" || normalized === "girls" || normalized === "women") return "Female";
+  return value?.toString().trim() || "";
+};
+
+const normalizeRoomPayload = (payload: any) => {
+  const nextPayload = { ...payload };
+  nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
+  nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || null;
+  nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
+
+  if (nextPayload.room_type === "Lab") {
+    if (!nextPayload.lab_name) {
+      throw new Error("Lab name is required when the room type is Lab.");
+    }
+    nextPayload.restroom_type = null;
+  } else if (nextPayload.room_type === "Restroom") {
+    if (!["Male", "Female"].includes(nextPayload.restroom_type || "")) {
+      throw new Error("Please choose Male or Female when the room type is Restroom.");
+    }
+    nextPayload.lab_name = null;
+  } else {
+    nextPayload.lab_name = null;
+    nextPayload.restroom_type = null;
+  }
+
+  return nextPayload;
+};
 
 const ensureNotificationsTable = () => {
   db.exec(`
@@ -715,6 +759,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         req.body.status = "Pending";
       }
     }
+    if (tableName === "rooms") {
+      req.body = normalizeRoomPayload(req.body);
+    }
     const fields = Object.keys(req.body);
     const placeholders = fields.map(() => "?").join(", ");
     const values = Object.values(req.body);
@@ -816,6 +863,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
     if (tableName === "bookings") {
       ensureBookingColumns();
+    }
+    if (tableName === "rooms") {
+      req.body = normalizeRoomPayload(req.body);
     }
     let fields = Object.keys(req.body);
     let setClause = fields.map(f => `${f} = ?`).join(", ");
@@ -1283,6 +1333,8 @@ app.get("/api/reports/utilization", authenticate, (req, res) => {
         department: department?.name || "Unmapped",
         school: school?.name || "Unmapped",
         room_type: room.room_type,
+        lab_name: room.lab_name,
+        restroom_type: room.restroom_type,
         capacity: room.capacity,
         status: room.status,
         maintenanceIssues,

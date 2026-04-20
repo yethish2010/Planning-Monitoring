@@ -95,6 +95,37 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+const ROOM_TYPE_OPTIONS = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library', 'Restroom'];
+const EVENT_ROOM_TYPE_OPTIONS = [...ROOM_TYPE_OPTIONS, 'Smart Classroom'];
+const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
+
+const normalizeRoomTypeValue = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return '';
+  if (normalized === 'restroom' || normalized === 'restrooms') return 'Restroom';
+  if (normalized === 'lab' || normalized === 'laboratory') return 'Lab';
+  return value?.toString().trim() || '';
+};
+
+const normalizeRestroomTypeValue = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return '';
+  if (['male', 'boys', 'men'].includes(normalized)) return 'Male';
+  if (['female', 'girls', 'women'].includes(normalized)) return 'Female';
+  return value?.toString().trim() || '';
+};
+
+const getRoomTypeDisplay = (room: any) => {
+  const roomType = normalizeRoomTypeValue(room?.room_type);
+  if (roomType === 'Lab' && room?.lab_name) {
+    return `${roomType} - ${room.lab_name}`;
+  }
+  if (roomType === 'Restroom' && room?.restroom_type) {
+    return `${roomType} - ${room.restroom_type}`;
+  }
+  return roomType || room?.room_type || '';
+};
+
 const getImportValue = (row: any, labels: string[]) => {
   for (const label of labels) {
     const value = row[label];
@@ -2420,6 +2451,33 @@ function RoomManagement() {
     fetch('/api/buildings').then(res => res.json()).then(setBuildings);
   }, []);
 
+  const normalizeRoomFormPayload = (data: any) => {
+    const roomType = normalizeRoomTypeValue(data.room_type);
+    const payload = {
+      ...data,
+      room_type: roomType,
+      lab_name: data.lab_name?.toString().trim() || '',
+      restroom_type: normalizeRestroomTypeValue(data.restroom_type),
+    };
+
+    if (roomType === 'Lab') {
+      if (!payload.lab_name) {
+        throw new Error('Please enter the lab name.');
+      }
+      payload.restroom_type = '';
+    } else if (roomType === 'Restroom') {
+      if (!RESTROOM_TYPE_OPTIONS.includes(payload.restroom_type)) {
+        throw new Error('Please select Male or Female for the restroom.');
+      }
+      payload.lab_name = '';
+    } else {
+      payload.lab_name = '';
+      payload.restroom_type = '';
+    }
+
+    return payload;
+  };
+
   const fields = [
     { key: 'room_id', label: 'Room ID' },
     { key: 'room_number', label: 'Room Number' },
@@ -2497,7 +2555,23 @@ function RoomManagement() {
         return floor ? getFloorDisplayLabel(floor, blocks, buildings) : 'Unknown Floor';
       },
     },
-    { key: 'room_type', label: 'Room Type', type: 'select', options: ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library'] },
+    { key: 'room_type', label: 'Room Type', type: 'select', options: ROOM_TYPE_OPTIONS, render: (item: any) => getRoomTypeDisplay(item) },
+    {
+      key: 'lab_name',
+      label: 'Lab Name',
+      formOnly: true,
+      required: false,
+      show: (formData: any) => normalizeRoomTypeValue(formData.room_type) === 'Lab',
+    },
+    {
+      key: 'restroom_type',
+      label: 'Restroom For',
+      type: 'select',
+      formOnly: true,
+      required: false,
+      options: RESTROOM_TYPE_OPTIONS,
+      show: (formData: any) => normalizeRoomTypeValue(formData.room_type) === 'Restroom',
+    },
     { key: 'capacity', label: 'Capacity', type: 'number' },
     { key: 'status', label: 'Status', type: 'select', options: ['Available', 'Maintenance'] },
   ];
@@ -2514,7 +2588,7 @@ function RoomManagement() {
   };
 
   const prepareSubmitData = (data: any) => {
-    const payload = { ...data };
+    const payload = normalizeRoomFormPayload(data);
     delete payload.building_id;
     delete payload.block_id;
     return payload;
@@ -2545,15 +2619,18 @@ function RoomManagement() {
         room_id: row['Room ID']?.toString(),
         room_number: row['Room Number']?.toString(),
         floor_id: floor?.id ?? parseInt(floorValue as any),
-        room_type: row['Room Type'],
+        room_type: normalizeRoomTypeValue(row['Room Type']),
+        lab_name: getImportValue(row, ['Lab Name']),
+        restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
         capacity: parseInt(row['Capacity']) || 0,
         status: row['Status'] || 'Available'
       };
       if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
+      const normalizedPayload = normalizeRoomFormPayload(payload);
       await fetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(normalizedPayload),
         credentials: 'include'
       });
     }
@@ -2842,7 +2919,7 @@ function DepartmentAllocationManagement() {
       key: 'room_type',
       label: 'Room Type',
       type: 'select',
-      options: ['Classroom', 'Lab', 'Seminar Hall'],
+      options: ROOM_TYPE_OPTIONS,
       onChange: (nextData: any) => nextData,
     },
     { key: 'capacity', label: 'Required Capacity', type: 'number', formOnly: true },
@@ -4535,7 +4612,7 @@ function AIAllocation() {
                 onChange={e => setFormData({ ...formData, roomType: e.target.value })}
                 className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-500 text-sm font-medium"
               >
-                {['Classroom', 'Seminar Hall', 'Conference Room', 'Lab', 'Smart Classroom'].map(t => <option key={t}>{t}</option>)}
+                {EVENT_ROOM_TYPE_OPTIONS.map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
           </div>
@@ -4887,7 +4964,7 @@ function AnalyticsDashboard() {
     ...filteredRoomReports.filter((room: any) => room.department === 'Unmapped').map((room: any) => `Room ${room.room_number} is not mapped to any department.`),
     ...filteredBookings.filter(booking => booking.status === 'Pending').slice(0, 3).map(booking => `${booking.event_name || 'Room request'} is still pending.`)
   ].slice(0, 6);
-  const standardRoomTypes = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library'];
+  const standardRoomTypes = ROOM_TYPE_OPTIONS;
   const buildingOptions = Array.from(new Set(roomReports.map((room: any) => room.building).filter(Boolean))).sort();
   const departmentOptions = Array.from(new Set([
     ...(reportData?.deptReports || []).map((department: any) => department.name),
@@ -4904,7 +4981,9 @@ function AnalyticsDashboard() {
       Room: room.room_number,
       Building: room.building,
       Department: room.department,
-      Type: room.room_type,
+      Type: getRoomTypeDisplay(room),
+      'Lab Name': room.lab_name || '',
+      'Restroom For': room.restroom_type || '',
       Capacity: room.capacity,
       Utilization: `${room.utilization}%`,
       Flags: (room.flags || []).join(', ')
@@ -5286,12 +5365,7 @@ function ReportGeneration() {
     ...roomReports.map((room: any) => room.department)
   ].filter(Boolean))).sort();
   const roomTypeOptions = Array.from(new Set([
-    'Classroom',
-    'Lab',
-    'Seminar Hall',
-    'Conference Room',
-    'Office',
-    'Library',
+    ...ROOM_TYPE_OPTIONS,
     ...roomReports.map((room: any) => room.room_type)
   ].filter(Boolean))).sort();
   const flagOptions = Array.from(new Set(roomReports.flatMap((room: any) => room.flags || []))).sort();
@@ -5342,7 +5416,9 @@ function ReportGeneration() {
       Floor: getFloorName(room.floor_number),
       Department: room.department,
       School: room.school,
-      Type: room.room_type,
+      Type: getRoomTypeDisplay(room),
+      'Lab Name': room.lab_name || '',
+      'Restroom For': room.restroom_type || '',
       Capacity: room.capacity,
       Status: room.status,
       Utilization: `${room.utilization}%`,
@@ -5377,7 +5453,9 @@ function ReportGeneration() {
       Floor: getFloorName(room.floor_number),
       Department: room.department,
       School: room.school,
-      Type: room.room_type,
+      Type: getRoomTypeDisplay(room),
+      LabName: room.lab_name || '',
+      RestroomFor: room.restroom_type || '',
       Capacity: room.capacity,
       Status: room.status,
       Utilization: room.utilization,
@@ -5864,7 +5942,7 @@ function ReportGeneration() {
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-bold text-slate-800">Room {room.room_number}</p>
-                          <p className="text-xs text-slate-500">{room.department} • {room.room_type}</p>
+                          <p className="text-xs text-slate-500">{room.department} • {getRoomTypeDisplay(room)}</p>
                         </div>
                         <span className="text-xs font-bold px-3 py-1 rounded-lg bg-emerald-50 text-emerald-600">
                           {room.utilization}%
@@ -6692,7 +6770,7 @@ function DigitalTwin() {
                   <span className="text-lg font-bold text-white">{r.room_number}</span>
                   <div className={cn("w-3 h-3 rounded-full", dotClass)} />
                 </div>
-                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{r.room_type}</p>
+                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{getRoomTypeDisplay(r)}</p>
                 <p className="text-[10px] text-slate-300 font-bold mb-1">{liveStatus}</p>
                 <p className="text-[10px] text-slate-500 mb-1">{departmentLabel}</p>
                 <p className="text-[10px] text-slate-500 line-clamp-1">Equipment: {equipmentLabels.join(', ') || 'None'}</p>

@@ -35,6 +35,8 @@ export interface Room {
   building: string;
   floor: string;
   room_type: string;
+  lab_name?: string;
+  restroom_type?: 'Male' | 'Female';
   capacity: number;
   accessibility?: string;
   status: 'Available' | 'Maintenance';
