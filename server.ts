@@ -89,7 +89,7 @@ db.exec(`
     campus_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
-    FOREIGN KEY(campus_id) REFERENCES campuses(id)
+    FOREIGN KEY(campus_id) REFERENCES campuses(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS blocks (
@@ -98,7 +98,7 @@ db.exec(`
     building_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
-    FOREIGN KEY(building_id) REFERENCES buildings(id)
+    FOREIGN KEY(building_id) REFERENCES buildings(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS floors (
@@ -107,7 +107,7 @@ db.exec(`
     block_id INTEGER NOT NULL,
     floor_number INTEGER NOT NULL,
     description TEXT,
-    FOREIGN KEY(block_id) REFERENCES blocks(id)
+    FOREIGN KEY(block_id) REFERENCES blocks(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS rooms (
@@ -121,7 +121,7 @@ db.exec(`
     capacity INTEGER NOT NULL,
     accessibility TEXT,
     status TEXT DEFAULT 'Available',
-    FOREIGN KEY(floor_id) REFERENCES floors(id)
+    FOREIGN KEY(floor_id) REFERENCES floors(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS schools (
@@ -139,7 +139,7 @@ db.exec(`
     school_id INTEGER NOT NULL,
     type TEXT,
     description TEXT,
-    FOREIGN KEY(school_id) REFERENCES schools(id)
+    FOREIGN KEY(school_id) REFERENCES schools(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS department_allocations (
@@ -150,9 +150,9 @@ db.exec(`
     semester TEXT,
     room_type TEXT,
     capacity INTEGER,
-    FOREIGN KEY(school_id) REFERENCES schools(id),
-    FOREIGN KEY(department_id) REFERENCES departments(id),
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
+    FOREIGN KEY(school_id) REFERENCES schools(id) ON DELETE CASCADE,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS equipment (
@@ -164,7 +164,7 @@ db.exec(`
     installation_date DATE,
     condition TEXT,
     maintenance_status TEXT,
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
+    FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS schedules (
@@ -179,8 +179,8 @@ db.exec(`
     start_time TEXT,
     end_time TEXT,
     student_count INTEGER,
-    FOREIGN KEY(department_id) REFERENCES departments(id),
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS bookings (
@@ -201,8 +201,8 @@ db.exec(`
     status TEXT DEFAULT 'Pending',
     recommended_by TEXT,
     decided_by TEXT,
-    FOREIGN KEY(department_id) REFERENCES departments(id),
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS maintenance (
@@ -214,7 +214,7 @@ db.exec(`
     reported_date DATE,
     assigned_staff TEXT,
     status TEXT DEFAULT 'Pending',
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
+    FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS reset_tokens (
@@ -324,8 +324,8 @@ const ensureNotificationReadsTable = () => {
       user_id INTEGER NOT NULL,
       read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (notification_id, user_id),
-      FOREIGN KEY(notification_id) REFERENCES notifications(id),
-      FOREIGN KEY(user_id) REFERENCES users(id)
+      FOREIGN KEY(notification_id) REFERENCES notifications(id) ON DELETE CASCADE,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
   `);
 };
