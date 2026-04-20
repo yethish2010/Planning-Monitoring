@@ -3,11 +3,11 @@ import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
-import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
+import { createDatabaseClient, type DatabaseDialect } from "./db.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,6 +25,8 @@ const defaultDatabasePath = isVercelRuntime
 const databasePath = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
   : defaultDatabasePath;
+const databaseProvider = process.env.DATABASE_PROVIDER || "";
+const databaseUrl = process.env.DATABASE_URL || "";
 const normalizeOrigin = (value?: string | null) => {
   const trimmed = value?.trim();
   if (!trimmed) return "";
@@ -47,220 +49,220 @@ const allowedOrigins = new Set(
     .filter(Boolean)
 );
 
-const databaseDir = path.dirname(databasePath);
-if (!fs.existsSync(databaseDir)) {
-  fs.mkdirSync(databaseDir, { recursive: true });
-}
+const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
+  const idDefinition = dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
+  const timestampType = dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
 
-// Database Setup
-const db = new Database(databasePath);
-db.pragma("foreign_keys = ON");
+  return `
+    CREATE TABLE IF NOT EXISTS users (
+      id ${idDefinition},
+      full_name TEXT NOT NULL,
+      employee_id TEXT UNIQUE NOT NULL,
+      department TEXT,
+      designation TEXT,
+      role TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      mobile_number TEXT,
+      password TEXT NOT NULL,
+      responsibilities TEXT,
+      access_limits TEXT,
+      access_paths TEXT,
+      force_password_change INTEGER DEFAULT 0,
+      created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP
+    );
 
-// Initialize Schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    full_name TEXT NOT NULL,
-    employee_id TEXT UNIQUE NOT NULL,
-    department TEXT,
-    designation TEXT,
-    role TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    mobile_number TEXT,
-    password TEXT NOT NULL,
-    responsibilities TEXT,
-    access_limits TEXT,
-    access_paths TEXT,
-    force_password_change INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    CREATE TABLE IF NOT EXISTS campuses (
+      id ${idDefinition},
+      campus_id TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      location TEXT,
+      description TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS campuses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    campus_id TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    location TEXT,
-    description TEXT
-  );
+    CREATE TABLE IF NOT EXISTS buildings (
+      id ${idDefinition},
+      building_id TEXT UNIQUE NOT NULL,
+      campus_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      FOREIGN KEY(campus_id) REFERENCES campuses(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS buildings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    building_id TEXT UNIQUE NOT NULL,
-    campus_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    FOREIGN KEY(campus_id) REFERENCES campuses(id)
-  );
+    CREATE TABLE IF NOT EXISTS blocks (
+      id ${idDefinition},
+      block_id TEXT UNIQUE NOT NULL,
+      building_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      FOREIGN KEY(building_id) REFERENCES buildings(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS blocks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    block_id TEXT UNIQUE NOT NULL,
-    building_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    FOREIGN KEY(building_id) REFERENCES buildings(id)
-  );
+    CREATE TABLE IF NOT EXISTS floors (
+      id ${idDefinition},
+      floor_id TEXT UNIQUE NOT NULL,
+      block_id INTEGER NOT NULL,
+      floor_number INTEGER NOT NULL,
+      description TEXT,
+      FOREIGN KEY(block_id) REFERENCES blocks(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS floors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    floor_id TEXT UNIQUE NOT NULL,
-    block_id INTEGER NOT NULL,
-    floor_number INTEGER NOT NULL,
-    description TEXT,
-    FOREIGN KEY(block_id) REFERENCES blocks(id)
-  );
+    CREATE TABLE IF NOT EXISTS rooms (
+      id ${idDefinition},
+      room_id TEXT UNIQUE NOT NULL,
+      room_number TEXT NOT NULL,
+      floor_id INTEGER NOT NULL,
+      room_type TEXT NOT NULL,
+      lab_name TEXT,
+      restroom_type TEXT,
+      capacity INTEGER NOT NULL,
+      accessibility TEXT,
+      status TEXT DEFAULT 'Available',
+      FOREIGN KEY(floor_id) REFERENCES floors(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS rooms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT UNIQUE NOT NULL,
-    room_number TEXT NOT NULL,
-    floor_id INTEGER NOT NULL,
-    room_type TEXT NOT NULL,
-    lab_name TEXT,
-    restroom_type TEXT,
-    capacity INTEGER NOT NULL,
-    accessibility TEXT,
-    status TEXT DEFAULT 'Available',
-    FOREIGN KEY(floor_id) REFERENCES floors(id)
-  );
+    CREATE TABLE IF NOT EXISTS schools (
+      id ${idDefinition},
+      school_id TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT,
+      description TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS schools (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    school_id TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    type TEXT,
-    description TEXT
-  );
+    CREATE TABLE IF NOT EXISTS departments (
+      id ${idDefinition},
+      department_id TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      school_id INTEGER NOT NULL,
+      type TEXT,
+      description TEXT,
+      FOREIGN KEY(school_id) REFERENCES schools(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS departments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    department_id TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    school_id INTEGER NOT NULL,
-    type TEXT,
-    description TEXT,
-    FOREIGN KEY(school_id) REFERENCES schools(id)
-  );
+    CREATE TABLE IF NOT EXISTS department_allocations (
+      id ${idDefinition},
+      school_id INTEGER NOT NULL,
+      department_id INTEGER NOT NULL,
+      room_id INTEGER NOT NULL,
+      semester TEXT,
+      room_type TEXT,
+      capacity INTEGER,
+      FOREIGN KEY(school_id) REFERENCES schools(id),
+      FOREIGN KEY(department_id) REFERENCES departments(id),
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS department_allocations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    school_id INTEGER NOT NULL,
-    department_id INTEGER NOT NULL,
-    room_id INTEGER NOT NULL,
-    semester TEXT,
-    room_type TEXT,
-    capacity INTEGER,
-    FOREIGN KEY(school_id) REFERENCES schools(id),
-    FOREIGN KEY(department_id) REFERENCES departments(id),
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
+    CREATE TABLE IF NOT EXISTS equipment (
+      id ${idDefinition},
+      equipment_id TEXT UNIQUE NOT NULL,
+      room_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      installation_date DATE,
+      condition TEXT,
+      maintenance_status TEXT,
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS equipment (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    equipment_id TEXT UNIQUE NOT NULL,
-    room_id INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    name TEXT NOT NULL,
-    installation_date DATE,
-    condition TEXT,
-    maintenance_status TEXT,
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
+    CREATE TABLE IF NOT EXISTS schedules (
+      id ${idDefinition},
+      schedule_id TEXT UNIQUE NOT NULL,
+      department_id INTEGER,
+      course_code TEXT,
+      course_name TEXT,
+      faculty TEXT,
+      room_id INTEGER,
+      day_of_week TEXT,
+      start_time TEXT,
+      end_time TEXT,
+      student_count INTEGER,
+      FOREIGN KEY(department_id) REFERENCES departments(id),
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS schedules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    schedule_id TEXT UNIQUE NOT NULL,
-    department_id INTEGER,
-    course_code TEXT,
-    course_name TEXT,
-    faculty TEXT,
-    room_id INTEGER,
-    day_of_week TEXT,
-    start_time TEXT,
-    end_time TEXT,
-    student_count INTEGER,
-    FOREIGN KEY(department_id) REFERENCES departments(id),
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
+    CREATE TABLE IF NOT EXISTS bookings (
+      id ${idDefinition},
+      request_id TEXT UNIQUE NOT NULL,
+      faculty_name TEXT NOT NULL,
+      department_id INTEGER,
+      event_name TEXT,
+      student_count INTEGER,
+      room_type TEXT,
+      room_id INTEGER,
+      equipment_required TEXT,
+      purpose TEXT,
+      notes TEXT,
+      date DATE,
+      start_time TEXT,
+      end_time TEXT,
+      status TEXT DEFAULT 'Pending',
+      recommended_by TEXT,
+      decided_by TEXT,
+      FOREIGN KEY(department_id) REFERENCES departments(id),
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS bookings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id TEXT UNIQUE NOT NULL,
-    faculty_name TEXT NOT NULL,
-    department_id INTEGER,
-    event_name TEXT,
-    student_count INTEGER,
-    room_type TEXT,
-    room_id INTEGER,
-    equipment_required TEXT,
-    purpose TEXT,
-    notes TEXT,
-    date DATE,
-    start_time TEXT,
-    end_time TEXT,
-    status TEXT DEFAULT 'Pending',
-    recommended_by TEXT,
-    decided_by TEXT,
-    FOREIGN KEY(department_id) REFERENCES departments(id),
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
+    CREATE TABLE IF NOT EXISTS maintenance (
+      id ${idDefinition},
+      maintenance_id TEXT UNIQUE NOT NULL,
+      room_id INTEGER NOT NULL,
+      equipment_name TEXT,
+      issue_description TEXT,
+      reported_date DATE,
+      assigned_staff TEXT,
+      status TEXT DEFAULT 'Pending',
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS maintenance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    maintenance_id TEXT UNIQUE NOT NULL,
-    room_id INTEGER NOT NULL,
-    equipment_name TEXT,
-    issue_description TEXT,
-    reported_date DATE,
-    assigned_staff TEXT,
-    status TEXT DEFAULT 'Pending',
-    FOREIGN KEY(room_id) REFERENCES rooms(id)
-  );
+    CREATE TABLE IF NOT EXISTS reset_tokens (
+      id ${idDefinition},
+      email TEXT NOT NULL,
+      token TEXT NOT NULL,
+      expires_at ${timestampType} NOT NULL
+    );
+  `;
+};
 
-  CREATE TABLE IF NOT EXISTS reset_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL,
-    token TEXT NOT NULL,
-    expires_at DATETIME NOT NULL
-  );
-`);
+const db = await createDatabaseClient({
+  databasePath,
+  databaseUrl,
+  provider: databaseProvider,
+});
+
+await db.exec(getPrimarySchemaSql(db.dialect));
 
 // Seed Master Admin
-const seedAdmin = () => {
-  const admin = db.prepare("SELECT * FROM users WHERE role = 'Administrator'").get();
+const seedAdmin = async () => {
+  const admin = await db.prepare("SELECT * FROM users WHERE role = 'Administrator'").get();
   if (!admin) {
     const hashedPassword = bcrypt.hashSync("admin123", 10);
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO users (full_name, employee_id, role, email, password)
       VALUES (?, ?, ?, ?, ?)
     `).run("Master Admin", "ADMIN001", "Administrator", "admin@smartcampus.ai", hashedPassword);
     console.log("Master Admin created: admin@smartcampus.ai / admin123");
   }
 };
-seedAdmin();
+await seedAdmin();
 
-const ensureColumn = (tableName: string, columnName: string, definition: string) => {
-  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as any[];
-  if (!columns.some(column => column.name === columnName)) {
-    db.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
-  }
+const ensureColumn = async (tableName: string, columnName: string, definition: string) => {
+  await db.ensureColumn(tableName, columnName, definition);
 };
 
-const ensureBookingColumns = () => {
-  ensureColumn("bookings", "purpose", "TEXT");
-  ensureColumn("bookings", "notes", "TEXT");
-  ensureColumn("bookings", "recommended_by", "TEXT");
-  ensureColumn("bookings", "decided_by", "TEXT");
-  ensureColumn("bookings", "request_group_id", "TEXT");
+const ensureBookingColumns = async () => {
+  await ensureColumn("bookings", "purpose", "TEXT");
+  await ensureColumn("bookings", "notes", "TEXT");
+  await ensureColumn("bookings", "recommended_by", "TEXT");
+  await ensureColumn("bookings", "decided_by", "TEXT");
+  await ensureColumn("bookings", "request_group_id", "TEXT");
 };
 
-ensureBookingColumns();
-ensureColumn("rooms", "lab_name", "TEXT");
-ensureColumn("rooms", "restroom_type", "TEXT");
-ensureColumn("users", "responsibilities", "TEXT");
-ensureColumn("users", "access_limits", "TEXT");
-ensureColumn("users", "access_paths", "TEXT");
-ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+await ensureBookingColumns();
+await ensureColumn("rooms", "lab_name", "TEXT");
+await ensureColumn("rooms", "restroom_type", "TEXT");
+await ensureColumn("users", "responsibilities", "TEXT");
+await ensureColumn("users", "access_limits", "TEXT");
+await ensureColumn("users", "access_paths", "TEXT");
+await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 
 const normalizeRoomTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase();
@@ -302,27 +304,32 @@ const normalizeRoomPayload = (payload: any) => {
   return nextPayload;
 };
 
-const ensureNotificationsTable = () => {
-  db.exec(`
+const ensureNotificationsTable = async () => {
+  const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
+  const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
+
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_role TEXT,
-    target_name TEXT,
-    target_department TEXT,
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id ${idDefinition},
+      target_role TEXT,
+      target_name TEXT,
+      target_department TEXT,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at ${timestampType} DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  ensureColumn("notifications", "target_department", "TEXT");
+  await ensureColumn("notifications", "target_department", "TEXT");
 };
 
-const ensureNotificationReadsTable = () => {
-  db.exec(`
+const ensureNotificationReadsTable = async () => {
+  const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
+
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS notification_reads (
       notification_id INTEGER NOT NULL,
       user_id INTEGER NOT NULL,
-      read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      read_at ${timestampType} DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (notification_id, user_id),
       FOREIGN KEY(notification_id) REFERENCES notifications(id),
       FOREIGN KEY(user_id) REFERENCES users(id)
@@ -330,58 +337,58 @@ const ensureNotificationReadsTable = () => {
   `);
 };
 
-ensureNotificationsTable();
-ensureNotificationReadsTable();
+await ensureNotificationsTable();
+await ensureNotificationReadsTable();
 
-const createNotification = (targetRole: string | null, targetName: string | null, title: string, message: string, targetDepartment: string | null = null) => {
-  ensureNotificationsTable();
-  db.prepare("INSERT INTO notifications (target_role, target_name, target_department, title, message) VALUES (?, ?, ?, ?, ?)")
+const createNotification = async (targetRole: string | null, targetName: string | null, title: string, message: string, targetDepartment: string | null = null) => {
+  await ensureNotificationsTable();
+  await db.prepare("INSERT INTO notifications (target_role, target_name, target_department, title, message) VALUES (?, ?, ?, ?, ?)")
     .run(targetRole, targetName, targetDepartment, title, message);
 };
 
-const getDepartmentNameById = (departmentId?: string | number | null) => {
+const getDepartmentNameById = async (departmentId?: string | number | null) => {
   if (!departmentId) return null;
-  const department = db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId) as any;
+  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId) as any;
   return department?.name || null;
 };
 
-const backfillNotificationsIfEmpty = () => {
-  ensureNotificationsTable();
-  ensureNotificationReadsTable();
-  const notificationCount = db.prepare("SELECT COUNT(*) as count FROM notifications").get() as any;
+const backfillNotificationsIfEmpty = async () => {
+  await ensureNotificationsTable();
+  await ensureNotificationReadsTable();
+  const notificationCount = await db.prepare("SELECT COUNT(*) as count FROM notifications").get() as any;
   if ((notificationCount?.count || 0) > 0) return;
 
-  const bookings = db.prepare("SELECT * FROM bookings ORDER BY id ASC").all() as any[];
+  const bookings = await db.prepare("SELECT * FROM bookings ORDER BY id ASC").all() as any[];
   for (const booking of bookings) {
     const bookingLabel = booking.event_name || "room request";
     const bookingTime = booking.date && booking.start_time && booking.end_time
       ? `${booking.date} from ${booking.start_time} to ${booking.end_time}`
       : booking.date || "the selected slot";
-    const departmentName = getDepartmentNameById(booking.department_id);
+    const departmentName = await getDepartmentNameById(booking.department_id);
 
     if (booking.status === "Pending") {
-      createNotification(null, booking.faculty_name, "Room request submitted", `${bookingLabel} was submitted for approval for ${bookingTime}.`);
-      notifyBookingAuthorities(booking, "New room request", `${booking.faculty_name} requested ${bookingLabel} on ${bookingTime}.`);
+      await createNotification(null, booking.faculty_name, "Room request submitted", `${bookingLabel} was submitted for approval for ${bookingTime}.`);
+      await notifyBookingAuthorities(booking, "New room request", `${booking.faculty_name} requested ${bookingLabel} on ${bookingTime}.`);
       continue;
     }
 
     if (booking.status === "HOD Recommended") {
-      createNotification(null, booking.faculty_name, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
-      createNotification("Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
-      createNotification("Deputy Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
+      await createNotification(null, booking.faculty_name, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
+      await createNotification("Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
+      await createNotification("Deputy Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
       if (departmentName) {
-        createNotification("HOD", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`, departmentName);
+        await createNotification("HOD", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`, departmentName);
       }
       continue;
     }
 
     if (booking.status === "Approved") {
-      createNotification(null, booking.faculty_name, "Room booking approved", `${bookingLabel} was approved for ${bookingTime}.`);
+      await createNotification(null, booking.faculty_name, "Room booking approved", `${bookingLabel} was approved for ${bookingTime}.`);
       continue;
     }
 
     if (booking.status === "Rejected" || booking.status === "Postponed") {
-      createNotification(null, booking.faculty_name, `Request ${booking.status}`, `${bookingLabel} was marked as ${booking.status.toLowerCase()} for ${bookingTime}.`);
+      await createNotification(null, booking.faculty_name, `Request ${booking.status}`, `${bookingLabel} was marked as ${booking.status.toLowerCase()} for ${bookingTime}.`);
     }
   }
 };
@@ -394,12 +401,12 @@ const getNotificationAudienceParams = (user: any) => {
   return { normalizedRole, normalizedName, normalizedDepartment };
 };
 
-const getNotificationsForUser = (user: any, limit = 20) => {
-  ensureNotificationsTable();
-  ensureNotificationReadsTable();
+const getNotificationsForUser = async (user: any, limit = 20) => {
+  await ensureNotificationsTable();
+  await ensureNotificationReadsTable();
   const { normalizedRole, normalizedName, normalizedDepartment } = getNotificationAudienceParams(user);
 
-  return db.prepare(`
+  return await db.prepare(`
     SELECT
       n.*,
       CASE WHEN nr.notification_id IS NULL THEN 0 ELSE 1 END as is_read
@@ -416,28 +423,29 @@ const getNotificationsForUser = (user: any, limit = 20) => {
   `).all(user.id, normalizedRole, normalizedName, normalizedRole, normalizedDepartment, limit);
 };
 
-const markAllNotificationsRead = (user: any, notificationIds?: number[]) => {
-  ensureNotificationsTable();
-  ensureNotificationReadsTable();
+const markAllNotificationsRead = async (user: any, notificationIds?: number[]) => {
+  await ensureNotificationsTable();
+  await ensureNotificationReadsTable();
   const normalizedIds = Array.isArray(notificationIds)
     ? notificationIds.map(id => parseInt(id as any, 10)).filter(id => Number.isInteger(id) && id > 0)
     : [];
-  const visibleNotificationIds = getNotificationsForUser(user, 1000)
+  const visibleNotificationIds = (await getNotificationsForUser(user, 1000))
     .map((notification: any) => notification.id)
     .filter((id: number) => normalizedIds.length === 0 || normalizedIds.includes(id));
 
   if (visibleNotificationIds.length === 0) return;
 
-  const insertRead = db.prepare(`
+  const insertSql = `
     INSERT OR IGNORE INTO notification_reads (notification_id, user_id, read_at)
     VALUES (?, ?, CURRENT_TIMESTAMP)
-  `);
+  `;
 
-  const markReadTransaction = db.transaction((ids: number[]) => {
-    ids.forEach(id => insertRead.run(id, user.id));
+  await db.transaction(async (transactionDb) => {
+    const insertRead = transactionDb.prepare(insertSql);
+    for (const id of visibleNotificationIds) {
+      await insertRead.run(id, user.id);
+    }
   });
-
-  markReadTransaction(visibleNotificationIds);
 };
 
 app.use(express.json());
@@ -494,16 +502,20 @@ const getUserSessionPayload = (user: any) => ({
   force_password_change: !!user.force_password_change
 });
 
-app.post("/api/auth/login", (req, res) => {
-  const { email, password } = req.body;
-  const user: any = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
-  if (!user || !bcrypt.compareSync(password, user.password)) {
-    return res.status(401).json({ error: "Invalid credentials" });
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user: any = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    if (!user || !bcrypt.compareSync(password, user.password)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    const sessionUser = getUserSessionPayload(user);
+    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    res.cookie("token", token, getAuthCookieOptions());
+    res.json({ user: sessionUser });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-  const sessionUser = getUserSessionPayload(user);
-  const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
-  res.cookie("token", token, getAuthCookieOptions());
-  res.json({ user: sessionUser });
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -522,14 +534,18 @@ app.get("/api/auth/me", (req, res) => {
   }
 });
 
-app.get("/api/notifications", authenticate, (req: any, res) => {
-  const notifications = getNotificationsForUser(req.user);
-  res.json(notifications);
+app.get("/api/notifications", authenticate, async (req: any, res) => {
+  try {
+    const notifications = await getNotificationsForUser(req.user);
+    res.json(notifications);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post("/api/notifications/read-all", authenticate, (req: any, res) => {
+app.post("/api/notifications/read-all", authenticate, async (req: any, res) => {
   try {
-    markAllNotificationsRead(req.user, req.body?.notificationIds);
+    await markAllNotificationsRead(req.user, req.body?.notificationIds);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -544,19 +560,23 @@ app.post("/api/auth/reset-password", (req, res) => {
   res.status(403).json({ error: "Password reset is handled by the Administrator." });
 });
 
-app.post("/api/auth/change-password", authenticate, (req: any, res) => {
-  const { password } = req.body;
-  if (!password || password.toString().trim().length < 8) {
-    return res.status(400).json({ error: "Password must be at least 8 characters." });
-  }
+app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.toString().trim().length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters." });
+    }
 
-  const hashedPassword = bcrypt.hashSync(password.toString(), 10);
-  db.prepare("UPDATE users SET password = ?, force_password_change = 0 WHERE id = ?").run(hashedPassword, req.user.id);
-  const user: any = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
-  const sessionUser = getUserSessionPayload(user);
-  const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
-  res.cookie("token", token, getAuthCookieOptions());
-  res.json({ user: sessionUser });
+    const hashedPassword = bcrypt.hashSync(password.toString(), 10);
+    await db.prepare("UPDATE users SET password = ?, force_password_change = 0 WHERE id = ?").run(hashedPassword, req.user.id);
+    const user: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+    const sessionUser = getUserSessionPayload(user);
+    const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
+    res.cookie("token", token, getAuthCookieOptions());
+    res.json({ user: sessionUser });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- CRUD ROUTES ---
@@ -616,7 +636,7 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
 const normalizeDuplicateValue = (value: any) =>
   typeof value === "string" ? value.trim().toLowerCase() : value;
 
-const checkDuplicateRecord = (tableName: string, data: any, excludeId?: string | number) => {
+const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: string | number) => {
   const rules = duplicateRules[tableName] || [];
 
   for (const rule of rules) {
@@ -627,7 +647,7 @@ const checkDuplicateRecord = (tableName: string, data: any, excludeId?: string |
       .join(" AND ");
     const values = rule.fields.map(field => normalizeDuplicateValue(data[field]));
     const query = `SELECT id FROM ${tableName} WHERE ${whereClause}${excludeId ? " AND id != ?" : ""}`;
-    const existing = db.prepare(query).get(...values, ...(excludeId ? [excludeId] : []));
+    const existing = await db.prepare(query).get(...values, ...(excludeId ? [excludeId] : []));
 
     if (existing) {
       return `${rule.label} already exists. Duplicate records are not allowed.`;
@@ -642,18 +662,18 @@ const isPastDateTime = (date: string, time: string) => {
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
 };
 
-const getBookingDepartmentName = (booking: any) => {
+const getBookingDepartmentName = async (booking: any) => {
   if (!booking?.department_id) return null;
-  const department = db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id) as any;
+  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id) as any;
   return department?.name || null;
 };
 
 const isDecisionRole = (role: string) => ["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
 const openBookingStatuses = ["Pending", "HOD Recommended", "Approved"];
 
-const getApprovedBookingConflict = (booking: any, excludeId?: string | number) => {
+const getApprovedBookingConflict = async (booking: any, excludeId?: string | number) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
-  return db.prepare(`
+  return await db.prepare(`
     SELECT id FROM bookings
     WHERE room_id = ?
     AND date = ?
@@ -669,9 +689,9 @@ const getApprovedBookingConflict = (booking: any, excludeId?: string | number) =
   ) as any;
 };
 
-const getDuplicateOpenBookingRequest = (booking: any, excludeId?: string | number) => {
+const getDuplicateOpenBookingRequest = async (booking: any, excludeId?: string | number) => {
   if (!booking?.faculty_name || !booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
-  return db.prepare(`
+  return await db.prepare(`
     SELECT id FROM bookings
     WHERE faculty_name = ?
     AND room_id = ?
@@ -691,9 +711,9 @@ const getDuplicateOpenBookingRequest = (booking: any, excludeId?: string | numbe
   ) as any;
 };
 
-const getCompetingOpenBookingRequests = (booking: any, excludeId?: string | number) => {
+const getCompetingOpenBookingRequests = async (booking: any, excludeId?: string | number) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return [];
-  return db.prepare(`
+  return await db.prepare(`
     SELECT id, faculty_name, event_name FROM bookings
     WHERE room_id = ?
     AND date = ?
@@ -709,41 +729,45 @@ const getCompetingOpenBookingRequests = (booking: any, excludeId?: string | numb
   ) as any[];
 };
 
-const notifyBookingAuthorities = (booking: any, title: string, message: string) => {
-  const departmentName = getBookingDepartmentName(booking);
+const notifyBookingAuthorities = async (booking: any, title: string, message: string) => {
+  const departmentName = await getBookingDepartmentName(booking);
   if (departmentName) {
-    createNotification("HOD", null, title, message, departmentName);
+    await createNotification("HOD", null, title, message, departmentName);
   }
-  createNotification("Dean (P&M)", null, title, message);
-  createNotification("Deputy Dean (P&M)", null, title, message);
+  await createNotification("Dean (P&M)", null, title, message);
+  await createNotification("Deputy Dean (P&M)", null, title, message);
 };
 
-backfillNotificationsIfEmpty();
+await backfillNotificationsIfEmpty();
 
 const createCrudRoutes = (tableName: string, idField: string = "id") => {
-  app.get(`/api/${tableName}`, authenticate, (req, res) => {
-    if (tableName === "bookings") {
-      const bookings = db.prepare(`
-        SELECT bk.*, r.room_number, d.name as department_name
-        FROM bookings bk
-        LEFT JOIN rooms r ON bk.room_id = r.id
-        LEFT JOIN departments d ON bk.department_id = d.id
-      `).all();
-      const user = (req as any).user;
-      if (isDecisionRole(user.role)) return res.json(bookings);
-      if (user.role === "HOD") {
-        return res.json(bookings.filter((booking: any) =>
-          booking.faculty_name === user.name || (!!user.department && booking.department_name === user.department)
-        ));
+  app.get(`/api/${tableName}`, authenticate, async (req, res) => {
+    try {
+      if (tableName === "bookings") {
+        const bookings = await db.prepare(`
+          SELECT bk.*, r.room_number, d.name as department_name
+          FROM bookings bk
+          LEFT JOIN rooms r ON bk.room_id = r.id
+          LEFT JOIN departments d ON bk.department_id = d.id
+        `).all();
+        const user = (req as any).user;
+        if (isDecisionRole(user.role)) return res.json(bookings);
+        if (user.role === "HOD") {
+          return res.json(bookings.filter((booking: any) =>
+            booking.faculty_name === user.name || (!!user.department && booking.department_name === user.department)
+          ));
+        }
+        return res.json(bookings.filter((booking: any) => booking.faculty_name === user.name));
       }
-      return res.json(bookings.filter((booking: any) => booking.faculty_name === user.name));
-    }
 
-    const items = db.prepare(`SELECT * FROM ${tableName}`).all();
-    res.json(items);
+      const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
+      res.json(items);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
-  app.post(`/api/${tableName}`, authenticate, (req, res) => {
+  app.post(`/api/${tableName}`, authenticate, async (req, res) => {
     if (tableName === "users" && (req as any).user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
     }
@@ -754,7 +778,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       req.body.force_password_change = 1;
     }
     if (tableName === "bookings") {
-      ensureBookingColumns();
+      await ensureBookingColumns();
       if (!req.body.status) {
         req.body.status = "Pending";
       }
@@ -765,21 +789,20 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     const fields = Object.keys(req.body);
     const placeholders = fields.map(() => "?").join(", ");
     const values = Object.values(req.body);
-    
-    // Special handling for user password
-    if (tableName === 'users' && req.body.password) {
-      const passIdx = fields.indexOf('password');
+
+    if (tableName === "users" && req.body.password) {
+      const passIdx = fields.indexOf("password");
       values[passIdx] = bcrypt.hashSync(req.body.password, 10);
     }
 
     try {
-      const duplicateError = checkDuplicateRecord(tableName, req.body);
+      const duplicateError = await checkDuplicateRecord(tableName, req.body);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
       }
 
       if (tableName === "department_allocations") {
-        const room = db.prepare("SELECT room_number, capacity, room_type FROM rooms WHERE id = ?").get(req.body.room_id) as any;
+        const room = await db.prepare("SELECT room_number, capacity, room_type FROM rooms WHERE id = ?").get(req.body.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         if ((parseInt(req.body.capacity, 10) || 0) > room.capacity) {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${req.body.capacity}.` });
@@ -796,7 +819,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (!req.body.department_id) {
           return res.status(400).json({ error: "Department is required so the request can go to the respective HOD." });
         }
-        const department = db.prepare("SELECT name FROM departments WHERE id = ?").get(req.body.department_id) as any;
+        const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(req.body.department_id) as any;
         if (!department) {
           return res.status(400).json({ error: "Please select a valid department." });
         }
@@ -815,34 +838,34 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           return res.status(400).json({ error: "Past booking times are not allowed." });
         }
 
-        const duplicateOpenRequest = getDuplicateOpenBookingRequest(req.body);
+        const duplicateOpenRequest = await getDuplicateOpenBookingRequest(req.body);
         if (duplicateOpenRequest) {
           return res.status(400).json({ error: "You already have an active request for this room and time slot." });
         }
 
-        const conflictingBooking = getApprovedBookingConflict(req.body);
+        const conflictingBooking = await getApprovedBookingConflict(req.body);
         if (conflictingBooking) {
           return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
         }
       }
 
-      const info = db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
+      const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
       if (tableName === "bookings") {
         const message = `${req.body.faculty_name} requested ${req.body.event_name || "a room"} on ${req.body.date} from ${req.body.start_time} to ${req.body.end_time}.`;
         if (req.body.status === "Pending") {
-          createNotification(null, req.body.faculty_name, "Room request submitted", `${req.body.event_name || "Your room request"} was submitted for approval.`);
-          notifyBookingAuthorities(req.body, "New room request", message);
-          const competingRequests = getCompetingOpenBookingRequests(req.body, info.lastInsertRowid);
+          await createNotification(null, req.body.faculty_name, "Room request submitted", `${req.body.event_name || "Your room request"} was submitted for approval.`);
+          await notifyBookingAuthorities(req.body, "New room request", message);
+          const competingRequests = await getCompetingOpenBookingRequests(req.body, info.lastInsertRowid);
           if (competingRequests.length > 0) {
-            notifyBookingAuthorities(
+            await notifyBookingAuthorities(
               req.body,
               "Competing room requests",
               `${req.body.event_name || "A room request"} overlaps with ${competingRequests.length} other active request(s) for the same room and time. Dean (P&M) can take the final decision.`
             );
           }
         } else {
-          createNotification(null, req.body.faculty_name, "Room booking approved", `${req.body.event_name || "Your room request"} is approved.`);
-          notifyBookingAuthorities(req.body, "Room booking approved", `${req.body.event_name || "A room request"} was approved directly.`);
+          await createNotification(null, req.body.faculty_name, "Room booking approved", `${req.body.event_name || "Your room request"} is approved.`);
+          await notifyBookingAuthorities(req.body, "Room booking approved", `${req.body.event_name || "A room request"} was approved directly.`);
         }
       }
       res.json({ id: info.lastInsertRowid, ...req.body });
@@ -851,7 +874,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
   });
 
-  app.put(`/api/${tableName}/:id`, authenticate, (req, res) => {
+  app.put(`/api/${tableName}/:id`, authenticate, async (req, res) => {
     if (tableName === "users" && (req as any).user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
     }
@@ -862,7 +885,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       req.body.force_password_change = 1;
     }
     if (tableName === "bookings") {
-      ensureBookingColumns();
+      await ensureBookingColumns();
     }
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
@@ -872,15 +895,15 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     let values = [...Object.values(req.body), req.params.id];
 
     try {
-      const existingItem = db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
-      const duplicateError = checkDuplicateRecord(tableName, { ...existingItem, ...req.body }, req.params.id);
+      const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      const duplicateError = await checkDuplicateRecord(tableName, { ...existingItem, ...req.body }, req.params.id);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
       }
 
       if (tableName === "department_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
-        const room = db.prepare("SELECT room_number, capacity, room_type FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
+        const room = await db.prepare("SELECT room_number, capacity, room_type FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         if ((parseInt(nextAllocation.capacity, 10) || 0) > room.capacity) {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextAllocation.capacity}.` });
@@ -893,7 +916,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const requestedStatus = req.body.status;
         const role = (req as any).user.role;
         const isRequester = existingItem.faculty_name === (req as any).user.name;
-        const departmentName = getBookingDepartmentName(nextBooking);
+        const departmentName = await getBookingDepartmentName(nextBooking);
         const isDepartmentHod = role === "HOD" && !!departmentName && departmentName === (req as any).user.department;
 
         if (requestedStatus === "HOD Recommended") {
@@ -929,14 +952,14 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
 
         if (openBookingStatuses.includes(nextBooking.status)) {
-          const duplicateOpenRequest = getDuplicateOpenBookingRequest(nextBooking, req.params.id);
+          const duplicateOpenRequest = await getDuplicateOpenBookingRequest(nextBooking, req.params.id);
           if (duplicateOpenRequest) {
             return res.status(400).json({ error: "This requester already has an active request for this room and time slot." });
           }
         }
 
         if (nextBooking.status === "Approved" && nextBooking.room_id && nextBooking.date && nextBooking.start_time && nextBooking.end_time) {
-          const conflictingBooking = getApprovedBookingConflict(nextBooking, req.params.id);
+          const conflictingBooking = await getApprovedBookingConflict(nextBooking, req.params.id);
           if (conflictingBooking) {
             return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
           }
@@ -946,26 +969,26 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       fields = Object.keys(req.body);
       setClause = fields.map(f => `${f} = ?`).join(", ");
       values = [...Object.values(req.body), req.params.id];
-      if (tableName === 'users' && req.body.password) {
-        const passIdx = fields.indexOf('password');
+      if (tableName === "users" && req.body.password) {
+        const passIdx = fields.indexOf("password");
         values[passIdx] = bcrypt.hashSync(req.body.password, 10);
       }
-      db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE ${idField} = ?`).run(...values);
+      await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE ${idField} = ?`).run(...values);
       if (tableName === "bookings" && req.body.status) {
         const title = req.body.status === "HOD Recommended" ? "Request recommended" : `Request ${req.body.status}`;
         const actor = (req as any).user.name;
         const message = `${actor} updated ${existingItem.event_name || "a room request"} to ${req.body.status}.`;
-        createNotification(null, existingItem.faculty_name, title, message);
+        await createNotification(null, existingItem.faculty_name, title, message);
         if (req.body.status === "HOD Recommended") {
-          createNotification("Dean (P&M)", null, title, message);
-          createNotification("Deputy Dean (P&M)", null, title, message);
+          await createNotification("Dean (P&M)", null, title, message);
+          await createNotification("Deputy Dean (P&M)", null, title, message);
         }
         if (["Approved", "Rejected", "Postponed"].includes(req.body.status)) {
-          createNotification("Dean (P&M)", null, title, message);
-          createNotification("Deputy Dean (P&M)", null, title, message);
-          const departmentName = getBookingDepartmentName(existingItem);
+          await createNotification("Dean (P&M)", null, title, message);
+          await createNotification("Deputy Dean (P&M)", null, title, message);
+          const departmentName = await getBookingDepartmentName(existingItem);
           if (departmentName) {
-            createNotification("HOD", null, title, message, departmentName);
+            await createNotification("HOD", null, title, message, departmentName);
           }
         }
       }
@@ -975,31 +998,31 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     }
   });
 
-  app.delete(`/api/${tableName}/reset`, authenticate, (req, res) => {
+  app.delete(`/api/${tableName}/reset`, authenticate, async (req, res) => {
     if (tableName === "users" && (req as any).user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
-      db.prepare(`DELETE FROM ${tableName}`).run();
+      await db.prepare(`DELETE FROM ${tableName}`).run();
       res.json({ success: true });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
   });
 
-  app.delete(`/api/${tableName}/:id`, authenticate, (req, res) => {
+  app.delete(`/api/${tableName}/:id`, authenticate, async (req, res) => {
     if (tableName === "users" && (req as any).user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
-      const existingItem = db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
-      db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
+      const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
       if (tableName === "bookings" && existingItem) {
         const actor = (req as any).user.name;
         const title = "Room request deleted";
         const message = `${actor} deleted ${existingItem.event_name || "a room request"} for ${existingItem.date || "the selected date"}.`;
-        createNotification(null, existingItem.faculty_name, title, message);
-        notifyBookingAuthorities(existingItem, title, message);
+        await createNotification(null, existingItem.faculty_name, title, message);
+        await notifyBookingAuthorities(existingItem, title, message);
       }
       res.json({ success: true });
     } catch (err: any) {
@@ -1021,57 +1044,75 @@ createCrudRoutes("equipment");
 createCrudRoutes("schedules");
 createCrudRoutes("bookings");
 createCrudRoutes("maintenance");
-  app.get(`/api/rooms`, authenticate, (req, res) => {
-    const items = db.prepare(`SELECT * FROM rooms`).all() as any[];
-    
-    const now = new Date();
-    const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
-    const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    const currentDate = now.toISOString().split('T')[0];
+  app.get(`/api/rooms`, authenticate, async (req, res) => {
+    try {
+      const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
+      
+      const now = new Date();
+      const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+      const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+      const currentDate = now.toISOString().split('T')[0];
 
-    const enrichedItems = items.map(room => {
-      if (room.status !== 'Available') return room;
+      const enrichedItems = [];
+      for (const room of items) {
+        if (room.status !== 'Available') {
+          enrichedItems.push(room);
+          continue;
+        }
 
-      const schedule = db.prepare(`
-        SELECT * FROM schedules 
-        WHERE room = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
-      `).get(room.room_number, dayOfWeek, currentTime, currentTime);
+        const schedule = await db.prepare(`
+          SELECT * FROM schedules 
+          WHERE room = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
+        `).get(room.room_number, dayOfWeek, currentTime, currentTime);
 
-      if (schedule) return { ...room, status: 'Occupied (Scheduled)' };
+        if (schedule) {
+          enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
+          continue;
+        }
 
-      const booking = db.prepare(`
-        SELECT * FROM bookings 
-        WHERE room_number = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-      `).get(room.room_number, currentDate, currentTime, currentTime);
+        const booking = await db.prepare(`
+          SELECT * FROM bookings 
+          WHERE room_number = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+        `).get(room.room_number, currentDate, currentTime, currentTime);
 
-      if (booking) return { ...room, status: 'Occupied (Booked)' };
+        if (booking) {
+          enrichedItems.push({ ...room, status: 'Occupied (Booked)' });
+          continue;
+        }
 
-      return room;
-    });
+        enrichedItems.push(room);
+      }
 
-    res.json(enrichedItems);
+      res.json(enrichedItems);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
-  app.get(`/api/rooms/:roomId/schedule`, authenticate, (req, res) => {
-    const { roomId } = req.params;
-    const { date } = req.query;
-    const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
-    
-    const schedules = db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
-    const bookings = db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
-    
-    res.json({ schedules, bookings });
+  app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
+    try {
+      const { roomId } = req.params;
+      const { date } = req.query;
+      const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
+      
+      const schedules = await db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
+      const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
+      
+      res.json({ schedules, bookings });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
 // --- DASHBOARD STATS ---
 
-app.get("/api/dashboard/stats", authenticate, (req, res) => {
+app.get("/api/dashboard/stats", authenticate, async (req, res) => {
   try {
-    const totalBuildings = db.prepare("SELECT COUNT(*) as count FROM buildings").get() as any;
-    const totalRooms = db.prepare("SELECT COUNT(*) as count FROM rooms").get() as any;
-    const maintenanceRooms = db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get() as any;
-    const equipmentIssues = db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get() as any;
-    const pendingBookings = db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get() as any;
+    const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get() as any;
+    const totalRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms").get() as any;
+    const maintenanceRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get() as any;
+    const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get() as any;
+    const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get() as any;
     
     // Calculate currently scheduled rooms
     const now = new Date();
@@ -1079,7 +1120,7 @@ app.get("/api/dashboard/stats", authenticate, (req, res) => {
     const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
     const currentDate = now.toISOString().split('T')[0];
 
-    const currentlyScheduled = db.prepare(`
+    const currentlyScheduled = await db.prepare(`
       SELECT COUNT(DISTINCT room_id) as count FROM (
         SELECT room_id FROM schedules 
         WHERE day_of_week = ? AND start_time <= ? AND end_time > ?
@@ -1091,7 +1132,7 @@ app.get("/api/dashboard/stats", authenticate, (req, res) => {
 
     const availableNow = totalRooms.count - maintenanceRooms.count - currentlyScheduled.count;
 
-    const recentAlerts = db.prepare(`
+    const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
       FROM maintenance m 
       JOIN rooms r ON m.room_id = r.id
@@ -1117,7 +1158,7 @@ app.get("/api/dashboard/stats", authenticate, (req, res) => {
 
 // --- VACANCY CHECK ROUTE ---
 
-app.get("/api/rooms/vacant", authenticate, (req, res) => {
+app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   const { date, time, duration, members } = req.query;
   if (!date || !time || !duration) {
     return res.status(400).json({ error: "Date, time, and duration are required" });
@@ -1147,18 +1188,18 @@ app.get("/api/rooms/vacant", authenticate, (req, res) => {
 
   // Find all rooms
   const allRooms = minimumCapacity !== null
-    ? db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND capacity >= ?").all(minimumCapacity) as any[]
-    : db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
+    ? await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND capacity >= ?").all(minimumCapacity) as any[]
+    : await db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
 
   // Filter out rooms that have schedules
-  const busySchedules = db.prepare(`
+  const busySchedules = await db.prepare(`
     SELECT room_id FROM schedules 
     WHERE day_of_week = ? 
     AND NOT (end_time <= ? OR start_time >= ?)
   `).all(dayOfWeek, requestedStart, requestedEnd) as any[];
 
   // Filter out rooms that have bookings
-  const busyBookings = db.prepare(`
+  const busyBookings = await db.prepare(`
     SELECT room_id FROM bookings 
     WHERE date = ? 
     AND status = 'Approved'
@@ -1176,7 +1217,7 @@ app.get("/api/rooms/vacant", authenticate, (req, res) => {
 
 // --- USAGE REPORTS & AI SUGGESTIONS ---
 
-app.get("/api/events/search-rooms", authenticate, (req, res) => {
+app.get("/api/events/search-rooms", authenticate, async (req, res) => {
   const { date, startTime, endTime, strength } = req.query;
 
   if (!date || !startTime || !endTime || !strength) {
@@ -1200,10 +1241,10 @@ app.get("/api/events/search-rooms", authenticate, (req, res) => {
 
   try {
     // 1. Get all rooms
-    const allRooms = db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
+    const allRooms = await db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
     
     // 2. Get busy rooms from schedules
-    const busyInSchedules = db.prepare(`
+    const busyInSchedules = await db.prepare(`
       SELECT DISTINCT room_id FROM schedules 
       WHERE day_of_week = ? 
       AND (
@@ -1215,7 +1256,7 @@ app.get("/api/events/search-rooms", authenticate, (req, res) => {
     const busyRoomIdsSchedules = new Set(busyInSchedules.map(s => s.room_id));
 
     // 3. Get busy rooms from bookings
-    const busyInBookings = db.prepare(`
+    const busyInBookings = await db.prepare(`
       SELECT DISTINCT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved'
       AND (
@@ -1260,22 +1301,22 @@ app.get("/api/events/search-rooms", authenticate, (req, res) => {
   }
 });
 
-app.get("/api/reports/utilization", authenticate, (req, res) => {
+app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
-    const rooms = db.prepare(`
+    const rooms = await db.prepare(`
       SELECT r.*, bld.name as building_name, b.name as block_name, f.floor_number
       FROM rooms r
       JOIN floors f ON r.floor_id = f.id
       JOIN blocks b ON f.block_id = b.id
       JOIN buildings bld ON b.building_id = bld.id
     `).all() as any[];
-    const schedules = db.prepare("SELECT * FROM schedules").all() as any[];
-    const bookings = db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
-    const allBookings = db.prepare("SELECT * FROM bookings").all() as any[];
-    const maintenance = db.prepare("SELECT * FROM maintenance").all() as any[];
-    const departments = db.prepare("SELECT * FROM departments").all() as any[];
-    const schools = db.prepare("SELECT * FROM schools").all() as any[];
-    const allocations = db.prepare(`
+    const schedules = await db.prepare("SELECT * FROM schedules").all() as any[];
+    const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
+    const allBookings = await db.prepare("SELECT * FROM bookings").all() as any[];
+    const maintenance = await db.prepare("SELECT * FROM maintenance").all() as any[];
+    const departments = await db.prepare("SELECT * FROM departments").all() as any[];
+    const schools = await db.prepare("SELECT * FROM schools").all() as any[];
+    const allocations = await db.prepare(`
       SELECT room_id, department_id, school_id, id
       FROM department_allocations
       ORDER BY id DESC
@@ -1406,11 +1447,11 @@ app.get("/api/reports/utilization", authenticate, (req, res) => {
 
 // --- ANALYTICS ENDPOINTS ---
 
-app.get("/api/analytics/utilization-trends", authenticate, (req, res) => {
+app.get("/api/analytics/utilization-trends", authenticate, async (req, res) => {
   try {
-    const rooms = db.prepare("SELECT id, room_number FROM rooms").all() as any[];
-    const schedules = db.prepare("SELECT room_id, start_time, end_time FROM schedules").all() as any[];
-    const bookings = db.prepare("SELECT room_id, start_time, end_time FROM bookings WHERE status = 'Approved'").all() as any[];
+    const rooms = await db.prepare("SELECT id, room_number FROM rooms").all() as any[];
+    const schedules = await db.prepare("SELECT room_id, start_time, end_time FROM schedules").all() as any[];
+    const bookings = await db.prepare("SELECT room_id, start_time, end_time FROM bookings WHERE status = 'Approved'").all() as any[];
 
     const calculateHours = (start: string, end: string) => {
       if (!start || !end) return 0;
@@ -1433,9 +1474,9 @@ app.get("/api/analytics/utilization-trends", authenticate, (req, res) => {
   }
 });
 
-app.get("/api/analytics/booking-frequency", authenticate, (req, res) => {
+app.get("/api/analytics/booking-frequency", authenticate, async (req, res) => {
   try {
-    const data = db.prepare(`
+    const data = await db.prepare(`
       SELECT bld.name as name, COUNT(*) as count 
       FROM bookings bk
       JOIN rooms r ON bk.room_id = r.id
@@ -1450,70 +1491,70 @@ app.get("/api/analytics/booking-frequency", authenticate, (req, res) => {
   }
 });
 
-function healInfrastructureHierarchy() {
-  const campus = db.prepare("SELECT * FROM campuses LIMIT 1").get();
+async function healInfrastructureHierarchy() {
+  const campus = await db.prepare("SELECT * FROM campuses LIMIT 1").get();
   let defaultCampusId = campus?.id;
   if (!defaultCampusId) {
-    const info = db.prepare("INSERT INTO campuses (campus_id, name, location, description) VALUES (?, ?, ?, ?)").run('CAMPUS-1', 'Default Campus', 'Default Location', 'Auto-healed campus');
+    const info = await db.prepare("INSERT INTO campuses (campus_id, name, location, description) VALUES (?, ?, ?, ?)").run('CAMPUS-1', 'Default Campus', 'Default Location', 'Auto-healed campus');
     defaultCampusId = Number(info.lastInsertRowid);
   }
 
   // Buildings
-  const buildings = db.prepare("SELECT * FROM buildings").all();
+  const buildings = await db.prepare("SELECT * FROM buildings").all();
   for (const b of buildings) {
-    const exists = db.prepare("SELECT 1 FROM campuses WHERE id = ?").get(b.campus_id);
+    const exists = await db.prepare("SELECT 1 FROM campuses WHERE id = ?").get(b.campus_id);
     if (!exists) {
-      db.prepare("UPDATE buildings SET campus_id = ? WHERE id = ?").run(defaultCampusId, b.id);
+      await db.prepare("UPDATE buildings SET campus_id = ? WHERE id = ?").run(defaultCampusId, b.id);
     }
   }
-  const buildingCheck = db.prepare("SELECT * FROM buildings LIMIT 1").get();
+  const buildingCheck = await db.prepare("SELECT * FROM buildings LIMIT 1").get();
   let defaultBuildingId = buildingCheck?.id;
   if (!defaultBuildingId) {
-    const info = db.prepare("INSERT INTO buildings (building_id, campus_id, name, description) VALUES (?, ?, ?, ?)").run('BUILD-1', defaultCampusId, 'Default Building', 'Auto-healed building');
+    const info = await db.prepare("INSERT INTO buildings (building_id, campus_id, name, description) VALUES (?, ?, ?, ?)").run('BUILD-1', defaultCampusId, 'Default Building', 'Auto-healed building');
     defaultBuildingId = Number(info.lastInsertRowid);
   }
 
   // Blocks
-  const blocks = db.prepare("SELECT * FROM blocks").all();
+  const blocks = await db.prepare("SELECT * FROM blocks").all();
   for (const bl of blocks) {
-    const exists = db.prepare("SELECT 1 FROM buildings WHERE id = ?").get(bl.building_id);
+    const exists = await db.prepare("SELECT 1 FROM buildings WHERE id = ?").get(bl.building_id);
     if (!exists) {
-      db.prepare("UPDATE blocks SET building_id = ? WHERE id = ?").run(defaultBuildingId, bl.id);
+      await db.prepare("UPDATE blocks SET building_id = ? WHERE id = ?").run(defaultBuildingId, bl.id);
     }
   }
-  const blockCheck = db.prepare("SELECT * FROM blocks LIMIT 1").get();
+  const blockCheck = await db.prepare("SELECT * FROM blocks LIMIT 1").get();
   let defaultBlockId = blockCheck?.id;
   if (!defaultBlockId) {
-    const info = db.prepare("INSERT INTO blocks (block_id, building_id, name, description) VALUES (?, ?, ?, ?)").run('BLOCK-1', defaultBuildingId, 'Default Block', 'Auto-healed block');
+    const info = await db.prepare("INSERT INTO blocks (block_id, building_id, name, description) VALUES (?, ?, ?, ?)").run('BLOCK-1', defaultBuildingId, 'Default Block', 'Auto-healed block');
     defaultBlockId = Number(info.lastInsertRowid);
   }
 
   // Floors
-  const floors = db.prepare("SELECT * FROM floors").all();
+  const floors = await db.prepare("SELECT * FROM floors").all();
   for (const f of floors) {
-    const exists = db.prepare("SELECT 1 FROM blocks WHERE id = ?").get(f.block_id);
+    const exists = await db.prepare("SELECT 1 FROM blocks WHERE id = ?").get(f.block_id);
     if (!exists) {
-      db.prepare("UPDATE floors SET block_id = ? WHERE id = ?").run(defaultBlockId, f.id);
+      await db.prepare("UPDATE floors SET block_id = ? WHERE id = ?").run(defaultBlockId, f.id);
     }
   }
-  const floorCheck = db.prepare("SELECT * FROM floors LIMIT 1").get();
+  const floorCheck = await db.prepare("SELECT * FROM floors LIMIT 1").get();
   let defaultFloorId = floorCheck?.id;
   if (!defaultFloorId) {
-    const info = db.prepare("INSERT INTO floors (floor_id, block_id, floor_number, description) VALUES (?, ?, ?, ?)").run('FLR-1', defaultBlockId, 1, 'Auto-healed floor');
+    const info = await db.prepare("INSERT INTO floors (floor_id, block_id, floor_number, description) VALUES (?, ?, ?, ?)").run('FLR-1', defaultBlockId, 1, 'Auto-healed floor');
     defaultFloorId = Number(info.lastInsertRowid);
   }
 
   // Rooms
-  const rooms = db.prepare("SELECT * FROM rooms").all();
+  const rooms = await db.prepare("SELECT * FROM rooms").all();
   for (const r of rooms) {
-    const exists = db.prepare("SELECT 1 FROM floors WHERE id = ?").get(r.floor_id);
+    const exists = await db.prepare("SELECT 1 FROM floors WHERE id = ?").get(r.floor_id);
     if (!exists) {
-      db.prepare("UPDATE rooms SET floor_id = ? WHERE id = ?").run(defaultFloorId, r.id);
+      await db.prepare("UPDATE rooms SET floor_id = ? WHERE id = ?").run(defaultFloorId, r.id);
     }
   }
-  const roomCheck = db.prepare("SELECT * FROM rooms LIMIT 1").get();
+  const roomCheck = await db.prepare("SELECT * FROM rooms LIMIT 1").get();
   if (!roomCheck) {
-    db.prepare("INSERT INTO rooms (room_id, room_number, floor_id, room_type, capacity) VALUES (?, ?, ?, ?, ?)").run('ROOM-1', '101', defaultFloorId, 'Lecture', 40);
+    await db.prepare("INSERT INTO rooms (room_id, room_number, floor_id, room_type, capacity) VALUES (?, ?, ?, ?, ?)").run('ROOM-1', '101', defaultFloorId, 'Lecture', 40);
   }
 
   return {
@@ -1525,9 +1566,9 @@ function healInfrastructureHierarchy() {
   };
 }
 
-app.get('/api/health/heal', authenticate, (req, res) => {
+app.get('/api/health/heal', authenticate, async (req, res) => {
   try {
-    const healed = healInfrastructureHierarchy();
+    const healed = await healInfrastructureHierarchy();
     res.json({ success: true, healed });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
