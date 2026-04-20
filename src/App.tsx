@@ -134,6 +134,198 @@ const getImportValue = (row: any, labels: string[]) => {
   return undefined;
 };
 
+const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[] }> = {
+  User: {
+    headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
+    exampleRows: [
+      {
+        'Full Name': 'Jane Administrator',
+        'Employee ID': 'EMP-001',
+        Role: 'Administrator',
+        'Email Address': 'jane.admin@example.com',
+        Department: 'Computer Science and Engineering',
+        Password: 'Welcome123',
+      },
+    ],
+  },
+  Campus: {
+    headers: ['Campus ID', 'Campus Name', 'Location', 'Description'],
+    exampleRows: [
+      {
+        'Campus ID': 'CAMPUS-001',
+        'Campus Name': 'Main Campus',
+        Location: 'Madanapalle',
+        Description: 'Primary academic campus',
+      },
+    ],
+  },
+  Building: {
+    headers: ['Building ID', 'Building Name', 'Campus', 'Structure Type', 'Number of Blocks', 'Description'],
+    exampleRows: [
+      {
+        'Building ID': 'BLDG-001',
+        'Building Name': 'Academic Block',
+        Campus: 'Main Campus',
+        'Structure Type': 'Has blocks',
+        'Number of Blocks': 2,
+        Description: 'Central teaching building',
+      },
+      {
+        'Building ID': 'BLDG-002',
+        'Building Name': 'Administration Block',
+        Campus: 'Main Campus',
+        'Structure Type': 'No blocks, floors directly under building',
+        'Number of Blocks': '',
+        Description: 'Administrative offices',
+      },
+    ],
+  },
+  Block: {
+    headers: ['Block ID', 'Block Name', 'Building', 'Number of Floors', 'First Floor Number', 'Description'],
+    exampleRows: [
+      {
+        'Block ID': 'BLDG-001-BLOCK-A',
+        'Block Name': 'Block A',
+        Building: 'Academic Block',
+        'Number of Floors': 3,
+        'First Floor Number': 0,
+        Description: 'Classrooms and seminar halls',
+      },
+    ],
+  },
+  Floor: {
+    headers: ['Floor ID', 'Building', 'Block / Direct Floors', 'Floor Number', 'Description'],
+    exampleRows: [
+      {
+        'Floor ID': 'BLDG-001-BLOCK-A-G',
+        Building: 'Academic Block',
+        'Block / Direct Floors': 'Block A',
+        'Floor Number': 0,
+        Description: 'Ground floor for Block A',
+      },
+    ],
+  },
+  Room: {
+    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Type', 'Lab Name', 'Restroom For', 'Capacity', 'Status'],
+    exampleRows: [
+      {
+        'Room ID': 'ROOM-101',
+        'Room Number': '101',
+        Building: 'Academic Block',
+        'Block / Direct Floors': 'Block A',
+        Floor: 'Ground Floor',
+        'Room Type': 'Classroom',
+        'Lab Name': '',
+        'Restroom For': '',
+        Capacity: 60,
+        Status: 'Available',
+      },
+      {
+        'Room ID': 'ROOM-LAB-201',
+        'Room Number': 'LAB-201',
+        Building: 'Academic Block',
+        'Block / Direct Floors': 'Block A',
+        Floor: 'Floor 2',
+        'Room Type': 'Lab',
+        'Lab Name': 'Computer Networks Lab',
+        'Restroom For': '',
+        Capacity: 30,
+        Status: 'Available',
+      },
+      {
+        'Room ID': 'ROOM-RR-G1',
+        'Room Number': 'RR-G1',
+        Building: 'Academic Block',
+        'Block / Direct Floors': 'Block A',
+        Floor: 'Ground Floor',
+        'Room Type': 'Restroom',
+        'Lab Name': '',
+        'Restroom For': 'Male',
+        Capacity: 4,
+        Status: 'Available',
+      },
+    ],
+  },
+  School: {
+    headers: ['School ID', 'School Name', 'Type', 'Description'],
+    exampleRows: [
+      {
+        'School ID': 'SCH-001',
+        'School Name': 'School of Engineering',
+        Type: 'Engineering',
+        Description: 'Engineering programs and laboratories',
+      },
+    ],
+  },
+  Department: {
+    headers: ['Department ID', 'Department Name', 'School', 'Type', 'Description'],
+    exampleRows: [
+      {
+        'Department ID': 'DEPT-001',
+        'Department Name': 'Computer Science and Engineering',
+        School: 'School of Engineering',
+        Type: 'Academic',
+        Description: 'Core computer science department',
+      },
+    ],
+  },
+  'Department Allocation': {
+    headers: ['School', 'Department', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity'],
+    exampleRows: [
+      {
+        School: 'School of Engineering',
+        Department: 'Computer Science and Engineering',
+        Semester: 'Odd',
+        Building: 'Academic Block',
+        Block: 'Block A',
+        Floor: 'Ground Floor',
+        Room: '101',
+        'Room Type': 'Classroom',
+        'Required Capacity': 60,
+      },
+    ],
+  },
+  Equipment: {
+    headers: ['Equipment ID', 'Equipment Name', 'Type', 'Room Number', 'Condition'],
+    exampleRows: [
+      {
+        'Equipment ID': 'EQ-001',
+        'Equipment Name': 'Projector',
+        Type: 'Display',
+        'Room Number': '101',
+        Condition: 'Good',
+      },
+    ],
+  },
+  Schedule: {
+    headers: ['Schedule ID', 'Department', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time'],
+    exampleRows: [
+      {
+        'Schedule ID': 'SCHD-001',
+        Department: 'Computer Science and Engineering',
+        'Course Code': 'CSE301',
+        'Course Name': 'Database Management Systems',
+        Faculty: 'Dr. Rao',
+        Room: '101',
+        Day: 'Monday',
+        'Start Time': '09:00',
+        'End Time': '10:00',
+      },
+    ],
+  },
+  Maintenance: {
+    headers: ['Maintenance ID', 'Room Number', 'Equipment', 'Status'],
+    exampleRows: [
+      {
+        'Maintenance ID': 'MAIN-001',
+        'Room Number': '101',
+        Equipment: 'Projector',
+        Status: 'Pending',
+      },
+    ],
+  },
+};
+
 const formatExcelTime = (val: any) => {
   if (typeof val === 'number') {
     const totalMinutes = Math.round(val * 24 * 60);
@@ -1508,10 +1700,20 @@ function GenericCRUD({
   });
 
   const downloadTemplate = () => {
-    const headers = formFields.map(f => f.label);
-    const ws = XLSX.utils.aoa_to_sheet([headers]);
+    const templateConfig = IMPORT_TEMPLATE_CONFIG[type];
+    const headers = templateConfig?.headers || formFields.map(f => f.label);
+    const exampleRows = templateConfig?.exampleRows || [];
+    const ws = XLSX.utils.aoa_to_sheet([
+      headers,
+      ...exampleRows.map((row) => headers.map((header) => row[header] ?? '')),
+    ]);
+    const noteSheet = XLSX.utils.aoa_to_sheet([
+      ['Instructions'],
+      ['Keep the header row unchanged. Replace or delete the example row(s) before importing the file.'],
+    ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Template");
+    XLSX.utils.book_append_sheet(wb, noteSheet, "Instructions");
     XLSX.writeFile(wb, `${type}_Template.xlsx`);
   };
 
@@ -1852,7 +2054,7 @@ function UserManagement() {
         role: row['Role'],
         email: row['Email Address'],
         department: row['Department'],
-        password: row['Password']?.toString() || 'Welcome123'
+        password: getImportValue(row, ['Password', 'Password / Admin Reset'])?.toString() || 'Welcome123'
       };
       if (!payload.email || !payload.employee_id) continue;
       await fetch('/api/users', {
@@ -3139,7 +3341,8 @@ function EquipmentManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const room = rooms.find(r => r.room_number === row['Room Number']?.toString());
+      const roomValue = getImportValue(row, ['Room Number', 'Room']);
+      const room = rooms.find(r => r.room_number === roomValue?.toString());
       const payload = {
         equipment_id: row['Equipment ID']?.toString(),
         name: row['Equipment Name'],
@@ -4462,7 +4665,8 @@ function MaintenanceManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const room = rooms.find(r => r.room_number === row['Room Number']?.toString());
+      const roomValue = getImportValue(row, ['Room Number', 'Room']);
+      const room = rooms.find(r => r.room_number === roomValue?.toString());
       const payload = {
         maintenance_id: row['Maintenance ID']?.toString(),
         room_id: room?.id,
