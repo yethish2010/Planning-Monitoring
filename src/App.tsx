@@ -126,6 +126,40 @@ const getRoomTypeDisplay = (room: any) => {
   return roomType || room?.room_type || '';
 };
 
+const normalizeBooleanLikeValue = (value: unknown, defaultValue = true) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+
+  const normalized = normalizeLookupValue(value);
+  if (['yes', 'y', 'true', '1', 'bookable', 'available'].includes(normalized)) return true;
+  if (['no', 'n', 'false', '0', 'not bookable', 'internal only', 'internal'].includes(normalized)) return false;
+  return defaultValue;
+};
+
+const isRoomBookable = (room: any) => normalizeBooleanLikeValue(room?.is_bookable, true);
+
+const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
+  if (!room) return 'Unknown Room';
+  const parent = rooms.find(item => item.id?.toString() === room.parent_room_id?.toString());
+  const baseLabel = room.room_section_name
+    ? `${room.room_number} - ${room.room_section_name}`
+    : room.room_number;
+  const parentLabel = parent?.room_number || room.parent_room_number;
+  return parentLabel ? `${baseLabel} inside ${parentLabel}` : baseLabel;
+};
+
+const findRoomByImportLabel = (rooms: any[], value: unknown) => {
+  const normalizedValue = normalizeLookupValue(value);
+  if (!normalizedValue) return null;
+
+  return rooms.find(room =>
+    normalizeLookupValue(room.room_id) === normalizedValue ||
+    normalizeLookupValue(room.room_number) === normalizedValue ||
+    normalizeLookupValue(getRoomDisplayLabel(room, rooms)) === normalizedValue
+  ) || null;
+};
+
 const getImportValue = (row: any, labels: string[]) => {
   for (const label of labels) {
     const value = row[label];
@@ -307,7 +341,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Room: {
-    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Type', 'Lab Name', 'Restroom For', 'Capacity', 'Status'],
+    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Type', 'Parent Room', 'Room Section Name', 'Is Bookable', 'Lab Name', 'Restroom For', 'Capacity', 'Status'],
     exampleRows: [
       {
         'Room ID': 'ROOM-101',
@@ -316,6 +350,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'Ground Floor',
         'Room Type': 'Classroom',
+        'Parent Room': '',
+        'Room Section Name': '',
+        'Is Bookable': 'Yes',
         'Lab Name': '',
         'Restroom For': '',
         Capacity: 60,
@@ -328,9 +365,27 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'Floor 2',
         'Room Type': 'Lab',
+        'Parent Room': '',
+        'Room Section Name': 'Computer Networks Lab',
+        'Is Bookable': 'Yes',
         'Lab Name': 'Computer Networks Lab',
         'Restroom For': '',
         Capacity: 30,
+        Status: 'Available',
+      },
+      {
+        'Room ID': 'ROOM-020',
+        'Room Number': '20',
+        Building: 'Academic Block',
+        'Block / Direct Floors': 'Block A',
+        Floor: 'Ground Floor',
+        'Room Type': 'Classroom',
+        'Parent Room': '19',
+        'Room Section Name': 'Inside Room',
+        'Is Bookable': 'Yes',
+        'Lab Name': '',
+        'Restroom For': '',
+        Capacity: 20,
         Status: 'Available',
       },
       {
@@ -340,6 +395,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'Ground Floor',
         'Room Type': 'Restroom',
+        'Parent Room': '',
+        'Room Section Name': '',
+        'Is Bookable': 'No',
         'Lab Name': '',
         'Restroom For': 'Male',
         Capacity: 4,
@@ -2738,21 +2796,45 @@ function RoomManagement() {
   const [floors, setFloors] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+
+  const refreshRooms = async () => {
+    const roomData = await fetch('/api/rooms').then(res => res.json());
+    setRooms(Array.isArray(roomData) ? roomData : []);
+  };
 
   useEffect(() => {
     fetch('/api/floors').then(res => res.json()).then(setFloors);
     fetch('/api/blocks').then(res => res.json()).then(setBlocks);
     fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    refreshRooms();
   }, []);
 
-  const normalizeRoomFormPayload = (data: any) => {
+  const normalizeRoomFormPayload = (data: any, roomPool = rooms) => {
     const roomType = normalizeRoomTypeValue(data.room_type);
+    const parentRoomId = data.parent_room_id ? Number(data.parent_room_id) : null;
     const payload = {
       ...data,
       room_type: roomType,
       lab_name: data.lab_name?.toString().trim() || '',
       restroom_type: normalizeRestroomTypeValue(data.restroom_type),
+      parent_room_id: parentRoomId,
+      room_section_name: data.room_section_name?.toString().trim() || '',
+      is_bookable: normalizeBooleanLikeValue(data.is_bookable, true) ? 1 : 0,
     };
+
+    if (parentRoomId && data.id && parentRoomId.toString() === data.id.toString()) {
+      throw new Error('A room cannot be inside itself.');
+    }
+
+    const parentRoom = parentRoomId ? roomPool.find(room => room.id?.toString() === parentRoomId.toString()) : null;
+    if (parentRoomId && !parentRoom) {
+      throw new Error('Please select a valid parent room.');
+    }
+
+    if (parentRoom && payload.floor_id && parentRoom.floor_id?.toString() !== payload.floor_id?.toString()) {
+      throw new Error('The parent room must be on the same floor.');
+    }
 
     if (roomType === 'Lab') {
       if (!payload.lab_name) {
@@ -2774,12 +2856,16 @@ function RoomManagement() {
 
   const fields = [
     { key: 'room_id', label: 'Room ID' },
-    { key: 'room_number', label: 'Room Number' },
+    {
+      key: 'room_number',
+      label: 'Room Number',
+      render: (item: any) => getRoomDisplayLabel(item, rooms),
+    },
     {
       key: 'building_id',
       label: 'Building',
       type: 'select',
-      resetKeys: ['block_id', 'floor_id'],
+      resetKeys: ['block_id', 'floor_id', 'parent_room_id'],
       options: buildings.map(b => ({ value: b.id, label: b.name })),
       render: (item: any) => {
         const floor = floors.find(f => f.id === item?.floor_id);
@@ -2792,7 +2878,7 @@ function RoomManagement() {
       key: 'block_id',
       label: 'Block / Direct Floors',
       type: 'select',
-      resetKeys: ['floor_id'],
+      resetKeys: ['floor_id', 'parent_room_id'],
       show: (formData: any) => {
         const building = buildings.find(b => b.id == formData.building_id);
         if (!building) return false;
@@ -2824,6 +2910,7 @@ function RoomManagement() {
       key: 'floor_id', 
       label: 'Floor', 
       type: 'select', 
+      resetKeys: ['parent_room_id'],
       options: (formData: any) => {
         if (!formData.building_id) return [];
 
@@ -2850,6 +2937,37 @@ function RoomManagement() {
       },
     },
     { key: 'room_type', label: 'Room Type', type: 'select', options: ROOM_TYPE_OPTIONS, render: (item: any) => getRoomTypeDisplay(item) },
+    {
+      key: 'parent_room_id',
+      label: 'Inside / Parent Room',
+      type: 'select',
+      required: false,
+      options: (formData: any) => rooms
+        .filter(room => {
+          if (formData.id && room.id?.toString() === formData.id?.toString()) return false;
+          if (formData.floor_id && room.floor_id?.toString() !== formData.floor_id?.toString()) return false;
+          return true;
+        })
+        .map(room => ({ value: room.id, label: getRoomDisplayLabel(room, rooms) })),
+      render: (item: any) => {
+        const parent = rooms.find(room => room.id?.toString() === item?.parent_room_id?.toString());
+        return parent ? getRoomDisplayLabel(parent, rooms) : '-';
+      },
+    },
+    {
+      key: 'room_section_name',
+      label: 'Room Section Name',
+      required: false,
+      render: (item: any) => item.room_section_name || '-',
+    },
+    {
+      key: 'is_bookable',
+      label: 'Is Bookable',
+      type: 'select',
+      required: false,
+      options: [{ value: '1', label: 'Yes' }, { value: '0', label: 'No' }],
+      render: (item: any) => isRoomBookable(item) ? 'Yes' : 'No',
+    },
     {
       key: 'lab_name',
       label: 'Lab Name',
@@ -2878,6 +2996,8 @@ function RoomManagement() {
       ...item,
       building_id: block?.building_id || '',
       block_id: block?.id || '',
+      is_bookable: normalizeBooleanLikeValue(item?.is_bookable, true) ? '1' : '0',
+      parent_room_id: item?.parent_room_id || '',
     };
   };
 
@@ -2889,6 +3009,8 @@ function RoomManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    const knownRooms = [...rooms];
+
     for (const row of data) {
       const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
       const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
@@ -2909,19 +3031,44 @@ function RoomManagement() {
           normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue)
         )
       );
+      const parentRoomValue = getImportValue(row, ['Parent Room', 'Inside / Parent Room']);
+      const parentRoom = parentRoomValue ? findRoomByImportLabel(knownRooms, parentRoomValue) : null;
+
+      if (parentRoomValue && !parentRoom) {
+        throw new Error(`Parent room "${parentRoomValue}" was not found. Add the parent room first or check the room number.`);
+      }
+
       const payload = {
         room_id: row['Room ID']?.toString(),
         room_number: row['Room Number']?.toString(),
         floor_id: floor?.id ?? parseInt(floorValue as any),
         room_type: normalizeRoomTypeValue(row['Room Type']),
+        parent_room_id: parentRoom?.id || null,
+        room_section_name: getImportValue(row, ['Room Section Name', 'Section Name'])?.toString() || '',
+        is_bookable: normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
         lab_name: getImportValue(row, ['Lab Name']),
         restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
         capacity: parseInt(row['Capacity']) || 0,
         status: row['Status'] || 'Available'
       };
       if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
-      const normalizedPayload = normalizeRoomFormPayload(payload);
-      await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']]);
+      if (
+        parentRoom &&
+        (
+          parentRoom.room_id?.toString() === payload.room_id ||
+          parentRoom.room_number?.toString() === payload.room_number
+        )
+      ) {
+        throw new Error(`Room "${payload.room_number}" cannot use itself as the parent room.`);
+      }
+      const normalizedPayload = normalizeRoomFormPayload(payload, knownRooms);
+      const savedRoom = await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']]);
+      const existingIndex = knownRooms.findIndex(room => room.id?.toString() === savedRoom.id?.toString());
+      if (existingIndex >= 0) {
+        knownRooms[existingIndex] = savedRoom;
+      } else {
+        knownRooms.push(savedRoom);
+      }
     }
   };
 
@@ -2933,6 +3080,7 @@ function RoomManagement() {
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
       prepareFormData={prepareFormData}
+      onDataChanged={refreshRooms}
     />
   );
 }
@@ -3076,6 +3224,7 @@ function DepartmentAllocationManagement() {
 
     return rooms
       .filter(room => {
+        if (!isRoomBookable(room)) return false;
         if (allocatedRoomIds.has(room.id?.toString()) && room.id?.toString() !== selectedRoomId) return false;
 
         const { floor, block, building } = getRoomPath(room);
@@ -3094,7 +3243,7 @@ function DepartmentAllocationManagement() {
           : `${room.capacity} seats`;
         return {
           value: room.id,
-          label: `${room.room_number} - ${fitLabel} - ${getFloorDisplayLabel(floor, blocks, buildings)}`,
+          label: `${getRoomDisplayLabel(room, rooms)} - ${fitLabel} - ${getFloorDisplayLabel(floor, blocks, buildings)}`,
         };
       });
   };
@@ -3211,8 +3360,14 @@ function DepartmentAllocationManagement() {
       const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+      const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
       const room = rooms.find(r => {
-        if (r.room_number !== getImportValue(row, ['Room', 'Room Number'])?.toString()) return false;
+        if (!isRoomBookable(r)) return false;
+        if (![
+          normalizeLookupValue(r.room_id),
+          normalizeLookupValue(r.room_number),
+          normalizeLookupValue(getRoomDisplayLabel(r, rooms)),
+        ].includes(normalizedRoomValue)) return false;
         const { block, building: roomBuilding } = getRoomPath(r);
         if (building && roomBuilding?.id !== building.id) return false;
         if (normalizedBlockLabel) {
@@ -3351,7 +3506,7 @@ function DepartmentAllocationManagement() {
                     <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
-                    <td className="px-4 py-3 text-sm font-bold text-slate-800">{room?.room_number || 'Unknown'}</td>
+                    <td className="px-4 py-3 text-sm font-bold text-slate-800">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{room?.room_type || allocation.room_type || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{room?.capacity ?? 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.semester}</td>
@@ -3402,14 +3557,14 @@ function EquipmentManagement() {
     { key: 'equipment_id', label: 'Equipment ID' },
     { key: 'name', label: 'Equipment Name' },
     { key: 'type', label: 'Type' },
-    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: r.room_number })) },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: getRoomDisplayLabel(r, rooms) })) },
     { key: 'condition', label: 'Condition', type: 'select', options: ['Excellent', 'Good', 'Fair', 'Poor'] },
   ];
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
       const roomValue = getImportValue(row, ['Room Number', 'Room']);
-      const room = rooms.find(r => r.room_number === roomValue?.toString());
+      const room = findRoomByImportLabel(rooms, roomValue);
       const payload = {
         equipment_id: row['Equipment ID']?.toString(),
         name: row['Equipment Name'],
@@ -3443,7 +3598,7 @@ function SchedulingManagement() {
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
     { key: 'faculty', label: 'Faculty' },
-    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: r.room_number })) },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.filter(isRoomBookable).map(r => ({ value: r.id, label: getRoomDisplayLabel(r, rooms) })) },
     { key: 'day_of_week', label: 'Day', type: 'select', options: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] },
     { key: 'start_time', label: 'Start Time', type: 'time' },
     { key: 'end_time', label: 'End Time', type: 'time' },
@@ -3451,7 +3606,7 @@ function SchedulingManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const room = rooms.find(r => normalizeLookupValue(r.room_number) === normalizeLookupValue(row['Room']));
+      const room = findRoomByImportLabel(rooms.filter(isRoomBookable), row['Room']);
       const dept = departments.find(d => normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']));
       
       const payload = {
@@ -3539,9 +3694,7 @@ function SchedulingManagement() {
         let importedCount = 0;
 
         for (const schedule of validSchedules) {
-          const room = rooms.find(r =>
-            normalizeLookupValue(r.room_number) === normalizeLookupValue(schedule.room)
-          );
+          const room = findRoomByImportLabel(rooms.filter(isRoomBookable), schedule.room);
           const dept = departments.find(d =>
             normalizeLookupValue(d.name) === normalizeLookupValue(schedule.department)
           );
@@ -3788,7 +3941,9 @@ function BookingManagement() {
   };
   const getBookingItems = (booking: any) => booking.bookingItems || [booking];
   function getBookingRoomNumber(booking: any) {
-    return booking.room_numbers?.join(', ') || booking.room_number || rooms.find(room => room.id == booking.room_id)?.room_number || 'Not selected';
+    if (booking.room_numbers?.length) return booking.room_numbers.join(', ');
+    const room = rooms.find(item => item.id == booking.room_id);
+    return room ? getRoomDisplayLabel(room, rooms) : booking.room_number || 'Not selected';
   }
   const groupedBookings = useMemo(() => {
     const groups = new Map<string, any[]>();
@@ -3855,7 +4010,7 @@ function BookingManagement() {
     if (searchCriteria.blockId) return floor.block_id == searchCriteria.blockId;
     return selectedBuildingBlocks.some(block => block.id === floor.block_id);
   });
-  const roomTypes = Array.from(new Set(rooms.map(room => room.room_type).filter(Boolean))).sort();
+  const roomTypes = Array.from(new Set(rooms.filter(isRoomBookable).map(room => room.room_type).filter(Boolean))).sort();
   const equipmentNames = Array.from(new Set(equipment.map(item => item.name).filter(Boolean))).sort();
   const getRoomDetails = (room: any) => {
     const fullRoom = room ? (rooms.find(r => r.id === room.id) || room) : null;
@@ -3873,6 +4028,7 @@ function BookingManagement() {
   const filterAndSortRooms = (roomList: any[]) => {
     const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
     return roomList.filter(room => {
+      if (!isRoomBookable(room)) return false;
       const { floor, block, building } = getRoomDetails(room);
       if (searchCriteria.buildingId && building?.id != searchCriteria.buildingId) return false;
       if (searchCriteria.blockId === '__direct__' && block && building && !isImplicitBuildingBlock(block, building)) return false;
@@ -4045,7 +4201,7 @@ function BookingManagement() {
         });
         if (!res.ok) {
           const err = await res.json();
-          errors.push(`Room ${room.room_number}: ${err.error || 'Operation failed'}`);
+          errors.push(`Room ${getRoomDisplayLabel(room, rooms)}: ${err.error || 'Operation failed'}`);
         }
       }
     }
@@ -4365,7 +4521,7 @@ function BookingManagement() {
                 <div key={room.id} className="p-4 border border-slate-100 rounded-xl bg-slate-50 hover:border-emerald-200 transition-all">
                   <div className="flex justify-between items-start mb-3">
                     <div>
-                      <h4 className="font-bold text-slate-800 text-lg">Room {room.room_number}</h4>
+                      <h4 className="font-bold text-slate-800 text-lg">Room {getRoomDisplayLabel(room, rooms)}</h4>
                       <p className="text-xs text-slate-500">{getRoomPath(room)}</p>
                     </div>
                     <div className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded uppercase">
@@ -4421,7 +4577,7 @@ function BookingManagement() {
                         Book Together
                       </button>
                     </div>
-                    <p className="text-xs text-blue-800">{option.rooms.map((room: any) => `Room ${room.room_number}`).join(', ')}</p>
+                    <p className="text-xs text-blue-800">{option.rooms.map((room: any) => `Room ${getRoomDisplayLabel(room, rooms)}`).join(', ')}</p>
                   </div>
                 ))}
               </div>
@@ -4561,7 +4717,7 @@ function BookingManagement() {
               <div>
                 <h3 className="text-lg font-bold text-slate-800">Book Room</h3>
                 <p className="text-xs text-slate-500">
-                  {bookingModal.rooms.map(room => `Room ${room.room_number}`).join(', ')} - {getDurationLabel()}
+                  {bookingModal.rooms.map(room => `Room ${getRoomDisplayLabel(room, rooms)}`).join(', ')} - {getDurationLabel()}
                 </p>
               </div>
               <button onClick={() => setBookingModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
@@ -4630,7 +4786,7 @@ function BookingManagement() {
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden">
             <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <div>
-                <h3 className="text-lg font-bold text-slate-800">Room {selectedRoomForSchedule?.room_number} Schedule</h3>
+                <h3 className="text-lg font-bold text-slate-800">Room {getRoomDisplayLabel(selectedRoomForSchedule, rooms)} Schedule</h3>
                 <p className="text-xs text-slate-500">{searchCriteria.date} • {new Date(searchCriteria.date).toLocaleDateString('en-US', { weekday: 'long' })}</p>
               </div>
               <button onClick={() => setIsScheduleModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
@@ -4715,7 +4871,7 @@ function MaintenanceManagement() {
 
   const fields = [
     { key: 'maintenance_id', label: 'Maintenance ID' },
-    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: r.room_number })) },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.map(r => ({ value: r.id, label: getRoomDisplayLabel(r, rooms) })) },
     { key: 'equipment_name', label: 'Equipment' },
     { key: 'status', label: 'Status', type: 'select', options: ['Pending', 'In Progress', 'Completed'] },
   ];
@@ -4723,7 +4879,7 @@ function MaintenanceManagement() {
   const handleImport = async (data: any[]) => {
     for (const row of data) {
       const roomValue = getImportValue(row, ['Room Number', 'Room']);
-      const room = rooms.find(r => r.room_number === roomValue?.toString());
+      const room = findRoomByImportLabel(rooms, roomValue);
       const payload = {
         maintenance_id: row['Maintenance ID']?.toString(),
         room_id: room?.id,
@@ -4767,7 +4923,7 @@ function AIAllocation() {
         fetch('/api/bookings', { credentials: 'include' })
       ]);
       
-      const rooms = await rRes.json();
+      const rooms = (await rRes.json()).filter(isRoomBookable);
       const buildings = await bRes.json();
       const equipment = await eRes.json();
       const schedules = await sRes.json();
@@ -6320,8 +6476,9 @@ function TimetableBuilder() {
       setSchedules(sData);
       setRooms(rData);
       setDepartments(dData);
-      if (rData.length > 0 && !selectedRoom) {
-        setSelectedRoom(rData[0].room_number);
+      const firstBookableRoom = rData.find(isRoomBookable);
+      if (firstBookableRoom && !selectedRoom) {
+        setSelectedRoom(firstBookableRoom.id?.toString());
       }
     } catch (err) {
       console.error(err);
@@ -6349,13 +6506,13 @@ function TimetableBuilder() {
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
   const getSchedulesForDay = (day: string) => {
-    const activeRoom = rooms.find(r => r.room_number === selectedRoom);
+    const activeRoom = rooms.find(r => r.id?.toString() === selectedRoom);
 
     return schedules
       .filter(s => {
         if (s.day_of_week !== day) return false;
         if (activeRoom && s.room_id != null) return s.room_id === activeRoom.id;
-        return s.room === selectedRoom;
+        return activeRoom ? false : s.room === selectedRoom;
       })
       .map(s => ({
         ...s,
@@ -6386,8 +6543,8 @@ function TimetableBuilder() {
             onChange={(e) => setSelectedRoom(e.target.value)}
             className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
           >
-            {rooms.map(r => (
-              <option key={r.id} value={r.room_number}>Room {r.room_number} ({r.building})</option>
+            {rooms.filter(isRoomBookable).map(r => (
+              <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
             ))}
           </select>
         </div>

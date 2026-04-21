@@ -117,13 +117,17 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       room_id TEXT UNIQUE NOT NULL,
       room_number TEXT NOT NULL,
       floor_id INTEGER NOT NULL,
+      parent_room_id INTEGER,
+      room_section_name TEXT,
+      is_bookable INTEGER DEFAULT 1,
       room_type TEXT NOT NULL,
       lab_name TEXT,
       restroom_type TEXT,
       capacity INTEGER NOT NULL,
       accessibility TEXT,
       status TEXT DEFAULT 'Available',
-      FOREIGN KEY(floor_id) REFERENCES floors(id)
+      FOREIGN KEY(floor_id) REFERENCES floors(id),
+      FOREIGN KEY(parent_room_id) REFERENCES rooms(id)
     );
 
     CREATE TABLE IF NOT EXISTS schools (
@@ -269,6 +273,9 @@ await ensureColumn("buildings", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("buildings", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
+await ensureColumn("rooms", "parent_room_id", "INTEGER");
+await ensureColumn("rooms", "room_section_name", "TEXT");
+await ensureColumn("rooms", "is_bookable", "INTEGER DEFAULT 1");
 await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
@@ -292,11 +299,25 @@ const normalizeRestroomTypeValue = (value: any) => {
   return value?.toString().trim() || "";
 };
 
+const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+
+  const normalized = value?.toString().trim().toLowerCase();
+  if (["yes", "y", "true", "1", "bookable", "available"].includes(normalized)) return true;
+  if (["no", "n", "false", "0", "not bookable", "internal only", "internal"].includes(normalized)) return false;
+  return defaultValue;
+};
+
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
   nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || null;
   nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
+  nextPayload.parent_room_id = nextPayload.parent_room_id ? Number(nextPayload.parent_room_id) : null;
+  nextPayload.room_section_name = nextPayload.room_section_name?.toString().trim() || null;
+  nextPayload.is_bookable = normalizeBooleanLikeValue(nextPayload.is_bookable, true) ? 1 : 0;
 
   if (nextPayload.room_type === "Lab") {
     if (!nextPayload.lab_name) {
@@ -314,6 +335,30 @@ const normalizeRoomPayload = (payload: any) => {
   }
 
   return nextPayload;
+};
+
+const validateRoomHierarchy = async (room: any, excludeId?: string | number) => {
+  if (!room?.parent_room_id) return null;
+
+  if (excludeId && room.parent_room_id?.toString() === excludeId.toString()) {
+    return "A room cannot be inside itself.";
+  }
+
+  const parentRoom = await db.prepare("SELECT id, floor_id FROM rooms WHERE id = ?").get(room.parent_room_id) as any;
+  if (!parentRoom) return "Please select a valid parent room.";
+  if (parentRoom.floor_id?.toString() !== room.floor_id?.toString()) {
+    return "The parent room must be on the same floor.";
+  }
+
+  return null;
+};
+
+const getBookableRoomError = async (roomId: any) => {
+  if (!roomId) return null;
+  const room = await db.prepare("SELECT room_number, is_bookable FROM rooms WHERE id = ?").get(roomId) as any;
+  if (!room) return "Please select a valid room.";
+  if (room.is_bookable === 0) return `Room ${room.room_number} is marked as not bookable.`;
+  return null;
 };
 
 const ensureNotificationsTable = async () => {
@@ -813,9 +858,15 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         return res.status(400).json({ error: duplicateError });
       }
 
+      if (tableName === "rooms") {
+        const hierarchyError = await validateRoomHierarchy(req.body);
+        if (hierarchyError) return res.status(400).json({ error: hierarchyError });
+      }
+
       if (tableName === "department_allocations") {
-        const room = await db.prepare("SELECT room_number, capacity, room_type FROM rooms WHERE id = ?").get(req.body.room_id) as any;
+        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
+        if (room.is_bookable === 0) return res.status(400).json({ error: `Room ${room.room_number} is marked as not bookable.` });
         if ((parseInt(req.body.capacity, 10) || 0) > room.capacity) {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${req.body.capacity}.` });
         }
@@ -824,10 +875,17 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (roomTypeIndex >= 0) values[roomTypeIndex] = req.body.room_type;
       }
 
+      if (tableName === "schedules") {
+        const bookableError = await getBookableRoomError(req.body.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
+      }
+
       if (tableName === "bookings") {
         if (!req.body.room_id || !req.body.date || !req.body.start_time || !req.body.end_time) {
           return res.status(400).json({ error: "Room, date, start time, and end time are required." });
         }
+        const bookableError = await getBookableRoomError(req.body.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
         if (!req.body.department_id) {
           return res.status(400).json({ error: "Department is required so the request can go to the respective HOD." });
         }
@@ -913,18 +971,32 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         return res.status(400).json({ error: duplicateError });
       }
 
+      if (tableName === "rooms") {
+        const hierarchyError = await validateRoomHierarchy({ ...existingItem, ...req.body }, req.params.id);
+        if (hierarchyError) return res.status(400).json({ error: hierarchyError });
+      }
+
       if (tableName === "department_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
-        const room = await db.prepare("SELECT room_number, capacity, room_type FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
+        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
+        if (room.is_bookable === 0) return res.status(400).json({ error: `Room ${room.room_number} is marked as not bookable.` });
         if ((parseInt(nextAllocation.capacity, 10) || 0) > room.capacity) {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextAllocation.capacity}.` });
         }
         req.body.room_type = room.room_type;
       }
 
+      if (tableName === "schedules") {
+        const nextSchedule = { ...existingItem, ...req.body };
+        const bookableError = await getBookableRoomError(nextSchedule.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
+      }
+
       if (tableName === "bookings") {
         const nextBooking = { ...existingItem, ...req.body };
+        const bookableError = await getBookableRoomError(nextBooking.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
         const requestedStatus = req.body.status;
         const role = (req as any).user.role;
         const isRequester = existingItem.faculty_name === (req as any).user.name;
@@ -1200,8 +1272,8 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
 
   // Find all rooms
   const allRooms = minimumCapacity !== null
-    ? await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND capacity >= ?").all(minimumCapacity) as any[]
-    : await db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
+    ? await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0 AND capacity >= ?").all(minimumCapacity) as any[]
+    : await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
 
   // Filter out rooms that have schedules
   const busySchedules = await db.prepare(`
@@ -1253,7 +1325,7 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 
   try {
     // 1. Get all rooms
-    const allRooms = await db.prepare("SELECT * FROM rooms WHERE status = 'Available'").all() as any[];
+    const allRooms = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
     
     // 2. Get busy rooms from schedules
     const busyInSchedules = await db.prepare(`
@@ -1316,8 +1388,9 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
     const rooms = await db.prepare(`
-      SELECT r.*, bld.name as building_name, b.name as block_name, f.floor_number
+      SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number
       FROM rooms r
+      LEFT JOIN rooms pr ON r.parent_room_id = pr.id
       JOIN floors f ON r.floor_id = f.id
       JOIN blocks b ON f.block_id = b.id
       JOIN buildings bld ON b.building_id = bld.id
@@ -1386,6 +1459,10 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         department: department?.name || "Unmapped",
         school: school?.name || "Unmapped",
         room_type: room.room_type,
+        parent_room_id: room.parent_room_id,
+        parent_room_number: room.parent_room_number,
+        room_section_name: room.room_section_name,
+        is_bookable: room.is_bookable,
         lab_name: room.lab_name,
         restroom_type: room.restroom_type,
         capacity: room.capacity,
