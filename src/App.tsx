@@ -197,6 +197,24 @@ const isBlocksStructureType = (value: unknown) => {
   return normalized === 'blocks' || normalized === 'has blocks' || normalized === 'has block';
 };
 
+const findBuildingForImport = (buildings: any[], row: any, blockOrFloorId?: unknown) => {
+  const buildingValue = getImportValue(row, ['Building', 'Building Name', 'Building ID']);
+  const normalizedBuildingValue = normalizeLookupValue(buildingValue);
+
+  const matchedByColumn = buildings.find(building =>
+    normalizeLookupValue(building.name) === normalizedBuildingValue ||
+    normalizeLookupValue(building.building_id) === normalizedBuildingValue
+  );
+  if (matchedByColumn) return matchedByColumn;
+
+  const recordId = blockOrFloorId?.toString().trim();
+  if (!recordId) return undefined;
+
+  return buildings
+    .filter(building => recordId.toLowerCase().startsWith(building.building_id?.toString().trim().toLowerCase()))
+    .sort((a, b) => b.building_id.toString().length - a.building_id.toString().length)[0];
+};
+
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[] }> = {
   User: {
     headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
@@ -2390,16 +2408,22 @@ function BlockManagement() {
 
   const handleImport = async (data: any[]) => {
     let currentFloors = await apiJson('/api/floors').catch(() => floors);
+    let importedCount = 0;
+    const skippedRows: string[] = [];
 
-    for (const row of data) {
-      const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+    for (const [index, row] of data.entries()) {
+      const blockId = row['Block ID']?.toString();
+      const building = findBuildingForImport(buildings, row, blockId);
       const payload = {
-        block_id: row['Block ID']?.toString(),
+        block_id: blockId,
         name: row['Block Name'],
         building_id: building?.id,
         description: row['Description']
       };
-      if (!payload.block_id || !payload.name || !payload.building_id) continue;
+      if (!payload.block_id || !payload.name || !payload.building_id) {
+        skippedRows.push(`row ${index + 2}`);
+        continue;
+      }
       const savedBlock = await upsertImportRecord('/api/blocks', payload, [['block_id'], ['building_id', 'name']]);
       const floorCount = Number(getImportValue(row, ['Number of Floors']) ?? 0);
       const firstFloorNumber = getImportValue(row, ['First Floor Number']) == null
@@ -2425,9 +2449,13 @@ function BlockManagement() {
         ...currentFloors.filter((floor: any) => !createdFloors.some(created => created.id === floor.id)),
         ...createdFloors,
       ];
+      importedCount += 1;
     }
 
     setFloors(currentFloors);
+    if (importedCount === 0) {
+      throw new Error(`No blocks were imported. Check the Building column or use the building ID, for example BLDG-001. Skipped ${skippedRows.join(', ') || 'all rows'}.`);
+    }
   };
 
   return (
