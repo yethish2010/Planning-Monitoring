@@ -134,6 +134,69 @@ const getImportValue = (row: any, labels: string[]) => {
   return undefined;
 };
 
+const normalizeImportMatchValue = (value: unknown) =>
+  value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
+
+const hasImportValue = (value: unknown) =>
+  value !== undefined && value !== null && value !== '';
+
+const findMatchingImportRecord = (records: any[], payload: any, uniqueFieldGroups: string[][]) => {
+  for (const fields of uniqueFieldGroups) {
+    if (fields.some(field => !hasImportValue(payload[field]))) continue;
+
+    const existing = records.find(record =>
+      fields.every(field =>
+        hasImportValue(record?.[field]) &&
+        normalizeImportMatchValue(record[field]) === normalizeImportMatchValue(payload[field])
+      )
+    );
+
+    if (existing) return existing;
+  }
+
+  return null;
+};
+
+const apiJson = async (url: string, options?: RequestInit) => {
+  const res = await fetch(url, {
+    credentials: 'include',
+    ...(options || {}),
+    headers: {
+      ...(options?.headers || {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Import request failed');
+  }
+  return data;
+};
+
+const upsertImportRecord = async (apiPath: string, payload: any, uniqueFieldGroups: string[][]) => {
+  const records = await apiJson(apiPath);
+  const existing = findMatchingImportRecord(Array.isArray(records) ? records : [], payload, uniqueFieldGroups);
+
+  if (existing?.id) {
+    await apiJson(`${apiPath}/${existing.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return { ...existing, ...payload };
+  }
+
+  return apiJson(apiPath, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+};
+
+const isBlocksStructureType = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  return normalized === 'blocks' || normalized === 'has blocks' || normalized === 'has block';
+};
+
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[] }> = {
   User: {
     headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
@@ -2057,12 +2120,7 @@ function UserManagement() {
         password: getImportValue(row, ['Password', 'Password / Admin Reset'])?.toString() || 'Welcome123'
       };
       if (!payload.email || !payload.employee_id) continue;
-      await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/users', payload, [['employee_id'], ['email']]);
     }
   };
 
@@ -2086,12 +2144,7 @@ function CampusManagement() {
         description: row['Description']
       };
       if (!payload.campus_id || !payload.name) continue;
-      await fetch('/api/campuses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/campuses', payload, [['campus_id'], ['name']]);
     }
   };
 
@@ -2202,9 +2255,11 @@ function BuildingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    let currentBlocks = await apiJson('/api/blocks').catch(() => blocks);
+
     for (const row of data) {
       const campus = campuses.find(c => normalizeLookupValue(c.name) === normalizeLookupValue(getImportValue(row, ['Campus'])));
-      const structureType = normalizeLookupValue(getImportValue(row, ['Structure Type']));
+      const hasBlocks = isBlocksStructureType(getImportValue(row, ['Structure Type']));
       const payload = {
         building_id: row['Building ID']?.toString(),
         name: row['Building Name'],
@@ -2212,35 +2267,31 @@ function BuildingManagement() {
         description: row['Description']
       };
       if (!payload.building_id || !payload.name || !payload.campus_id) continue;
-      const res = await fetch('/api/buildings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      const savedBuilding = await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']]);
 
-      if (res.ok && (structureType === 'blocks' || structureType === 'has blocks')) {
-        const createdBuilding = await res.json();
+      if (hasBlocks) {
         const blockCount = parseInt(getImportValue(row, ['Number of Blocks']) as any, 10) || 0;
 
         for (let index = 0; index < blockCount; index += 1) {
           const letter = String.fromCharCode(65 + index);
           const name = index < 26 ? `Block ${letter}` : `Block ${index + 1}`;
           const blockCode = name.toUpperCase().replace(/\s+/g, '-');
-          await fetch('/api/blocks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              block_id: `${createdBuilding.building_id}-${blockCode}`,
-              name,
-              building_id: createdBuilding.id,
-              description: `${name} in ${createdBuilding.name}`,
-            }),
-            credentials: 'include'
-          });
+          const savedBlock = await upsertImportRecord('/api/blocks', {
+            block_id: `${savedBuilding.building_id}-${blockCode}`,
+            name,
+            building_id: savedBuilding.id,
+            description: `${name} in ${savedBuilding.name}`,
+          }, [['block_id'], ['building_id', 'name']]);
+
+          currentBlocks = [
+            ...currentBlocks.filter((block: any) => block.id !== savedBlock.id),
+            savedBlock,
+          ];
         }
       }
     }
+
+    setBlocks(currentBlocks);
   };
 
   return (
@@ -2387,6 +2438,8 @@ function BlockManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    let currentFloors = await apiJson('/api/floors').catch(() => floors);
+
     for (const row of data) {
       const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
       const payload = {
@@ -2396,46 +2449,34 @@ function BlockManagement() {
         description: row['Description']
       };
       if (!payload.block_id || !payload.name || !payload.building_id) continue;
-      const res = await fetch('/api/blocks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
-
-      if (!res.ok) continue;
-
-      const createdBlock = await res.json();
+      const savedBlock = await upsertImportRecord('/api/blocks', payload, [['block_id'], ['building_id', 'name']]);
       const floorCount = Number(getImportValue(row, ['Number of Floors']) ?? 0);
       const firstFloorNumber = getImportValue(row, ['First Floor Number']) == null
         ? 0
         : Number(getImportValue(row, ['First Floor Number']));
       if (!Number.isInteger(floorCount) || floorCount < 1 || !Number.isInteger(firstFloorNumber)) {
-        throw new Error(`Invalid floor setup for block ${createdBlock.block_id}`);
+        throw new Error(`Invalid floor setup for block ${savedBlock.block_id}`);
       }
       const createdFloors: any[] = [];
 
       for (let index = 0; index < floorCount; index += 1) {
         const floorNumber = firstFloorNumber + index;
-        const floorRes = await fetch('/api/floors', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            floor_id: getGeneratedFloorId(createdBlock.block_id, floorNumber),
-            block_id: createdBlock.id,
-            floor_number: floorNumber,
-            description: `${getFloorName(floorNumber)} in ${createdBlock.name}`,
-          }),
-          credentials: 'include'
-        });
-        if (!floorRes.ok) {
-          const err = await floorRes.json();
-          throw new Error(err.error || `Could not create ${getFloorName(floorNumber)} for ${createdBlock.name}`);
-        }
-        createdFloors.push(await floorRes.json());
+        const savedFloor = await upsertImportRecord('/api/floors', {
+          floor_id: getGeneratedFloorId(savedBlock.block_id, floorNumber),
+          block_id: savedBlock.id,
+          floor_number: floorNumber,
+          description: `${getFloorName(floorNumber)} in ${savedBlock.name}`,
+        }, [['floor_id'], ['block_id', 'floor_number']]);
+        createdFloors.push(savedFloor);
       }
-      setFloors(prev => [...prev, ...createdFloors]);
+
+      currentFloors = [
+        ...currentFloors.filter((floor: any) => !createdFloors.some(created => created.id === floor.id)),
+        ...createdFloors,
+      ];
     }
+
+    setFloors(currentFloors);
   };
 
   return (
@@ -2621,12 +2662,7 @@ function FloorManagement() {
         description: row['Description']
       };
       if (!payload.floor_id || !payload.block_id) continue;
-      await fetch('/api/floors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/floors', payload, [['floor_id'], ['block_id', 'floor_number']]);
     }
   };
 
@@ -2829,12 +2865,7 @@ function RoomManagement() {
       };
       if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
       const normalizedPayload = normalizeRoomFormPayload(payload);
-      await fetch('/api/rooms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(normalizedPayload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/rooms', normalizedPayload, [['room_id'], ['room_number']]);
     }
   };
 
@@ -2867,12 +2898,7 @@ function SchoolManagement() {
         description: row['Description']
       };
       if (!payload.school_id || !payload.name) continue;
-      await fetch('/api/schools', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/schools', payload, [['school_id'], ['name']]);
     }
   };
 
@@ -2904,12 +2930,7 @@ function DepartmentManagement() {
         description: row['Description']
       };
       if (!payload.department_id || !payload.name || !payload.school_id) continue;
-      await fetch('/api/departments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/departments', payload, [['department_id'], ['school_id', 'name']]);
     }
   };
 
@@ -3128,11 +3149,9 @@ function DepartmentAllocationManagement() {
   ];
 
   const handleImport = async (data: any[]) => {
-    const allocatedRoomIds = new Set(allocations.map(allocation => allocation.room_id?.toString()));
-
     for (const row of data) {
-      const school = schools.find(s => s.name === row['School']);
-      const department = departments.find(d => d.name === row['Department']);
+      const school = schools.find(s => normalizeLookupValue(s.name) === normalizeLookupValue(row['School']));
+      const department = departments.find(d => normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']));
       const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
@@ -3163,18 +3182,10 @@ function DepartmentAllocationManagement() {
         !payload.school_id ||
         !payload.department_id ||
         !payload.room_id ||
-        !semesterOptions.includes(payload.semester) ||
-        allocatedRoomIds.has(payload.room_id.toString())
+        !semesterOptions.includes(payload.semester)
       ) continue;
       
-      const res = await fetch('/api/department_allocations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
-
-      if (res.ok) allocatedRoomIds.add(payload.room_id.toString());
+      await upsertImportRecord('/api/department_allocations', payload, [['room_id']]);
     }
   };
 
@@ -3351,12 +3362,7 @@ function EquipmentManagement() {
         condition: row['Condition']
       };
       if (!payload.equipment_id || !payload.name || !payload.room_id) continue;
-      await fetch('/api/equipment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/equipment', payload, [['equipment_id'], ['room_id', 'name']]);
     }
   };
 
@@ -3389,8 +3395,8 @@ function SchedulingManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const room = rooms.find(r => r.room_number === row['Room']?.toString());
-      const dept = departments.find(d => d.name === row['Department']);
+      const room = rooms.find(r => normalizeLookupValue(r.room_number) === normalizeLookupValue(row['Room']));
+      const dept = departments.find(d => normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']));
       
       const payload = {
         schedule_id: row['Schedule ID']?.toString(),
@@ -3406,12 +3412,7 @@ function SchedulingManagement() {
 
       if (!payload.schedule_id || !payload.course_name || !payload.room_id) continue;
 
-      await fetch('/api/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'day_of_week', 'start_time', 'end_time']]);
     }
     setRefreshKey(prev => prev + 1);
   };
@@ -4674,12 +4675,7 @@ function MaintenanceManagement() {
         status: row['Status'] || 'Pending'
       };
       if (!payload.maintenance_id || !payload.room_id) continue;
-      await fetch('/api/maintenance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
+      await upsertImportRecord('/api/maintenance', payload, [['maintenance_id']]);
     }
   };
 
