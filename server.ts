@@ -356,6 +356,16 @@ const normalizeRoomPayload = (payload: any) => {
   nextPayload.usage_category = normalizeUsageCategoryValue(nextPayload.usage_category, nextPayload.room_type);
   nextPayload.is_bookable = normalizeBooleanLikeValue(nextPayload.is_bookable, true) ? 1 : 0;
 
+  if (nextPayload.room_layout === "Normal") {
+    nextPayload.parent_room_id = null;
+    nextPayload.sub_room_count = null;
+    nextPayload.room_section_name = null;
+  } else if (["Split Parent", "Inside Parent"].includes(nextPayload.room_layout)) {
+    nextPayload.parent_room_id = null;
+  } else if (["Split Child", "Inside Child"].includes(nextPayload.room_layout)) {
+    nextPayload.sub_room_count = null;
+  }
+
   if (["Split Child", "Inside Child"].includes(nextPayload.room_layout) && !nextPayload.parent_room_id) {
     throw new Error("Please select a parent room for split child or inside child rooms.");
   }

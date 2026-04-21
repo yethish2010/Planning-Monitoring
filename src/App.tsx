@@ -2879,18 +2879,29 @@ function RoomManagement() {
   const normalizeRoomFormPayload = (data: any, roomPool = rooms) => {
     const roomType = normalizeRoomTypeValue(data.room_type);
     const parentRoomId = data.parent_room_id ? Number(data.parent_room_id) : null;
+    const roomLayout = normalizeRoomLayoutValue(data.room_layout);
     const payload = {
       ...data,
       room_type: roomType,
       lab_name: data.lab_name?.toString().trim() || data.room_section_name?.toString().trim() || '',
       restroom_type: normalizeRestroomTypeValue(data.restroom_type),
       parent_room_id: parentRoomId,
-      room_layout: normalizeRoomLayoutValue(data.room_layout),
+      room_layout: roomLayout,
       sub_room_count: data.sub_room_count === '' || data.sub_room_count == null ? null : Math.max(0, parseInt(data.sub_room_count, 10) || 0),
       room_section_name: data.room_section_name?.toString().trim() || '',
       usage_category: normalizeUsageCategoryValue(data.usage_category, roomType),
       is_bookable: normalizeBooleanLikeValue(data.is_bookable, true) ? 1 : 0,
     };
+
+    if (payload.room_layout === 'Normal') {
+      payload.parent_room_id = null;
+      payload.sub_room_count = null;
+      payload.room_section_name = '';
+    } else if (['Split Parent', 'Inside Parent'].includes(payload.room_layout)) {
+      payload.parent_room_id = null;
+    } else if (['Split Child', 'Inside Child'].includes(payload.room_layout)) {
+      payload.sub_room_count = null;
+    }
 
     if (parentRoomId && data.id && parentRoomId.toString() === data.id.toString()) {
       throw new Error('A room cannot be inside itself.');
@@ -2905,11 +2916,11 @@ function RoomManagement() {
       throw new Error('The parent room must be on the same floor.');
     }
 
-    if (['Split Child', 'Inside Child'].includes(payload.room_layout) && !parentRoomId) {
+    if (['Split Child', 'Inside Child'].includes(payload.room_layout) && !payload.parent_room_id) {
       throw new Error('Please select a parent room for split child or inside child rooms.');
     }
 
-    if (parentRoomId && !['Split Child', 'Inside Child'].includes(payload.room_layout)) {
+    if (payload.parent_room_id && !['Split Child', 'Inside Child'].includes(payload.room_layout)) {
       payload.room_layout = payload.room_layout === 'Split Parent' ? 'Split Child' : 'Inside Child';
     }
 
@@ -3013,13 +3024,40 @@ function RoomManagement() {
         return floor ? getFloorDisplayLabel(floor, blocks, buildings) : 'Unknown Floor';
       },
     },
-    { key: 'room_type', label: 'Room Type', type: 'select', options: ROOM_TYPE_OPTIONS, render: (item: any) => getRoomTypeDisplay(item) },
-    { key: 'room_layout', label: 'Room Layout', type: 'select', options: ROOM_LAYOUT_OPTIONS },
+    {
+      key: 'room_type',
+      label: 'Room Type',
+      type: 'select',
+      options: ROOM_TYPE_OPTIONS,
+      onChange: (nextData: any, value: string) => ({
+        ...nextData,
+        usage_category: normalizeUsageCategoryValue('', value),
+        lab_name: normalizeRoomTypeValue(value) === 'Lab' ? nextData.lab_name : '',
+        restroom_type: normalizeRoomTypeValue(value) === 'Restroom' ? nextData.restroom_type : '',
+      }),
+      render: (item: any) => getRoomTypeDisplay(item),
+    },
+    {
+      key: 'room_layout',
+      label: 'Room Layout',
+      type: 'select',
+      options: ROOM_LAYOUT_OPTIONS,
+      onChange: (nextData: any, value: string) => {
+        if (value === 'Normal') {
+          return { ...nextData, parent_room_id: '', sub_room_count: '', room_section_name: '' };
+        }
+        if (['Split Parent', 'Inside Parent'].includes(value)) {
+          return { ...nextData, parent_room_id: '' };
+        }
+        return { ...nextData, sub_room_count: '' };
+      },
+    },
     {
       key: 'parent_room_id',
       label: 'Inside / Parent Room',
       type: 'select',
       required: false,
+      show: (formData: any) => ['Split Child', 'Inside Child'].includes(normalizeRoomLayoutValue(formData.room_layout)),
       options: (formData: any) => rooms
         .filter(room => {
           if (formData.id && room.id?.toString() === formData.id?.toString()) return false;
@@ -3036,9 +3074,16 @@ function RoomManagement() {
       key: 'room_section_name',
       label: 'Sub Room Name',
       required: false,
+      show: (formData: any) => normalizeRoomLayoutValue(formData.room_layout) !== 'Normal',
       render: (item: any) => item.room_section_name || '-',
     },
-    { key: 'sub_room_count', label: 'Sub Room Count', type: 'number', required: false },
+    {
+      key: 'sub_room_count',
+      label: 'Sub Room Count',
+      type: 'number',
+      required: false,
+      show: (formData: any) => ['Split Parent', 'Inside Parent'].includes(normalizeRoomLayoutValue(formData.room_layout)),
+    },
     {
       key: 'usage_category',
       label: 'Usage Category',
