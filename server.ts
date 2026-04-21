@@ -313,6 +313,7 @@ const normalizeRoomTypeValue = (value: any) => {
   if (["hod cabin", "hod room", "head room"].includes(normalized)) return "HOD Cabin";
   if (["dean office", "dean room"].includes(normalized)) return "Dean Office";
   if (["admin office", "administration office"].includes(normalized)) return "Admin Office";
+  if (["examination section", "exam section", "examination cell", "exam cell"].includes(normalized)) return "Examination Section";
   if (["entrance", "entry", "entry point"].includes(normalized)) return "Entrance";
   if (["main entrance", "main entry"].includes(normalized)) return "Main Entrance";
   if (["emergency exit", "fire exit"].includes(normalized)) return "Emergency Exit";
@@ -354,8 +355,9 @@ const normalizeRoomLayoutValue = (value: any) => {
 
 const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
   const normalized = value?.toString().trim().toLowerCase();
-  const options = ["Teaching", "Lab Work", "Multipurpose", "Meeting", "Office", "Administration", "Storage", "Utility", "Access", "Restroom", "Dining", "Healthcare", "Sports", "Security", "Restricted"];
+  const options = ["Access", "Administration", "Dining", "Examination", "Healthcare", "Lab Work", "Meeting", "Multipurpose", "Office", "Restricted", "Restroom", "Security", "Sports", "Storage", "Teaching", "Utility"];
   if (normalized) {
+    if (["exam", "exams", "examination", "examination section", "exam section", "examination cell", "exam cell"].includes(normalized)) return "Examination";
     return options.find(option => option.toLowerCase() === normalized) || value?.toString().trim() || null;
   }
 
@@ -365,6 +367,7 @@ const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
   if (["Classroom", "Smart Classroom", "Lecture Hall", "Tutorial Room", "Seminar Hall", "Auditorium", "Exam Hall", "Library", "Reading Room"].includes(normalizedRoomType)) return "Teaching";
   if (["Conference Room", "Meeting Room", "Board Room"].includes(normalizedRoomType)) return "Meeting";
   if (["Office", "Faculty Room", "Staff Room", "HOD Cabin", "Dean Office"].includes(normalizedRoomType)) return "Office";
+  if (normalizedRoomType === "Examination Section") return "Examination";
   if (["Admin Office", "Reception", "Waiting Area"].includes(normalizedRoomType)) return "Administration";
   if (["Entrance", "Main Entrance", "Emergency Exit", "Exit", "Corridor", "Staircase"].includes(normalizedRoomType)) return "Access";
   if (["Store", "Records Room"].includes(normalizedRoomType)) return "Storage";
@@ -395,6 +398,7 @@ const NON_CAPACITY_ROOM_TYPE_VALUES = [
   "HOD Cabin",
   "Dean Office",
   "Admin Office",
+  "Examination Section",
   "Reception",
   "Library",
   "Reading Room",

@@ -96,87 +96,88 @@ const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
 const ROOM_TYPE_OPTIONS = [
-  'Classroom',
-  'Smart Classroom',
-  'Lecture Hall',
-  'Tutorial Room',
-  'Seminar Hall',
-  'Conference Room',
-  'Auditorium',
-  'Exam Hall',
-  'Multipurpose Room',
-  'Multipurpose Classroom',
-  'Multipurpose Lecture Hall',
-  'Classroom Lab',
-  'Multipurpose Lab',
-  'Lab',
-  'Computer Lab',
-  'Research Lab',
-  'Language Lab',
-  'Workshop',
-  'Studio',
-  'Library',
-  'Reading Room',
-  'Office',
-  'Faculty Room',
-  'Staff Room',
-  'HOD Cabin',
-  'Dean Office',
   'Admin Office',
-  'Meeting Room',
+  'Auditorium',
   'Board Room',
-  'Reception',
-  'Entrance',
-  'Main Entrance',
-  'Emergency Exit',
-  'Exit',
-  'Corridor',
-  'Staircase',
-  'Waiting Area',
-  'Common Room',
-  'Lounge',
-  'Pantry',
   'Cafeteria',
-  'Store',
-  'Records Room',
-  'Server Room',
+  'Classroom',
+  'Classroom Lab',
+  'Common Room',
+  'Computer Lab',
+  'Conference Room',
+  'Corridor',
+  'Dean Office',
   'Electrical Room',
-  'Maintenance Room',
-  'Utility',
-  'Restroom',
-  'Medical Room',
-  'Security Room',
-  'Sports Room',
+  'Emergency Exit',
+  'Entrance',
+  'Exam Hall',
+  'Examination Section',
+  'Exit',
+  'Faculty Room',
   'Gym',
+  'HOD Cabin',
+  'Lab',
+  'Language Lab',
+  'Lecture Hall',
+  'Library',
+  'Lounge',
+  'Main Entrance',
+  'Maintenance Room',
+  'Medical Room',
+  'Meeting Room',
+  'Multipurpose Classroom',
+  'Multipurpose Lab',
+  'Multipurpose Lecture Hall',
+  'Multipurpose Room',
+  'Office',
+  'Pantry',
+  'Reading Room',
+  'Reception',
+  'Records Room',
+  'Research Lab',
+  'Restroom',
+  'Security Room',
+  'Seminar Hall',
+  'Server Room',
+  'Smart Classroom',
+  'Sports Room',
+  'Staff Room',
+  'Staircase',
+  'Store',
+  'Studio',
+  'Tutorial Room',
+  'Utility',
+  'Waiting Area',
+  'Workshop',
 ];
 const EVENT_ROOM_TYPE_OPTIONS = [
-  'Classroom',
-  'Smart Classroom',
-  'Lecture Hall',
-  'Tutorial Room',
-  'Seminar Hall',
-  'Conference Room',
   'Auditorium',
-  'Exam Hall',
-  'Multipurpose Room',
-  'Multipurpose Classroom',
-  'Multipurpose Lecture Hall',
-  'Classroom Lab',
-  'Multipurpose Lab',
-  'Lab',
-  'Computer Lab',
-  'Research Lab',
-  'Language Lab',
-  'Workshop',
-  'Studio',
-  'Meeting Room',
   'Board Room',
-  'Sports Room',
+  'Classroom',
+  'Classroom Lab',
+  'Computer Lab',
+  'Conference Room',
+  'Exam Hall',
   'Gym',
+  'Lab',
+  'Language Lab',
+  'Lecture Hall',
+  'Meeting Room',
+  'Multipurpose Classroom',
+  'Multipurpose Lab',
+  'Multipurpose Lecture Hall',
+  'Multipurpose Room',
+  'Research Lab',
+  'Seminar Hall',
+  'Smart Classroom',
+  'Sports Room',
+  'Studio',
+  'Tutorial Room',
+  'Workshop',
 ];
 const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
 const ROOM_LAYOUT_OPTIONS = ['Normal', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
-const USAGE_CATEGORY_OPTIONS = ['Teaching', 'Lab Work', 'Multipurpose', 'Meeting', 'Office', 'Administration', 'Storage', 'Utility', 'Access', 'Restroom', 'Dining', 'Healthcare', 'Sports', 'Security', 'Restricted'];
+const USAGE_CATEGORY_OPTIONS = ['Access', 'Administration', 'Dining', 'Examination', 'Healthcare', 'Lab Work', 'Meeting', 'Multipurpose', 'Office', 'Restricted', 'Restroom', 'Security', 'Sports', 'Storage', 'Teaching', 'Utility'];
 const BOOKABLE_ROOM_TYPES = new Set([
   'Classroom',
   'Smart Classroom',
@@ -209,6 +210,7 @@ const NON_CAPACITY_ROOM_TYPES = new Set([
   'Staff Room',
   'HOD Cabin',
   'Dean Office',
+  'Examination Section',
   'Admin Office',
   'Reception',
   'Library',
@@ -259,6 +261,7 @@ const normalizeRoomTypeValue = (value: unknown) => {
   if (['hod cabin', 'hod room', 'head room'].includes(normalized)) return 'HOD Cabin';
   if (['dean office', 'dean room'].includes(normalized)) return 'Dean Office';
   if (['admin office', 'administration office'].includes(normalized)) return 'Admin Office';
+  if (['examination section', 'exam section', 'examination cell', 'exam cell'].includes(normalized)) return 'Examination Section';
   if (['entrance', 'entry', 'entry point'].includes(normalized)) return 'Entrance';
   if (['main entrance', 'main entry'].includes(normalized)) return 'Main Entrance';
   if (['emergency exit', 'fire exit'].includes(normalized)) return 'Emergency Exit';
@@ -301,6 +304,7 @@ const normalizeRoomLayoutValue = (value: unknown) => {
 const normalizeUsageCategoryValue = (value: unknown, roomType?: unknown) => {
   const normalized = normalizeLookupValue(value);
   if (normalized) {
+    if (['exam', 'exams', 'examination', 'examination section', 'exam section', 'examination cell', 'exam cell'].includes(normalized)) return 'Examination';
     return USAGE_CATEGORY_OPTIONS.find(option => normalizeLookupValue(option) === normalized) || value?.toString().trim() || '';
   }
 
@@ -310,6 +314,7 @@ const normalizeUsageCategoryValue = (value: unknown, roomType?: unknown) => {
   if (['Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Auditorium', 'Exam Hall', 'Library', 'Reading Room'].includes(normalizedRoomType)) return 'Teaching';
   if (['Conference Room', 'Meeting Room', 'Board Room'].includes(normalizedRoomType)) return 'Meeting';
   if (['Office', 'Faculty Room', 'Staff Room', 'HOD Cabin', 'Dean Office'].includes(normalizedRoomType)) return 'Office';
+  if (normalizedRoomType === 'Examination Section') return 'Examination';
   if (['Admin Office', 'Reception', 'Waiting Area'].includes(normalizedRoomType)) return 'Administration';
   if (['Entrance', 'Main Entrance', 'Emergency Exit', 'Exit', 'Corridor', 'Staircase'].includes(normalizedRoomType)) return 'Access';
   if (['Store', 'Records Room'].includes(normalizedRoomType)) return 'Storage';
@@ -563,7 +568,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
       'Room Type belongs to the current row. A child room can have a different Room Type from its parent.',
-      'For offices, cabins, library/reading rooms, admin/support/service rooms, restrooms, and access spaces, leave Is Bookable and Capacity blank. They are imported as non-bookable spaces with capacity 0.',
+      'For offices, cabins, examination sections, library/reading rooms, admin/support/service rooms, restrooms, and access spaces, leave Is Bookable and Capacity blank. They are imported as non-bookable spaces with capacity 0.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
     ],
     exampleRows: [
