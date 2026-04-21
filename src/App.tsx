@@ -2162,6 +2162,9 @@ function BuildingManagement() {
   const getVisibleBlocksForBuilding = (building: any) =>
     blocks.filter(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building));
 
+  const getBuildingStructureType = (building: any) =>
+    building?.structure_type === 'blocks' || getVisibleBlocksForBuilding(building).length > 0 ? 'blocks' : 'direct';
+
   const fields = [
     { key: 'building_id', label: 'Building ID' },
     { key: 'name', label: 'Building Name' },
@@ -2170,19 +2173,23 @@ function BuildingManagement() {
       key: 'structure_type',
       label: 'Structure Type',
       type: 'select',
-      render: (item: any) => getVisibleBlocksForBuilding(item).length > 0 ? 'Has blocks' : 'No blocks',
+      render: (item: any) => getBuildingStructureType(item) === 'blocks' ? 'Has blocks' : 'No blocks',
       options: [
         { value: 'direct', label: 'No blocks, floors directly under building' },
         { value: 'blocks', label: 'Has blocks' },
       ],
     },
     {
-      key: 'block_count',
-      label: 'Number of Blocks',
+      key: 'planned_block_count',
+      label: 'Blocks Created / Planned',
       type: 'number',
       required: false,
       show: (formData: any) => formData.structure_type === 'blocks',
-      render: (item: any) => getVisibleBlocksForBuilding(item).length,
+      render: (item: any) => {
+        const actualBlockCount = getVisibleBlocksForBuilding(item).length;
+        const plannedBlockCount = Number(item.planned_block_count) || actualBlockCount;
+        return getBuildingStructureType(item) === 'blocks' ? `${actualBlockCount} of ${plannedBlockCount}` : 0;
+      },
     },
     { key: 'description', label: 'Description', fullWidth: true },
   ];
@@ -2194,69 +2201,36 @@ function BuildingManagement() {
       throw new Error('This building already has blocks. Remove or edit the blocks before changing it to direct floors.');
     }
 
-    if (data.structure_type === 'blocks' && (parseInt(data.block_count, 10) || 0) < 1) {
+    if (data.structure_type === 'blocks' && (parseInt(data.planned_block_count, 10) || 0) < 1) {
       throw new Error('Please enter at least 1 block');
     }
 
-    if (data.structure_type === 'blocks' && data.id && (parseInt(data.block_count, 10) || 0) < existingBlockCount) {
+    if (data.structure_type === 'blocks' && data.id && (parseInt(data.planned_block_count, 10) || 0) < existingBlockCount) {
       throw new Error('This building already has more blocks. Delete extra blocks before reducing the block count.');
     }
 
     const payload = { ...data };
-    delete payload.structure_type;
-    delete payload.block_count;
+    payload.structure_type = data.structure_type || 'direct';
+    payload.planned_block_count = payload.structure_type === 'blocks'
+      ? parseInt(data.planned_block_count, 10) || 0
+      : 0;
     return payload;
-  };
-
-  const afterSubmit = async (savedBuilding: any, data: any, editingItem: any) => {
-    if (data.structure_type !== 'blocks') return;
-
-    const targetBuilding = editingItem ? { ...editingItem, ...data } : savedBuilding;
-    const existingBlockCount = editingItem ? getVisibleBlocksForBuilding(editingItem).length : 0;
-    const blockCount = Math.max(existingBlockCount, parseInt(data.block_count, 10) || 0);
-    const names = Array.from({ length: Math.max(0, blockCount - existingBlockCount) }, (_, index) => {
-      const blockIndex = existingBlockCount + index;
-      const letter = String.fromCharCode(65 + blockIndex);
-      return blockIndex < 26 ? `Block ${letter}` : `Block ${blockIndex + 1}`;
-    });
-
-    for (const name of names) {
-      const blockCode = name.toUpperCase().replace(/\s+/g, '-');
-      const res = await fetch('/api/blocks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          block_id: `${targetBuilding.building_id}-${blockCode}`,
-          name,
-          building_id: targetBuilding.id,
-          description: `${name} in ${targetBuilding.name}`,
-        }),
-        credentials: 'include'
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || `Could not create ${name}`);
-      }
-
-      const createdBlock = await res.json();
-      setBlocks(prev => [...prev, createdBlock]);
-    }
   };
 
   const prepareFormData = (item: any) => {
     const visibleBlockCount = getVisibleBlocksForBuilding(item).length;
+    const structureType = getBuildingStructureType(item);
 
     return {
       ...item,
-      structure_type: visibleBlockCount > 0 ? 'blocks' : 'direct',
-      block_count: visibleBlockCount,
+      structure_type: structureType,
+      planned_block_count: structureType === 'blocks'
+        ? Number(item.planned_block_count) || visibleBlockCount || 1
+        : 0,
     };
   };
 
   const handleImport = async (data: any[]) => {
-    let currentBlocks = await apiJson('/api/blocks').catch(() => blocks);
-
     for (const row of data) {
       const campus = campuses.find(c => normalizeLookupValue(c.name) === normalizeLookupValue(getImportValue(row, ['Campus'])));
       const hasBlocks = isBlocksStructureType(getImportValue(row, ['Structure Type']));
@@ -2264,34 +2238,13 @@ function BuildingManagement() {
         building_id: row['Building ID']?.toString(),
         name: row['Building Name'],
         campus_id: campus?.id,
+        structure_type: hasBlocks ? 'blocks' : 'direct',
+        planned_block_count: hasBlocks ? parseInt(getImportValue(row, ['Number of Blocks']) as any, 10) || 0 : 0,
         description: row['Description']
       };
       if (!payload.building_id || !payload.name || !payload.campus_id) continue;
-      const savedBuilding = await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']]);
-
-      if (hasBlocks) {
-        const blockCount = parseInt(getImportValue(row, ['Number of Blocks']) as any, 10) || 0;
-
-        for (let index = 0; index < blockCount; index += 1) {
-          const letter = String.fromCharCode(65 + index);
-          const name = index < 26 ? `Block ${letter}` : `Block ${index + 1}`;
-          const blockCode = name.toUpperCase().replace(/\s+/g, '-');
-          const savedBlock = await upsertImportRecord('/api/blocks', {
-            block_id: `${savedBuilding.building_id}-${blockCode}`,
-            name,
-            building_id: savedBuilding.id,
-            description: `${name} in ${savedBuilding.name}`,
-          }, [['block_id'], ['building_id', 'name']]);
-
-          currentBlocks = [
-            ...currentBlocks.filter((block: any) => block.id !== savedBlock.id),
-            savedBlock,
-          ];
-        }
-      }
+      await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']]);
     }
-
-    setBlocks(currentBlocks);
   };
 
   return (
@@ -2301,7 +2254,6 @@ function BuildingManagement() {
       apiPath="/api/buildings"
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
-      afterSubmit={afterSubmit}
       prepareFormData={prepareFormData}
     />
   );
