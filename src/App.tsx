@@ -95,9 +95,13 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
-const ROOM_TYPE_OPTIONS = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library', 'Restroom'];
-const EVENT_ROOM_TYPE_OPTIONS = [...ROOM_TYPE_OPTIONS, 'Smart Classroom'];
+const ROOM_TYPE_OPTIONS = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library', 'Restroom', 'Store', 'Utility', 'Server Room'];
+const EVENT_ROOM_TYPE_OPTIONS = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Library', 'Smart Classroom'];
 const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
+const ROOM_LAYOUT_OPTIONS = ['Normal', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
+const USAGE_CATEGORY_OPTIONS = ['Teaching', 'Lab Work', 'Meeting', 'Office', 'Storage', 'Utility', 'Restroom', 'Restricted'];
+const BOOKABLE_ROOM_TYPES = new Set(['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Library']);
+const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Meeting']);
 
 const normalizeRoomTypeValue = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
@@ -113,6 +117,33 @@ const normalizeRestroomTypeValue = (value: unknown) => {
   if (['male', 'boys', 'men'].includes(normalized)) return 'Male';
   if (['female', 'girls', 'women'].includes(normalized)) return 'Female';
   return value?.toString().trim() || '';
+};
+
+const normalizeRoomLayoutValue = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return 'Normal';
+  if (['split parent', 'split room', 'split'].includes(normalized)) return 'Split Parent';
+  if (['split child', 'split section', 'section'].includes(normalized)) return 'Split Child';
+  if (['inside parent', 'room inside', 'contains room', 'room inside parent'].includes(normalized)) return 'Inside Parent';
+  if (['inside child', 'inside room', 'child room'].includes(normalized)) return 'Inside Child';
+  return ROOM_LAYOUT_OPTIONS.find(option => normalizeLookupValue(option) === normalized) || value?.toString().trim() || 'Normal';
+};
+
+const normalizeUsageCategoryValue = (value: unknown, roomType?: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (normalized) {
+    return USAGE_CATEGORY_OPTIONS.find(option => normalizeLookupValue(option) === normalized) || value?.toString().trim() || '';
+  }
+
+  const normalizedRoomType = normalizeRoomTypeValue(roomType);
+  if (normalizedRoomType === 'Lab') return 'Lab Work';
+  if (['Classroom', 'Seminar Hall', 'Library'].includes(normalizedRoomType)) return 'Teaching';
+  if (normalizedRoomType === 'Conference Room') return 'Meeting';
+  if (normalizedRoomType === 'Office') return 'Office';
+  if (normalizedRoomType === 'Store') return 'Storage';
+  if (normalizedRoomType === 'Restroom') return 'Restroom';
+  if (['Utility', 'Server Room'].includes(normalizedRoomType)) return 'Utility';
+  return '';
 };
 
 const getRoomTypeDisplay = (room: any) => {
@@ -138,6 +169,14 @@ const normalizeBooleanLikeValue = (value: unknown, defaultValue = true) => {
 };
 
 const isRoomBookable = (room: any) => normalizeBooleanLikeValue(room?.is_bookable, true);
+
+const isRoomReservable = (room: any) => {
+  if (!isRoomBookable(room)) return false;
+  if (room?.status && room.status !== 'Available') return false;
+  const roomType = normalizeRoomTypeValue(room?.room_type);
+  const usageCategory = normalizeUsageCategoryValue(room?.usage_category, roomType);
+  return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
+};
 
 const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   if (!room) return 'Unknown Room';
@@ -338,7 +377,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Room: {
-    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Type', 'Parent Room', 'Room Section Name', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
+    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Type', 'Room Layout', 'Parent Room', 'Sub Room Count', 'Sub Room Name', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
     exampleRows: [
       {
         'Room ID': 'ROOM-LAB-201',
@@ -347,8 +386,11 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
         'Room Type': 'Lab',
+        'Room Layout': 'Split Parent',
         'Parent Room': '',
-        'Room Section Name': 'Computer Lab',
+        'Sub Room Count': 3,
+        'Sub Room Name': 'Computer Lab',
+        'Usage Category': 'Lab Work',
         'Is Bookable': 'Yes',
         Capacity: 60,
         Status: 'Available',
@@ -362,8 +404,11 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
         'Room Type': 'Lab',
+        'Room Layout': 'Split Child',
         'Parent Room': 'LAB-201',
-        'Room Section Name': 'Programming Section',
+        'Sub Room Count': '',
+        'Sub Room Name': 'Programming Section',
+        'Usage Category': 'Lab Work',
         'Is Bookable': 'Yes',
         Capacity: 30,
         Status: 'Available',
@@ -376,13 +421,16 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
-        'Room Type': 'Lab',
+        'Room Type': 'Store',
+        'Room Layout': 'Split Child',
         'Parent Room': 'LAB-201',
-        'Room Section Name': 'Store Room',
+        'Sub Room Count': '',
+        'Sub Room Name': 'Store Room',
+        'Usage Category': 'Storage',
         'Is Bookable': 'No',
         Capacity: 5,
         Status: 'Available',
-        'Lab Name': 'Store Room',
+        'Lab Name': '',
         'Restroom For': '',
       },
       {
@@ -392,8 +440,11 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
         'Room Type': 'Classroom',
+        'Room Layout': 'Inside Parent',
         'Parent Room': '',
-        'Room Section Name': '',
+        'Sub Room Count': 1,
+        'Sub Room Name': 'Main Room 19',
+        'Usage Category': 'Teaching',
         'Is Bookable': 'Yes',
         Capacity: 40,
         Status: 'Available',
@@ -407,8 +458,11 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
         'Room Type': 'Classroom',
+        'Room Layout': 'Inside Child',
         'Parent Room': '19',
-        'Room Section Name': 'Inside Room',
+        'Sub Room Count': '',
+        'Sub Room Name': 'Inside Room 20',
+        'Usage Category': 'Teaching',
         'Is Bookable': 'Yes',
         Capacity: 20,
         Status: 'Available',
@@ -2831,7 +2885,10 @@ function RoomManagement() {
       lab_name: data.lab_name?.toString().trim() || data.room_section_name?.toString().trim() || '',
       restroom_type: normalizeRestroomTypeValue(data.restroom_type),
       parent_room_id: parentRoomId,
+      room_layout: normalizeRoomLayoutValue(data.room_layout),
+      sub_room_count: data.sub_room_count === '' || data.sub_room_count == null ? null : Math.max(0, parseInt(data.sub_room_count, 10) || 0),
       room_section_name: data.room_section_name?.toString().trim() || '',
+      usage_category: normalizeUsageCategoryValue(data.usage_category, roomType),
       is_bookable: normalizeBooleanLikeValue(data.is_bookable, true) ? 1 : 0,
     };
 
@@ -2846,6 +2903,14 @@ function RoomManagement() {
 
     if (parentRoom && payload.floor_id && parentRoom.floor_id?.toString() !== payload.floor_id?.toString()) {
       throw new Error('The parent room must be on the same floor.');
+    }
+
+    if (['Split Child', 'Inside Child'].includes(payload.room_layout) && !parentRoomId) {
+      throw new Error('Please select a parent room for split child or inside child rooms.');
+    }
+
+    if (parentRoomId && !['Split Child', 'Inside Child'].includes(payload.room_layout)) {
+      payload.room_layout = payload.room_layout === 'Split Parent' ? 'Split Child' : 'Inside Child';
     }
 
     if (roomType === 'Lab') {
@@ -2949,6 +3014,7 @@ function RoomManagement() {
       },
     },
     { key: 'room_type', label: 'Room Type', type: 'select', options: ROOM_TYPE_OPTIONS, render: (item: any) => getRoomTypeDisplay(item) },
+    { key: 'room_layout', label: 'Room Layout', type: 'select', options: ROOM_LAYOUT_OPTIONS },
     {
       key: 'parent_room_id',
       label: 'Inside / Parent Room',
@@ -2968,9 +3034,18 @@ function RoomManagement() {
     },
     {
       key: 'room_section_name',
-      label: 'Room Section Name',
+      label: 'Sub Room Name',
       required: false,
       render: (item: any) => item.room_section_name || '-',
+    },
+    { key: 'sub_room_count', label: 'Sub Room Count', type: 'number', required: false },
+    {
+      key: 'usage_category',
+      label: 'Usage Category',
+      type: 'select',
+      required: false,
+      options: USAGE_CATEGORY_OPTIONS,
+      render: (item: any) => item.usage_category || normalizeUsageCategoryValue('', item.room_type) || '-',
     },
     {
       key: 'is_bookable',
@@ -3010,6 +3085,9 @@ function RoomManagement() {
       block_id: block?.id || '',
       is_bookable: normalizeBooleanLikeValue(item?.is_bookable, true) ? '1' : '0',
       parent_room_id: item?.parent_room_id || '',
+      room_layout: normalizeRoomLayoutValue(item?.room_layout),
+      sub_room_count: item?.sub_room_count ?? '',
+      usage_category: normalizeUsageCategoryValue(item?.usage_category, item?.room_type),
     };
   };
 
@@ -3055,8 +3133,11 @@ function RoomManagement() {
         room_number: row['Room Number']?.toString(),
         floor_id: floor?.id ?? parseInt(floorValue as any),
         room_type: normalizeRoomTypeValue(row['Room Type']),
+        room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
         parent_room_id: parentRoom?.id || null,
-        room_section_name: getImportValue(row, ['Room Section Name', 'Section Name'])?.toString() || '',
+        sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
+        room_section_name: getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString() || '',
+        usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), row['Room Type']),
         is_bookable: normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
         lab_name: getImportValue(row, ['Lab Name']),
         restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
@@ -3236,7 +3317,7 @@ function DepartmentAllocationManagement() {
 
     return rooms
       .filter(room => {
-        if (!isRoomBookable(room)) return false;
+        if (!isRoomReservable(room)) return false;
         if (allocatedRoomIds.has(room.id?.toString()) && room.id?.toString() !== selectedRoomId) return false;
 
         const { floor, block, building } = getRoomPath(room);
@@ -3374,7 +3455,7 @@ function DepartmentAllocationManagement() {
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
       const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
       const room = rooms.find(r => {
-        if (!isRoomBookable(r)) return false;
+        if (!isRoomReservable(r)) return false;
         if (![
           normalizeLookupValue(r.room_id),
           normalizeLookupValue(r.room_number),
@@ -3610,7 +3691,7 @@ function SchedulingManagement() {
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
     { key: 'faculty', label: 'Faculty' },
-    { key: 'room_id', label: 'Room', type: 'select', options: rooms.filter(isRoomBookable).map(r => ({ value: r.id, label: getRoomDisplayLabel(r, rooms) })) },
+    { key: 'room_id', label: 'Room', type: 'select', options: rooms.filter(isRoomReservable).map(r => ({ value: r.id, label: getRoomDisplayLabel(r, rooms) })) },
     { key: 'day_of_week', label: 'Day', type: 'select', options: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] },
     { key: 'start_time', label: 'Start Time', type: 'time' },
     { key: 'end_time', label: 'End Time', type: 'time' },
@@ -3618,7 +3699,7 @@ function SchedulingManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const room = findRoomByImportLabel(rooms.filter(isRoomBookable), row['Room']);
+      const room = findRoomByImportLabel(rooms.filter(isRoomReservable), row['Room']);
       const dept = departments.find(d => normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']));
       
       const payload = {
@@ -3706,7 +3787,7 @@ function SchedulingManagement() {
         let importedCount = 0;
 
         for (const schedule of validSchedules) {
-          const room = findRoomByImportLabel(rooms.filter(isRoomBookable), schedule.room);
+          const room = findRoomByImportLabel(rooms.filter(isRoomReservable), schedule.room);
           const dept = departments.find(d =>
             normalizeLookupValue(d.name) === normalizeLookupValue(schedule.department)
           );
@@ -4022,7 +4103,7 @@ function BookingManagement() {
     if (searchCriteria.blockId) return floor.block_id == searchCriteria.blockId;
     return selectedBuildingBlocks.some(block => block.id === floor.block_id);
   });
-  const roomTypes = Array.from(new Set(rooms.filter(isRoomBookable).map(room => room.room_type).filter(Boolean))).sort();
+  const roomTypes = Array.from(new Set(rooms.filter(isRoomReservable).map(room => room.room_type).filter(Boolean))).sort();
   const equipmentNames = Array.from(new Set(equipment.map(item => item.name).filter(Boolean))).sort();
   const getRoomDetails = (room: any) => {
     const fullRoom = room ? (rooms.find(r => r.id === room.id) || room) : null;
@@ -4040,7 +4121,7 @@ function BookingManagement() {
   const filterAndSortRooms = (roomList: any[]) => {
     const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
     return roomList.filter(room => {
-      if (!isRoomBookable(room)) return false;
+      if (!isRoomReservable(room)) return false;
       const { floor, block, building } = getRoomDetails(room);
       if (searchCriteria.buildingId && building?.id != searchCriteria.buildingId) return false;
       if (searchCriteria.blockId === '__direct__' && block && building && !isImplicitBuildingBlock(block, building)) return false;
@@ -4935,7 +5016,7 @@ function AIAllocation() {
         fetch('/api/bookings', { credentials: 'include' })
       ]);
       
-      const rooms = (await rRes.json()).filter(isRoomBookable);
+      const rooms = (await rRes.json()).filter(isRoomReservable);
       const buildings = await bRes.json();
       const equipment = await eRes.json();
       const schedules = await sRes.json();
@@ -5406,6 +5487,12 @@ function AnalyticsDashboard() {
       Building: room.building,
       Department: room.department,
       Type: getRoomTypeDisplay(room),
+      Layout: room.room_layout || 'Normal',
+      ParentRoom: room.parent_room_number || '',
+      SubRoomCount: room.sub_room_count ?? '',
+      SubRoomName: room.room_section_name || '',
+      UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
+      IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
       'Lab Name': room.lab_name || '',
       'Restroom For': room.restroom_type || '',
       Capacity: room.capacity,
@@ -5841,6 +5928,12 @@ function ReportGeneration() {
       Department: room.department,
       School: room.school,
       Type: getRoomTypeDisplay(room),
+      Layout: room.room_layout || 'Normal',
+      ParentRoom: room.parent_room_number || '',
+      SubRoomCount: room.sub_room_count ?? '',
+      SubRoomName: room.room_section_name || '',
+      UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
+      IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
       'Lab Name': room.lab_name || '',
       'Restroom For': room.restroom_type || '',
       Capacity: room.capacity,
@@ -5878,6 +5971,12 @@ function ReportGeneration() {
       Department: room.department,
       School: room.school,
       Type: getRoomTypeDisplay(room),
+      Layout: room.room_layout || 'Normal',
+      ParentRoom: room.parent_room_number || '',
+      SubRoomCount: room.sub_room_count ?? '',
+      SubRoomName: room.room_section_name || '',
+      UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
+      IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
       LabName: room.lab_name || '',
       RestroomFor: room.restroom_type || '',
       Capacity: room.capacity,
@@ -6488,7 +6587,7 @@ function TimetableBuilder() {
       setSchedules(sData);
       setRooms(rData);
       setDepartments(dData);
-      const firstBookableRoom = rData.find(isRoomBookable);
+      const firstBookableRoom = rData.find(isRoomReservable);
       if (firstBookableRoom && !selectedRoom) {
         setSelectedRoom(firstBookableRoom.id?.toString());
       }
@@ -6555,7 +6654,7 @@ function TimetableBuilder() {
             onChange={(e) => setSelectedRoom(e.target.value)}
             className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
           >
-            {rooms.filter(isRoomBookable).map(r => (
+            {rooms.filter(isRoomReservable).map(r => (
               <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
             ))}
           </select>

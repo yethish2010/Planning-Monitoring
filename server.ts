@@ -118,7 +118,10 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       room_number TEXT NOT NULL,
       floor_id INTEGER NOT NULL,
       parent_room_id INTEGER,
+      room_layout TEXT DEFAULT 'Normal',
+      sub_room_count INTEGER,
       room_section_name TEXT,
+      usage_category TEXT,
       is_bookable INTEGER DEFAULT 1,
       room_type TEXT NOT NULL,
       lab_name TEXT,
@@ -274,7 +277,10 @@ await ensureColumn("buildings", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("rooms", "parent_room_id", "INTEGER");
+await ensureColumn("rooms", "room_layout", "TEXT DEFAULT 'Normal'");
+await ensureColumn("rooms", "sub_room_count", "INTEGER");
 await ensureColumn("rooms", "room_section_name", "TEXT");
+await ensureColumn("rooms", "usage_category", "TEXT");
 await ensureColumn("rooms", "is_bookable", "INTEGER DEFAULT 1");
 await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
@@ -299,6 +305,34 @@ const normalizeRestroomTypeValue = (value: any) => {
   return value?.toString().trim() || "";
 };
 
+const normalizeRoomLayoutValue = (value: any) => {
+  const normalized = value?.toString().trim().toLowerCase();
+  if (!normalized) return "Normal";
+  if (["split parent", "split room", "split"].includes(normalized)) return "Split Parent";
+  if (["split child", "split section", "section"].includes(normalized)) return "Split Child";
+  if (["inside parent", "room inside", "contains room", "room inside parent"].includes(normalized)) return "Inside Parent";
+  if (["inside child", "inside room", "child room"].includes(normalized)) return "Inside Child";
+  return ["Normal", "Split Parent", "Split Child", "Inside Parent", "Inside Child"].find(option => option.toLowerCase() === normalized) || value?.toString().trim() || "Normal";
+};
+
+const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
+  const normalized = value?.toString().trim().toLowerCase();
+  const options = ["Teaching", "Lab Work", "Meeting", "Office", "Storage", "Utility", "Restroom", "Restricted"];
+  if (normalized) {
+    return options.find(option => option.toLowerCase() === normalized) || value?.toString().trim() || null;
+  }
+
+  const normalizedRoomType = normalizeRoomTypeValue(roomType);
+  if (normalizedRoomType === "Lab") return "Lab Work";
+  if (["Classroom", "Seminar Hall", "Library"].includes(normalizedRoomType)) return "Teaching";
+  if (normalizedRoomType === "Conference Room") return "Meeting";
+  if (normalizedRoomType === "Office") return "Office";
+  if (normalizedRoomType === "Store") return "Storage";
+  if (normalizedRoomType === "Restroom") return "Restroom";
+  if (["Utility", "Server Room"].includes(normalizedRoomType)) return "Utility";
+  return null;
+};
+
 const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
   if (value === undefined || value === null || value === "") return defaultValue;
   if (typeof value === "boolean") return value;
@@ -316,8 +350,19 @@ const normalizeRoomPayload = (payload: any) => {
   nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
   nextPayload.parent_room_id = nextPayload.parent_room_id ? Number(nextPayload.parent_room_id) : null;
+  nextPayload.room_layout = normalizeRoomLayoutValue(nextPayload.room_layout);
+  nextPayload.sub_room_count = nextPayload.sub_room_count === "" || nextPayload.sub_room_count == null ? null : Math.max(0, parseInt(nextPayload.sub_room_count, 10) || 0);
   nextPayload.room_section_name = nextPayload.room_section_name?.toString().trim() || null;
+  nextPayload.usage_category = normalizeUsageCategoryValue(nextPayload.usage_category, nextPayload.room_type);
   nextPayload.is_bookable = normalizeBooleanLikeValue(nextPayload.is_bookable, true) ? 1 : 0;
+
+  if (["Split Child", "Inside Child"].includes(nextPayload.room_layout) && !nextPayload.parent_room_id) {
+    throw new Error("Please select a parent room for split child or inside child rooms.");
+  }
+
+  if (nextPayload.parent_room_id && !["Split Child", "Inside Child"].includes(nextPayload.room_layout)) {
+    nextPayload.room_layout = nextPayload.room_layout === "Split Parent" ? "Split Child" : "Inside Child";
+  }
 
   if (nextPayload.room_type === "Lab") {
     if (!nextPayload.lab_name) {
@@ -355,9 +400,18 @@ const validateRoomHierarchy = async (room: any, excludeId?: string | number) => 
 
 const getBookableRoomError = async (roomId: any) => {
   if (!roomId) return null;
-  const room = await db.prepare("SELECT room_number, is_bookable FROM rooms WHERE id = ?").get(roomId) as any;
+  const room = await db.prepare("SELECT room_number, room_type, usage_category, is_bookable, status FROM rooms WHERE id = ?").get(roomId) as any;
   if (!room) return "Please select a valid room.";
   if (room.is_bookable === 0) return `Room ${room.room_number} is marked as not bookable.`;
+  if (room.status && room.status !== "Available") return `Room ${room.room_number} is not available.`;
+  const roomType = normalizeRoomTypeValue(room.room_type);
+  const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
+  if (
+    !["Classroom", "Lab", "Seminar Hall", "Conference Room", "Library"].includes(roomType) &&
+    !["Teaching", "Lab Work", "Meeting"].includes(usageCategory || "")
+  ) {
+    return `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
+  }
   return null;
 };
 
@@ -866,7 +920,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "department_allocations") {
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
-        if (room.is_bookable === 0) return res.status(400).json({ error: `Room ${room.room_number} is marked as not bookable.` });
+        const bookableError = await getBookableRoomError(req.body.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
         if ((parseInt(req.body.capacity, 10) || 0) > room.capacity) {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${req.body.capacity}.` });
         }
@@ -980,7 +1035,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const nextAllocation = { ...existingItem, ...req.body };
         const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
-        if (room.is_bookable === 0) return res.status(400).json({ error: `Room ${room.room_number} is marked as not bookable.` });
+        const bookableError = await getBookableRoomError(nextAllocation.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
         if ((parseInt(nextAllocation.capacity, 10) || 0) > room.capacity) {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextAllocation.capacity}.` });
         }
@@ -1271,9 +1327,17 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   const requestedEnd = `${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}`;
 
   // Find all rooms
+  const reservableWhere = `
+    status = 'Available'
+    AND COALESCE(is_bookable, 1) != 0
+    AND (
+      room_type IN ('Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Library')
+      OR usage_category IN ('Teaching', 'Lab Work', 'Meeting')
+    )
+  `;
   const allRooms = minimumCapacity !== null
-    ? await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0 AND capacity >= ?").all(minimumCapacity) as any[]
-    : await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
+    ? await db.prepare(`SELECT * FROM rooms WHERE ${reservableWhere} AND capacity >= ?`).all(minimumCapacity) as any[]
+    : await db.prepare(`SELECT * FROM rooms WHERE ${reservableWhere}`).all() as any[];
 
   // Filter out rooms that have schedules
   const busySchedules = await db.prepare(`
@@ -1325,7 +1389,15 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 
   try {
     // 1. Get all rooms
-    const allRooms = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
+    const allRooms = await db.prepare(`
+      SELECT * FROM rooms
+      WHERE status = 'Available'
+      AND COALESCE(is_bookable, 1) != 0
+      AND (
+        room_type IN ('Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Library')
+        OR usage_category IN ('Teaching', 'Lab Work', 'Meeting')
+      )
+    `).all() as any[];
     
     // 2. Get busy rooms from schedules
     const busyInSchedules = await db.prepare(`
@@ -1461,7 +1533,10 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         room_type: room.room_type,
         parent_room_id: room.parent_room_id,
         parent_room_number: room.parent_room_number,
+        room_layout: room.room_layout,
+        sub_room_count: room.sub_room_count,
         room_section_name: room.room_section_name,
+        usage_category: room.usage_category,
         is_bookable: room.is_bookable,
         lab_name: room.lab_name,
         restroom_type: room.restroom_type,
