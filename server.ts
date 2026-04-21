@@ -374,6 +374,14 @@ const normalizeRoomPayload = (payload: any) => {
     nextPayload.room_layout = nextPayload.room_layout === "Split Parent" ? "Split Child" : "Inside Child";
   }
 
+  if (nextPayload.room_layout !== "Normal" && !nextPayload.room_section_name) {
+    throw new Error("Sub room name is required for split or inside room layouts.");
+  }
+
+  if (["Split Parent", "Inside Parent"].includes(nextPayload.room_layout) && (!nextPayload.sub_room_count || nextPayload.sub_room_count <= 0)) {
+    throw new Error("Sub room count must be greater than zero for split parent or inside parent rooms.");
+  }
+
   if (nextPayload.room_type === "Lab") {
     if (!nextPayload.lab_name) {
       throw new Error("Lab name is required when the room type is Lab.");

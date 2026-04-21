@@ -298,7 +298,7 @@ const findCampusForImport = (campuses: any[], row: any) => {
   return campuses.length === 1 ? campuses[0] : undefined;
 };
 
-const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[] }> = {
+const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[]; instructions?: string[] }> = {
   User: {
     headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
     exampleRows: [
@@ -377,7 +377,14 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Room: {
-    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Type', 'Room Layout', 'Parent Room', 'Sub Room Count', 'Sub Room Name', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
+    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
+    instructions: [
+      'Use one row for the parent room and one separate row for every split/inside child room.',
+      'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
+      'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
+      'Room Type belongs to the current row. A child room can have a different Room Type from its parent.',
+      'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
+    ],
     exampleRows: [
       {
         'Room ID': 'ROOM-LAB-201',
@@ -387,9 +394,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'First Floor',
         'Room Type': 'Lab',
         'Room Layout': 'Split Parent',
-        'Parent Room': '',
         'Sub Room Count': 3,
         'Sub Room Name': 'Computer Lab',
+        'Parent Room': '',
         'Usage Category': 'Lab Work',
         'Is Bookable': 'Yes',
         Capacity: 60,
@@ -405,9 +412,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'First Floor',
         'Room Type': 'Lab',
         'Room Layout': 'Split Child',
-        'Parent Room': 'LAB-201',
         'Sub Room Count': '',
         'Sub Room Name': 'Programming Section',
+        'Parent Room': 'LAB-201',
         'Usage Category': 'Lab Work',
         'Is Bookable': 'Yes',
         Capacity: 30,
@@ -423,9 +430,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'First Floor',
         'Room Type': 'Store',
         'Room Layout': 'Split Child',
-        'Parent Room': 'LAB-201',
         'Sub Room Count': '',
         'Sub Room Name': 'Store Room',
+        'Parent Room': 'LAB-201',
         'Usage Category': 'Storage',
         'Is Bookable': 'No',
         Capacity: 5,
@@ -441,9 +448,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'First Floor',
         'Room Type': 'Classroom',
         'Room Layout': 'Inside Parent',
-        'Parent Room': '',
         'Sub Room Count': 1,
         'Sub Room Name': 'Main Room 19',
+        'Parent Room': '',
         'Usage Category': 'Teaching',
         'Is Bookable': 'Yes',
         Capacity: 40,
@@ -459,9 +466,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Floor: 'First Floor',
         'Room Type': 'Classroom',
         'Room Layout': 'Inside Child',
-        'Parent Room': '19',
         'Sub Room Count': '',
         'Sub Room Name': 'Inside Room 20',
+        'Parent Room': '19',
         'Usage Category': 'Teaching',
         'Is Bookable': 'Yes',
         Capacity: 20,
@@ -1937,6 +1944,7 @@ function GenericCRUD({
     const noteSheet = XLSX.utils.aoa_to_sheet([
       ['Instructions'],
       ['Keep the header row unchanged. Replace or delete the example row(s) before importing the file.'],
+      ...((templateConfig?.instructions || []).map((instruction) => [instruction])),
     ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Template");
@@ -2924,6 +2932,14 @@ function RoomManagement() {
       payload.room_layout = payload.room_layout === 'Split Parent' ? 'Split Child' : 'Inside Child';
     }
 
+    if (payload.room_layout !== 'Normal' && !payload.room_section_name) {
+      throw new Error('Please enter the sub room name for split or inside room layouts.');
+    }
+
+    if (['Split Parent', 'Inside Parent'].includes(payload.room_layout) && (!payload.sub_room_count || payload.sub_room_count <= 0)) {
+      throw new Error('Please enter the sub room count for split parent or inside parent rooms.');
+    }
+
     if (roomType === 'Lab') {
       if (!payload.lab_name) {
         throw new Error('Please enter the lab name.');
@@ -3025,19 +3041,6 @@ function RoomManagement() {
       },
     },
     {
-      key: 'room_type',
-      label: 'Room Type',
-      type: 'select',
-      options: ROOM_TYPE_OPTIONS,
-      onChange: (nextData: any, value: string) => ({
-        ...nextData,
-        usage_category: normalizeUsageCategoryValue('', value),
-        lab_name: normalizeRoomTypeValue(value) === 'Lab' ? nextData.lab_name : '',
-        restroom_type: normalizeRoomTypeValue(value) === 'Restroom' ? nextData.restroom_type : '',
-      }),
-      render: (item: any) => getRoomTypeDisplay(item),
-    },
-    {
       key: 'room_layout',
       label: 'Room Layout',
       type: 'select',
@@ -3051,6 +3054,33 @@ function RoomManagement() {
         }
         return { ...nextData, sub_room_count: '' };
       },
+    },
+    {
+      key: 'sub_room_count',
+      label: 'Sub Room Count',
+      type: 'number',
+      required: false,
+      show: (formData: any) => ['Split Parent', 'Inside Parent'].includes(normalizeRoomLayoutValue(formData.room_layout)),
+    },
+    {
+      key: 'room_type',
+      label: 'Room Type',
+      type: 'select',
+      options: ROOM_TYPE_OPTIONS,
+      onChange: (nextData: any, value: string) => ({
+        ...nextData,
+        usage_category: normalizeUsageCategoryValue('', value),
+        lab_name: normalizeRoomTypeValue(value) === 'Lab' ? nextData.lab_name : '',
+        restroom_type: normalizeRoomTypeValue(value) === 'Restroom' ? nextData.restroom_type : '',
+      }),
+      render: (item: any) => getRoomTypeDisplay(item),
+    },
+    {
+      key: 'room_section_name',
+      label: 'Sub Room Name',
+      required: false,
+      show: (formData: any) => normalizeRoomLayoutValue(formData.room_layout) !== 'Normal',
+      render: (item: any) => item.room_section_name || '-',
     },
     {
       key: 'parent_room_id',
@@ -3069,20 +3099,6 @@ function RoomManagement() {
         const parent = rooms.find(room => room.id?.toString() === item?.parent_room_id?.toString());
         return parent ? getRoomDisplayLabel(parent, rooms) : '-';
       },
-    },
-    {
-      key: 'room_section_name',
-      label: 'Sub Room Name',
-      required: false,
-      show: (formData: any) => normalizeRoomLayoutValue(formData.room_layout) !== 'Normal',
-      render: (item: any) => item.room_section_name || '-',
-    },
-    {
-      key: 'sub_room_count',
-      label: 'Sub Room Count',
-      type: 'number',
-      required: false,
-      show: (formData: any) => ['Split Parent', 'Inside Parent'].includes(normalizeRoomLayoutValue(formData.room_layout)),
     },
     {
       key: 'usage_category',
@@ -3145,6 +3161,64 @@ function RoomManagement() {
 
   const handleImport = async (data: any[]) => {
     const knownRooms = [...rooms];
+    const getRowRoomLabels = (row: any) => [
+      row['Room Number'],
+      row['Room ID'],
+    ].map(normalizeLookupValue).filter(Boolean);
+    const getRowParentLabel = (row: any) => normalizeLookupValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
+    const getRowSubRoomName = (row: any) => getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString().trim() || '';
+    const getRowSubRoomCount = (row: any) => parseInt(getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside'])?.toString() || '0', 10) || 0;
+
+    const parentRows = data.filter(row => ['Split Parent', 'Inside Parent'].includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
+    const childRows = data.filter(row => ['Split Child', 'Inside Child'].includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
+
+    for (const row of data) {
+      const layout = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
+      const roomLabel = row['Room Number'] || row['Room ID'] || 'Unnamed room';
+
+      if (layout !== 'Normal' && !getRowSubRoomName(row)) {
+        throw new Error(`Room "${roomLabel}" uses ${layout}, so Sub Room Name is required.`);
+      }
+
+      if (['Split Parent', 'Inside Parent'].includes(layout) && getRowSubRoomCount(row) <= 0) {
+        throw new Error(`Room "${roomLabel}" is a ${layout}, so Sub Room Count must be greater than zero.`);
+      }
+
+      if (['Split Child', 'Inside Child'].includes(layout) && !getRowParentLabel(row)) {
+        throw new Error(`Room "${roomLabel}" is a ${layout}, so Parent Room is required.`);
+      }
+    }
+
+    for (const parentRow of parentRows) {
+      const parentLayout = normalizeRoomLayoutValue(getImportValue(parentRow, ['Room Layout', 'Layout']));
+      const expectedChildLayout = parentLayout === 'Split Parent' ? 'Split Child' : 'Inside Child';
+      const expectedCount = getRowSubRoomCount(parentRow);
+      const parentLabels = getRowRoomLabels(parentRow);
+      const parentLabel = parentRow['Room Number'] || parentRow['Room ID'] || 'Unnamed parent room';
+      const matchingChildren = childRows.filter(row =>
+        parentLabels.includes(getRowParentLabel(row)) &&
+        normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])) === expectedChildLayout
+      );
+
+      if (matchingChildren.length !== expectedCount) {
+        throw new Error(`Room "${parentLabel}" has Sub Room Count ${expectedCount}, but ${matchingChildren.length} ${expectedChildLayout.toLowerCase()} row(s) were found in the import file.`);
+      }
+    }
+
+    for (const childRow of childRows) {
+      const childLayout = normalizeRoomLayoutValue(getImportValue(childRow, ['Room Layout', 'Layout']));
+      const parentLabel = getRowParentLabel(childRow);
+      const importedParent = parentRows.find(row => getRowRoomLabels(row).includes(parentLabel));
+      if (!importedParent) continue;
+
+      const expectedChildLayout = normalizeRoomLayoutValue(getImportValue(importedParent, ['Room Layout', 'Layout'])) === 'Split Parent'
+        ? 'Split Child'
+        : 'Inside Child';
+      const childLabel = childRow['Room Number'] || childRow['Room ID'] || 'Unnamed child room';
+      if (childLayout !== expectedChildLayout) {
+        throw new Error(`Room "${childLabel}" should use ${expectedChildLayout} because its parent uses ${normalizeRoomLayoutValue(getImportValue(importedParent, ['Room Layout', 'Layout']))}.`);
+      }
+    }
 
     for (const row of data) {
       const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
