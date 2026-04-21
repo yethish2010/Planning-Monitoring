@@ -95,19 +95,129 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
-const ROOM_TYPE_OPTIONS = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Office', 'Library', 'Restroom', 'Store', 'Utility', 'Server Room'];
-const EVENT_ROOM_TYPE_OPTIONS = ['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Library', 'Smart Classroom'];
+const ROOM_TYPE_OPTIONS = [
+  'Classroom',
+  'Smart Classroom',
+  'Lecture Hall',
+  'Tutorial Room',
+  'Seminar Hall',
+  'Conference Room',
+  'Auditorium',
+  'Exam Hall',
+  'Lab',
+  'Computer Lab',
+  'Research Lab',
+  'Language Lab',
+  'Workshop',
+  'Studio',
+  'Library',
+  'Reading Room',
+  'Office',
+  'Faculty Room',
+  'Staff Room',
+  'HOD Cabin',
+  'Dean Office',
+  'Admin Office',
+  'Meeting Room',
+  'Board Room',
+  'Reception',
+  'Waiting Area',
+  'Common Room',
+  'Lounge',
+  'Pantry',
+  'Cafeteria',
+  'Store',
+  'Records Room',
+  'Server Room',
+  'Electrical Room',
+  'Maintenance Room',
+  'Utility',
+  'Restroom',
+  'Medical Room',
+  'Security Room',
+  'Sports Room',
+  'Gym',
+];
+const EVENT_ROOM_TYPE_OPTIONS = [
+  'Classroom',
+  'Smart Classroom',
+  'Lecture Hall',
+  'Tutorial Room',
+  'Seminar Hall',
+  'Conference Room',
+  'Auditorium',
+  'Exam Hall',
+  'Lab',
+  'Computer Lab',
+  'Research Lab',
+  'Language Lab',
+  'Workshop',
+  'Studio',
+  'Library',
+  'Reading Room',
+  'Meeting Room',
+  'Board Room',
+  'Sports Room',
+  'Gym',
+];
 const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
 const ROOM_LAYOUT_OPTIONS = ['Normal', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
-const USAGE_CATEGORY_OPTIONS = ['Teaching', 'Lab Work', 'Meeting', 'Office', 'Storage', 'Utility', 'Restroom', 'Restricted'];
-const BOOKABLE_ROOM_TYPES = new Set(['Classroom', 'Lab', 'Seminar Hall', 'Conference Room', 'Library']);
+const USAGE_CATEGORY_OPTIONS = ['Teaching', 'Lab Work', 'Meeting', 'Office', 'Administration', 'Storage', 'Utility', 'Restroom', 'Dining', 'Healthcare', 'Sports', 'Security', 'Restricted'];
+const BOOKABLE_ROOM_TYPES = new Set([
+  'Classroom',
+  'Smart Classroom',
+  'Lecture Hall',
+  'Tutorial Room',
+  'Seminar Hall',
+  'Conference Room',
+  'Auditorium',
+  'Exam Hall',
+  'Lab',
+  'Computer Lab',
+  'Research Lab',
+  'Language Lab',
+  'Workshop',
+  'Studio',
+  'Library',
+  'Reading Room',
+  'Meeting Room',
+  'Board Room',
+  'Sports Room',
+  'Gym',
+]);
 const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Meeting']);
 
 const normalizeRoomTypeValue = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
   if (!normalized) return '';
+  if (['smart class', 'smart classroom'].includes(normalized)) return 'Smart Classroom';
+  if (['lecture theatre', 'lecture theater', 'lecture hall'].includes(normalized)) return 'Lecture Hall';
+  if (['tutorial', 'tutorial room'].includes(normalized)) return 'Tutorial Room';
+  if (['auditorium', 'auditoriums'].includes(normalized)) return 'Auditorium';
+  if (['exam hall', 'examination hall'].includes(normalized)) return 'Exam Hall';
   if (normalized === 'restroom' || normalized === 'restrooms') return 'Restroom';
   if (normalized === 'lab' || normalized === 'laboratory') return 'Lab';
+  if (['computer lab', 'computer laboratory'].includes(normalized)) return 'Computer Lab';
+  if (['research lab', 'research laboratory'].includes(normalized)) return 'Research Lab';
+  if (['language lab', 'language laboratory'].includes(normalized)) return 'Language Lab';
+  if (['reading room', 'reading hall'].includes(normalized)) return 'Reading Room';
+  if (['faculty room', 'faculty cabin'].includes(normalized)) return 'Faculty Room';
+  if (['staff room'].includes(normalized)) return 'Staff Room';
+  if (['hod cabin', 'hod room', 'head room'].includes(normalized)) return 'HOD Cabin';
+  if (['dean office', 'dean room'].includes(normalized)) return 'Dean Office';
+  if (['admin office', 'administration office'].includes(normalized)) return 'Admin Office';
+  if (['meeting room'].includes(normalized)) return 'Meeting Room';
+  if (['board room', 'boardroom'].includes(normalized)) return 'Board Room';
+  if (['waiting area', 'waiting room'].includes(normalized)) return 'Waiting Area';
+  if (['common room'].includes(normalized)) return 'Common Room';
+  if (['store', 'store room', 'storage room'].includes(normalized)) return 'Store';
+  if (['records room', 'record room'].includes(normalized)) return 'Records Room';
+  if (['server room'].includes(normalized)) return 'Server Room';
+  if (['electrical room', 'electric room'].includes(normalized)) return 'Electrical Room';
+  if (['maintenance room'].includes(normalized)) return 'Maintenance Room';
+  if (['medical room', 'sick room', 'first aid room'].includes(normalized)) return 'Medical Room';
+  if (['security room', 'guard room'].includes(normalized)) return 'Security Room';
+  if (['sports room', 'sports hall'].includes(normalized)) return 'Sports Room';
   return value?.toString().trim() || '';
 };
 
@@ -136,13 +246,18 @@ const normalizeUsageCategoryValue = (value: unknown, roomType?: unknown) => {
   }
 
   const normalizedRoomType = normalizeRoomTypeValue(roomType);
-  if (normalizedRoomType === 'Lab') return 'Lab Work';
-  if (['Classroom', 'Seminar Hall', 'Library'].includes(normalizedRoomType)) return 'Teaching';
-  if (normalizedRoomType === 'Conference Room') return 'Meeting';
-  if (normalizedRoomType === 'Office') return 'Office';
-  if (normalizedRoomType === 'Store') return 'Storage';
+  if (['Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio'].includes(normalizedRoomType)) return 'Lab Work';
+  if (['Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Auditorium', 'Exam Hall', 'Library', 'Reading Room'].includes(normalizedRoomType)) return 'Teaching';
+  if (['Conference Room', 'Meeting Room', 'Board Room'].includes(normalizedRoomType)) return 'Meeting';
+  if (['Office', 'Faculty Room', 'Staff Room', 'HOD Cabin', 'Dean Office'].includes(normalizedRoomType)) return 'Office';
+  if (['Admin Office', 'Reception', 'Waiting Area'].includes(normalizedRoomType)) return 'Administration';
+  if (['Store', 'Records Room'].includes(normalizedRoomType)) return 'Storage';
   if (normalizedRoomType === 'Restroom') return 'Restroom';
-  if (['Utility', 'Server Room'].includes(normalizedRoomType)) return 'Utility';
+  if (['Utility', 'Server Room', 'Electrical Room', 'Maintenance Room'].includes(normalizedRoomType)) return 'Utility';
+  if (['Pantry', 'Cafeteria'].includes(normalizedRoomType)) return 'Dining';
+  if (normalizedRoomType === 'Medical Room') return 'Healthcare';
+  if (['Sports Room', 'Gym'].includes(normalizedRoomType)) return 'Sports';
+  if (normalizedRoomType === 'Security Room') return 'Security';
   return '';
 };
 
