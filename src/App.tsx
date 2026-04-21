@@ -275,14 +275,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Block: {
-    headers: ['Block ID', 'Block Name', 'Building', 'Number of Floors', 'First Floor Number', 'Description'],
+    headers: ['Block ID', 'Block Name', 'Building', 'Description'],
     exampleRows: [
       {
         'Block ID': 'BLDG-001-BLOCK-A',
         'Block Name': 'Block A',
         Building: 'BLDG-001',
-        'Number of Floors': 3,
-        'First Floor Number': 0,
         Description: 'Classrooms and seminar halls',
       },
     ],
@@ -2313,10 +2311,8 @@ function BuildingManagement() {
 
 function BlockManagement() {
   const [buildings, setBuildings] = useState<any[]>([]);
-  const [floors, setFloors] = useState<any[]>([]);
   useEffect(() => {
     fetch('/api/buildings').then(res => res.json()).then(setBuildings);
-    fetch('/api/floors').then(res => res.json()).then(setFloors);
   }, []);
 
   const blockEligibleBuildings = buildings.filter(building =>
@@ -2329,86 +2325,20 @@ function BlockManagement() {
     { key: 'block_id', label: 'Block ID' },
     { key: 'name', label: 'Block Name' },
     { key: 'building_id', label: 'Building', type: 'select', options: blockEligibleBuildings.map(b => ({ value: b.id, label: b.name })) },
-    {
-      key: 'floor_progress',
-      label: 'Floors Created / Planned',
-      tableOnly: true,
-      render: (item: any) => {
-        const actualFloorCount = floors.filter(f => f.block_id === item.id).length;
-        const plannedFloorCount = Number(item.planned_floor_count) || actualFloorCount;
-        return `${actualFloorCount} of ${plannedFloorCount}`;
-      },
-    },
-    {
-      key: 'planned_floor_count',
-      label: 'Planned Number of Floors',
-      type: 'number',
-      required: false,
-    },
-    {
-      key: 'first_floor_number',
-      label: 'First Floor Number',
-      type: 'number',
-      required: false,
-      render: (item: any) => Number(item.first_floor_number) || 0,
-    },
-    {
-      key: 'floor_range',
-      label: 'Floor Range',
-      tableOnly: true,
-      render: (item: any) => {
-        const blockFloors = floors
-          .filter(f => f.block_id === item.id)
-          .sort((a, b) => a.floor_number - b.floor_number);
-
-        if (blockFloors.length === 0) return 'No floors';
-        if (blockFloors.length === 1) return getFloorName(blockFloors[0].floor_number);
-        return `${getFloorName(blockFloors[0].floor_number)} - ${getFloorName(blockFloors[blockFloors.length - 1].floor_number)}`;
-      },
-    },
     { key: 'description', label: 'Description', fullWidth: true },
   ];
 
   const prepareSubmitData = (data: any) => {
     const selectedBuilding = buildings.find(building => building.id?.toString() === data.building_id?.toString());
-    const floorCount = Number(data.planned_floor_count);
-    const firstFloorNumber = data.first_floor_number === '' || data.first_floor_number == null
-      ? 0
-      : Number(data.first_floor_number);
-    const existingFloorCount = data.id ? floors.filter(f => f.block_id === data.id).length : 0;
 
     if (!isBlockEligibleBuilding(selectedBuilding)) {
       throw new Error('Please select a building that is marked as "Has blocks".');
     }
 
-    if (!Number.isInteger(floorCount) || floorCount < 1) {
-      throw new Error('Please enter at least 1 floor');
-    }
-
-    if (data.id && floorCount < existingFloorCount) {
-      throw new Error('This block already has more floors. Delete extra floors before reducing the floor count.');
-    }
-
-    if (!Number.isInteger(firstFloorNumber)) {
-      throw new Error('First floor number must be a whole number.');
-    }
-
     const payload = { ...data };
-    payload.planned_floor_count = floorCount;
-    payload.first_floor_number = firstFloorNumber;
-    delete payload.floor_progress;
-    delete payload.floor_range;
+    delete payload.planned_floor_count;
+    delete payload.first_floor_number;
     return payload;
-  };
-
-  const prepareFormData = (item: any) => {
-    const actualFloorCount = floors.filter(f => f.block_id === item.id).length;
-
-    return {
-      ...item,
-      planned_floor_count: Number(item.planned_floor_count) || actualFloorCount || 1,
-      first_floor_number: Number(item.first_floor_number) || 0,
-    };
   };
 
   const handleImport = async (data: any[]) => {
@@ -2422,18 +2352,11 @@ function BlockManagement() {
         block_id: blockId,
         name: row['Block Name'],
         building_id: building?.id,
-        planned_floor_count: Number(getImportValue(row, ['Number of Floors']) ?? 0),
-        first_floor_number: getImportValue(row, ['First Floor Number']) == null
-          ? 0
-          : Number(getImportValue(row, ['First Floor Number'])),
         description: row['Description']
       };
       if (!payload.block_id || !payload.name || !payload.building_id || !isBlockEligibleBuilding(building)) {
         skippedRows.push(`row ${index + 2}`);
         continue;
-      }
-      if (!Number.isInteger(payload.planned_floor_count) || payload.planned_floor_count < 1 || !Number.isInteger(payload.first_floor_number)) {
-        throw new Error(`Invalid floor plan for block ${payload.block_id}`);
       }
       await upsertImportRecord('/api/blocks', payload, [['block_id'], ['building_id', 'name']]);
       importedCount += 1;
@@ -2451,7 +2374,6 @@ function BlockManagement() {
       apiPath="/api/blocks"
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
-      prepareFormData={prepareFormData}
       dataFilter={(item: any) => {
         const building = buildings.find(b => b.id === item.building_id);
         return isBlockEligibleBuilding(building) && !isImplicitBuildingBlock(item, building);
