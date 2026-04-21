@@ -169,8 +169,6 @@ const EVENT_ROOM_TYPE_OPTIONS = [
   'Language Lab',
   'Workshop',
   'Studio',
-  'Library',
-  'Reading Room',
   'Meeting Room',
   'Board Room',
   'Sports Room',
@@ -199,8 +197,6 @@ const BOOKABLE_ROOM_TYPES = new Set([
   'Language Lab',
   'Workshop',
   'Studio',
-  'Library',
-  'Reading Room',
   'Meeting Room',
   'Board Room',
   'Sports Room',
@@ -208,13 +204,29 @@ const BOOKABLE_ROOM_TYPES = new Set([
 ]);
 const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Multipurpose', 'Meeting']);
 const NON_CAPACITY_ROOM_TYPES = new Set([
-  'Restroom',
+  'Office',
+  'Faculty Room',
+  'Staff Room',
+  'HOD Cabin',
+  'Dean Office',
+  'Admin Office',
+  'Reception',
+  'Library',
+  'Reading Room',
+  'Waiting Area',
+  'Common Room',
+  'Lounge',
+  'Pantry',
+  'Cafeteria',
   'Store',
   'Records Room',
-  'Utility',
   'Server Room',
   'Electrical Room',
   'Maintenance Room',
+  'Utility',
+  'Restroom',
+  'Medical Room',
+  'Security Room',
   'Entrance',
   'Main Entrance',
   'Emergency Exit',
@@ -341,6 +353,7 @@ const isRoomReservable = (room: any) => {
   if (!isRoomBookable(room)) return false;
   if (room?.status && room.status !== 'Available') return false;
   const roomType = normalizeRoomTypeValue(room?.room_type);
+  if (isNonCapacityRoomType(roomType)) return false;
   const usageCategory = normalizeUsageCategoryValue(room?.usage_category, roomType);
   return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
 };
@@ -550,7 +563,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
       'Room Type belongs to the current row. A child room can have a different Room Type from its parent.',
-      'For Restroom, Store, Records Room, Utility, Server Room, Electrical Room, Maintenance Room, Entrance, Main Entrance, Emergency Exit, Exit, Corridor, and Staircase, leave Is Bookable and Capacity blank. They are imported as non-bookable infrastructure/access spaces with capacity 0.',
+      'For offices, cabins, library/reading rooms, admin/support/service rooms, restrooms, and access spaces, leave Is Bookable and Capacity blank. They are imported as non-bookable spaces with capacity 0.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
     ],
     exampleRows: [

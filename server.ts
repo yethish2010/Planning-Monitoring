@@ -388,9 +388,40 @@ const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
   return defaultValue;
 };
 
+const NON_CAPACITY_ROOM_TYPE_VALUES = [
+  "Office",
+  "Faculty Room",
+  "Staff Room",
+  "HOD Cabin",
+  "Dean Office",
+  "Admin Office",
+  "Reception",
+  "Library",
+  "Reading Room",
+  "Waiting Area",
+  "Common Room",
+  "Lounge",
+  "Pantry",
+  "Cafeteria",
+  "Store",
+  "Records Room",
+  "Server Room",
+  "Electrical Room",
+  "Maintenance Room",
+  "Utility",
+  "Restroom",
+  "Medical Room",
+  "Security Room",
+  "Entrance",
+  "Main Entrance",
+  "Emergency Exit",
+  "Exit",
+  "Corridor",
+  "Staircase",
+];
+const nonCapacityRoomTypeSqlList = NON_CAPACITY_ROOM_TYPE_VALUES.map(roomType => `'${roomType.replace(/'/g, "''")}'`).join(", ");
 const isNonCapacityRoomType = (roomType: any) =>
-  ["Restroom", "Store", "Records Room", "Utility", "Server Room", "Electrical Room", "Maintenance Room", "Entrance", "Main Entrance", "Emergency Exit", "Exit", "Corridor", "Staircase"]
-    .includes(normalizeRoomTypeValue(roomType));
+  NON_CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
 
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
@@ -481,6 +512,9 @@ const getBookableRoomError = async (roomId: any) => {
   if (room.is_bookable === 0) return `Room ${room.room_number} is marked as not bookable.`;
   if (room.status && room.status !== "Available") return `Room ${room.room_number} is not available.`;
   const roomType = normalizeRoomTypeValue(room.room_type);
+  if (isNonCapacityRoomType(roomType)) {
+    return `Room ${room.room_number} cannot be booked because ${roomType} is a non-bookable room type.`;
+  }
   const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
   if (
     ![
@@ -503,8 +537,6 @@ const getBookableRoomError = async (roomId: any) => {
       "Language Lab",
       "Workshop",
       "Studio",
-      "Library",
-      "Reading Room",
       "Meeting Room",
       "Board Room",
       "Sports Room",
@@ -1432,8 +1464,9 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   const reservableWhere = `
     status = 'Available'
     AND COALESCE(is_bookable, 1) != 0
+    AND room_type NOT IN (${nonCapacityRoomTypeSqlList})
     AND (
-      room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Library', 'Reading Room', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
+      room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
       OR usage_category IN ('Teaching', 'Lab Work', 'Multipurpose', 'Meeting')
     )
   `;
@@ -1495,8 +1528,9 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
       SELECT * FROM rooms
       WHERE status = 'Available'
       AND COALESCE(is_bookable, 1) != 0
+      AND room_type NOT IN (${nonCapacityRoomTypeSqlList})
       AND (
-        room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Library', 'Reading Room', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
+        room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
         OR usage_category IN ('Teaching', 'Lab Work', 'Multipurpose', 'Meeting')
       )
     `).all() as any[];
