@@ -254,7 +254,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Building: {
-    headers: ['Building ID', 'Building Name', 'Campus', 'Structure Type', 'Number of Blocks', 'Number of Floors', 'First Floor Number', 'Description'],
+    headers: ['Building ID', 'Building Name', 'Campus', 'Structure Type', 'Number of Blocks', 'Description'],
     exampleRows: [
       {
         'Building ID': 'BLDG-001',
@@ -262,8 +262,6 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Campus: 'Main Campus',
         'Structure Type': 'Has blocks',
         'Number of Blocks': 2,
-        'Number of Floors': '',
-        'First Floor Number': '',
         Description: 'Central teaching building',
       },
       {
@@ -272,8 +270,6 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Campus: 'Main Campus',
         'Structure Type': 'No blocks, floors directly under building',
         'Number of Blocks': '',
-        'Number of Floors': 3,
-        'First Floor Number': 0,
         Description: 'Administrative offices',
       },
     ],
@@ -2198,11 +2194,9 @@ function CampusManagement() {
 function BuildingManagement() {
   const [campuses, setCampuses] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
-  const [floors, setFloors] = useState<any[]>([]);
   useEffect(() => {
     fetch('/api/campuses').then(res => res.json()).then(setCampuses);
     fetch('/api/blocks').then(res => res.json()).then(setBlocks);
-    fetch('/api/floors').then(res => res.json()).then(setFloors);
   }, []);
 
   const getVisibleBlocksForBuilding = (building: any) =>
@@ -2237,33 +2231,6 @@ function BuildingManagement() {
         return getBuildingStructureType(item) === 'blocks' ? `${actualBlockCount} of ${plannedBlockCount}` : 0;
       },
     },
-    {
-      key: 'direct_floor_progress',
-      label: 'Floors Created / Planned',
-      tableOnly: true,
-      render: (item: any) => {
-        if (getBuildingStructureType(item) !== 'direct') return 'N/A';
-        const directBlocks = blocks.filter(block => block.building_id === item.id && isImplicitBuildingBlock(block, item));
-        const actualFloorCount = floors.filter(floor => directBlocks.some(block => block.id === floor.block_id)).length;
-        const plannedFloorCount = Number(item.planned_floor_count) || actualFloorCount;
-        return `${actualFloorCount} of ${plannedFloorCount}`;
-      },
-    },
-    {
-      key: 'planned_floor_count',
-      label: 'Planned Number of Floors',
-      type: 'number',
-      required: false,
-      show: (formData: any) => formData.structure_type === 'direct',
-    },
-    {
-      key: 'first_floor_number',
-      label: 'First Floor Number',
-      type: 'number',
-      required: false,
-      show: (formData: any) => formData.structure_type === 'direct',
-      render: (item: any) => getBuildingStructureType(item) === 'direct' ? Number(item.first_floor_number) || 0 : 'N/A',
-    },
     { key: 'description', label: 'Description', fullWidth: true },
   ];
 
@@ -2283,27 +2250,11 @@ function BuildingManagement() {
       throw new Error('This building already has more blocks. Delete extra blocks before reducing the block count.');
     }
 
-    const floorCount = Number(data.planned_floor_count);
-    const firstFloorNumber = data.first_floor_number === '' || data.first_floor_number == null
-      ? 0
-      : Number(data.first_floor_number);
-
-    if (structureType === 'direct' && (!Number.isInteger(floorCount) || floorCount < 1)) {
-      throw new Error('Please enter at least 1 floor for direct-floor buildings.');
-    }
-
-    if (structureType === 'direct' && !Number.isInteger(firstFloorNumber)) {
-      throw new Error('First floor number must be a whole number.');
-    }
-
     const payload = { ...data };
     payload.structure_type = structureType;
     payload.planned_block_count = payload.structure_type === 'blocks'
       ? parseInt(data.planned_block_count, 10) || 0
       : 0;
-    payload.planned_floor_count = payload.structure_type === 'direct' ? floorCount : 0;
-    payload.first_floor_number = payload.structure_type === 'direct' ? firstFloorNumber : 0;
-    delete payload.direct_floor_progress;
     return payload;
   };
 
@@ -2316,12 +2267,6 @@ function BuildingManagement() {
       structure_type: structureType,
       planned_block_count: structureType === 'blocks'
         ? Number(item.planned_block_count) || visibleBlockCount || 1
-        : 0,
-      planned_floor_count: structureType === 'direct'
-        ? Number(item.planned_floor_count) || 1
-        : 0,
-      first_floor_number: structureType === 'direct'
-        ? Number(item.first_floor_number) || 0
         : 0,
     };
   };
@@ -2339,23 +2284,11 @@ function BuildingManagement() {
         campus_id: campus?.id,
         structure_type: hasBlocks ? 'blocks' : 'direct',
         planned_block_count: hasBlocks ? parseInt(getImportValue(row, ['Number of Blocks']) as any, 10) || 0 : 0,
-        planned_floor_count: hasBlocks ? 0 : Number(getImportValue(row, ['Number of Floors']) ?? 0),
-        first_floor_number: hasBlocks
-          ? 0
-          : getImportValue(row, ['First Floor Number']) == null
-            ? 0
-          : Number(getImportValue(row, ['First Floor Number'])),
         description: row['Description']
       };
       if (!payload.building_id || !payload.name || !payload.campus_id) {
         skippedRows.push(`row ${index + 2}`);
         continue;
-      }
-      if (!hasBlocks && !getImportValue(row, ['Number of Floors'])) {
-        payload.planned_floor_count = 1;
-      }
-      if (!hasBlocks && (!Number.isInteger(payload.planned_floor_count) || payload.planned_floor_count < 1 || !Number.isInteger(payload.first_floor_number))) {
-        throw new Error(`Invalid floor plan for building ${payload.building_id}`);
       }
       await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']]);
       importedCount += 1;
