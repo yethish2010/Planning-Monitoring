@@ -375,6 +375,10 @@ const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
   return defaultValue;
 };
 
+const isNonCapacityRoomType = (roomType: any) =>
+  ["Restroom", "Store", "Records Room", "Utility", "Server Room", "Electrical Room", "Maintenance Room"]
+    .includes(normalizeRoomTypeValue(roomType));
+
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
@@ -386,6 +390,12 @@ const normalizeRoomPayload = (payload: any) => {
   nextPayload.room_section_name = nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.usage_category = normalizeUsageCategoryValue(nextPayload.usage_category, nextPayload.room_type);
   nextPayload.is_bookable = normalizeBooleanLikeValue(nextPayload.is_bookable, true) ? 1 : 0;
+  nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
+
+  if (isNonCapacityRoomType(nextPayload.room_type)) {
+    nextPayload.is_bookable = 0;
+    nextPayload.capacity = 0;
+  }
 
   if (nextPayload.room_layout === "Normal") {
     nextPayload.parent_room_id = null;
@@ -426,6 +436,10 @@ const normalizeRoomPayload = (payload: any) => {
   } else {
     nextPayload.lab_name = null;
     nextPayload.restroom_type = null;
+  }
+
+  if (!isNonCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
+    throw new Error("Capacity is required for this room type.");
   }
 
   return nextPayload;

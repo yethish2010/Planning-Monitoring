@@ -186,6 +186,15 @@ const BOOKABLE_ROOM_TYPES = new Set([
   'Gym',
 ]);
 const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Meeting']);
+const NON_CAPACITY_ROOM_TYPES = new Set([
+  'Restroom',
+  'Store',
+  'Records Room',
+  'Utility',
+  'Server Room',
+  'Electrical Room',
+  'Maintenance Room',
+]);
 
 const normalizeRoomTypeValue = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
@@ -284,6 +293,9 @@ const normalizeBooleanLikeValue = (value: unknown, defaultValue = true) => {
 };
 
 const isRoomBookable = (room: any) => normalizeBooleanLikeValue(room?.is_bookable, true);
+
+const isNonCapacityRoomType = (roomType: unknown) =>
+  NON_CAPACITY_ROOM_TYPES.has(normalizeRoomTypeValue(roomType));
 
 const isRoomReservable = (room: any) => {
   if (!isRoomBookable(room)) return false;
@@ -498,6 +510,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
       'Room Type belongs to the current row. A child room can have a different Room Type from its parent.',
+      'For Restroom, Store, Records Room, Utility, Server Room, Electrical Room, and Maintenance Room, leave Is Bookable and Capacity blank. They are imported as non-bookable infrastructure spaces with capacity 0.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
     ],
     exampleRows: [
@@ -549,8 +562,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Sub Room Name': 'Store Room',
         'Parent Room': 'LAB-201',
         'Usage Category': 'Storage',
-        'Is Bookable': 'No',
-        Capacity: 5,
+        'Is Bookable': '',
+        Capacity: '',
         Status: 'Available',
         'Lab Name': '',
         'Restroom For': '',
@@ -3003,6 +3016,7 @@ function RoomManagement() {
     const roomType = normalizeRoomTypeValue(data.room_type);
     const parentRoomId = data.parent_room_id ? Number(data.parent_room_id) : null;
     const roomLayout = normalizeRoomLayoutValue(data.room_layout);
+    const isInfrastructureSpace = isNonCapacityRoomType(roomType);
     const payload = {
       ...data,
       room_type: roomType,
@@ -3013,7 +3027,8 @@ function RoomManagement() {
       sub_room_count: data.sub_room_count === '' || data.sub_room_count == null ? null : Math.max(0, parseInt(data.sub_room_count, 10) || 0),
       room_section_name: data.room_section_name?.toString().trim() || '',
       usage_category: normalizeUsageCategoryValue(data.usage_category, roomType),
-      is_bookable: normalizeBooleanLikeValue(data.is_bookable, true) ? 1 : 0,
+      is_bookable: isInfrastructureSpace ? 0 : normalizeBooleanLikeValue(data.is_bookable, true) ? 1 : 0,
+      capacity: isInfrastructureSpace ? 0 : parseInt(data.capacity, 10) || 0,
     };
 
     if (payload.room_layout === 'Normal') {
@@ -3068,6 +3083,10 @@ function RoomManagement() {
     } else {
       payload.lab_name = '';
       payload.restroom_type = '';
+    }
+
+    if (!isInfrastructureSpace && payload.capacity <= 0) {
+      throw new Error('Please enter the capacity for this room type.');
     }
 
     return payload;
@@ -3187,6 +3206,8 @@ function RoomManagement() {
         usage_category: normalizeUsageCategoryValue('', value),
         lab_name: normalizeRoomTypeValue(value) === 'Lab' ? nextData.lab_name : '',
         restroom_type: normalizeRoomTypeValue(value) === 'Restroom' ? nextData.restroom_type : '',
+        is_bookable: isNonCapacityRoomType(value) ? '0' : nextData.is_bookable,
+        capacity: isNonCapacityRoomType(value) ? '' : nextData.capacity,
       }),
       render: (item: any) => getRoomTypeDisplay(item),
     },
@@ -3228,6 +3249,7 @@ function RoomManagement() {
       label: 'Is Bookable',
       type: 'select',
       required: false,
+      show: (formData: any) => !isNonCapacityRoomType(formData.room_type),
       options: [{ value: '1', label: 'Yes' }, { value: '0', label: 'No' }],
       render: (item: any) => isRoomBookable(item) ? 'Yes' : 'No',
     },
@@ -3247,7 +3269,14 @@ function RoomManagement() {
       options: RESTROOM_TYPE_OPTIONS,
       show: (formData: any) => normalizeRoomTypeValue(formData.room_type) === 'Restroom',
     },
-    { key: 'capacity', label: 'Capacity', type: 'number' },
+    {
+      key: 'capacity',
+      label: 'Capacity',
+      type: 'number',
+      required: false,
+      show: (formData: any) => !isNonCapacityRoomType(formData.room_type),
+      render: (item: any) => isNonCapacityRoomType(item.room_type) ? '-' : item.capacity,
+    },
     { key: 'status', label: 'Status', type: 'select', options: ['Available', 'Maintenance'] },
   ];
 
@@ -3372,10 +3401,10 @@ function RoomManagement() {
         sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
         room_section_name: getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString() || '',
         usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), row['Room Type']),
-        is_bookable: normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
+        is_bookable: isNonCapacityRoomType(row['Room Type']) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
         lab_name: getImportValue(row, ['Lab Name']),
         restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
-        capacity: parseInt(row['Capacity']) || 0,
+        capacity: isNonCapacityRoomType(row['Room Type']) ? 0 : parseInt(row['Capacity']) || 0,
         status: row['Status'] || 'Available'
       };
       if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
