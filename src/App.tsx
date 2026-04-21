@@ -2332,6 +2332,9 @@ function BuildingManagement() {
         description: row['Description']
       };
       if (!payload.building_id || !payload.name || !payload.campus_id) continue;
+      if (!hasBlocks && !getImportValue(row, ['Number of Floors'])) {
+        payload.planned_floor_count = 1;
+      }
       if (!hasBlocks && (!Number.isInteger(payload.planned_floor_count) || payload.planned_floor_count < 1 || !Number.isInteger(payload.first_floor_number))) {
         throw new Error(`Invalid floor plan for building ${payload.building_id}`);
       }
