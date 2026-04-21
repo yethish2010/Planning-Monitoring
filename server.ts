@@ -297,6 +297,11 @@ const normalizeRoomTypeValue = (value: any) => {
   if (["tutorial", "tutorial room"].includes(normalized)) return "Tutorial Room";
   if (["auditorium", "auditoriums"].includes(normalized)) return "Auditorium";
   if (["exam hall", "examination hall"].includes(normalized)) return "Exam Hall";
+  if (["multipurpose room", "multi purpose room", "multi-purpose room", "multipurpose hall", "multi purpose hall", "multi-purpose hall"].includes(normalized)) return "Multipurpose Room";
+  if (["multipurpose classroom", "multi purpose classroom", "multi-purpose classroom"].includes(normalized)) return "Multipurpose Classroom";
+  if (["multipurpose lecture hall", "multi purpose lecture hall", "multi-purpose lecture hall", "lecture hall lab", "lecture hall/lab"].includes(normalized)) return "Multipurpose Lecture Hall";
+  if (["classroom lab", "classroom laboratory", "classroom cum lab", "classroom/lab", "class room lab", "class room laboratory"].includes(normalized)) return "Classroom Lab";
+  if (["multipurpose lab", "multi purpose lab", "multi-purpose lab"].includes(normalized)) return "Multipurpose Lab";
   if (normalized === "restroom" || normalized === "restrooms") return "Restroom";
   if (normalized === "lab" || normalized === "laboratory") return "Lab";
   if (["computer lab", "computer laboratory"].includes(normalized)) return "Computer Lab";
@@ -308,6 +313,12 @@ const normalizeRoomTypeValue = (value: any) => {
   if (["hod cabin", "hod room", "head room"].includes(normalized)) return "HOD Cabin";
   if (["dean office", "dean room"].includes(normalized)) return "Dean Office";
   if (["admin office", "administration office"].includes(normalized)) return "Admin Office";
+  if (["entrance", "entry", "entry point"].includes(normalized)) return "Entrance";
+  if (["main entrance", "main entry"].includes(normalized)) return "Main Entrance";
+  if (["emergency exit", "fire exit"].includes(normalized)) return "Emergency Exit";
+  if (["exit", "exit point"].includes(normalized)) return "Exit";
+  if (["corridor", "passage", "passageway"].includes(normalized)) return "Corridor";
+  if (["staircase", "stairs", "stairway"].includes(normalized)) return "Staircase";
   if (["meeting room"].includes(normalized)) return "Meeting Room";
   if (["board room", "boardroom"].includes(normalized)) return "Board Room";
   if (["waiting area", "waiting room"].includes(normalized)) return "Waiting Area";
@@ -343,17 +354,19 @@ const normalizeRoomLayoutValue = (value: any) => {
 
 const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
   const normalized = value?.toString().trim().toLowerCase();
-  const options = ["Teaching", "Lab Work", "Meeting", "Office", "Administration", "Storage", "Utility", "Restroom", "Dining", "Healthcare", "Sports", "Security", "Restricted"];
+  const options = ["Teaching", "Lab Work", "Multipurpose", "Meeting", "Office", "Administration", "Storage", "Utility", "Access", "Restroom", "Dining", "Healthcare", "Sports", "Security", "Restricted"];
   if (normalized) {
     return options.find(option => option.toLowerCase() === normalized) || value?.toString().trim() || null;
   }
 
   const normalizedRoomType = normalizeRoomTypeValue(roomType);
+  if (["Multipurpose Room", "Multipurpose Classroom", "Multipurpose Lecture Hall", "Classroom Lab", "Multipurpose Lab"].includes(normalizedRoomType)) return "Multipurpose";
   if (["Lab", "Computer Lab", "Research Lab", "Language Lab", "Workshop", "Studio"].includes(normalizedRoomType)) return "Lab Work";
   if (["Classroom", "Smart Classroom", "Lecture Hall", "Tutorial Room", "Seminar Hall", "Auditorium", "Exam Hall", "Library", "Reading Room"].includes(normalizedRoomType)) return "Teaching";
   if (["Conference Room", "Meeting Room", "Board Room"].includes(normalizedRoomType)) return "Meeting";
   if (["Office", "Faculty Room", "Staff Room", "HOD Cabin", "Dean Office"].includes(normalizedRoomType)) return "Office";
   if (["Admin Office", "Reception", "Waiting Area"].includes(normalizedRoomType)) return "Administration";
+  if (["Entrance", "Main Entrance", "Emergency Exit", "Exit", "Corridor", "Staircase"].includes(normalizedRoomType)) return "Access";
   if (["Store", "Records Room"].includes(normalizedRoomType)) return "Storage";
   if (normalizedRoomType === "Restroom") return "Restroom";
   if (["Utility", "Server Room", "Electrical Room", "Maintenance Room"].includes(normalizedRoomType)) return "Utility";
@@ -376,7 +389,7 @@ const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
 };
 
 const isNonCapacityRoomType = (roomType: any) =>
-  ["Restroom", "Store", "Records Room", "Utility", "Server Room", "Electrical Room", "Maintenance Room"]
+  ["Restroom", "Store", "Records Room", "Utility", "Server Room", "Electrical Room", "Maintenance Room", "Entrance", "Main Entrance", "Emergency Exit", "Exit", "Corridor", "Staircase"]
     .includes(normalizeRoomTypeValue(roomType));
 
 const normalizeRoomPayload = (payload: any) => {
@@ -479,6 +492,11 @@ const getBookableRoomError = async (roomId: any) => {
       "Conference Room",
       "Auditorium",
       "Exam Hall",
+      "Multipurpose Room",
+      "Multipurpose Classroom",
+      "Multipurpose Lecture Hall",
+      "Classroom Lab",
+      "Multipurpose Lab",
       "Lab",
       "Computer Lab",
       "Research Lab",
@@ -492,7 +510,7 @@ const getBookableRoomError = async (roomId: any) => {
       "Sports Room",
       "Gym",
     ].includes(roomType) &&
-    !["Teaching", "Lab Work", "Meeting"].includes(usageCategory || "")
+    !["Teaching", "Lab Work", "Multipurpose", "Meeting"].includes(usageCategory || "")
   ) {
     return `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
   }
@@ -1415,8 +1433,8 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
     status = 'Available'
     AND COALESCE(is_bookable, 1) != 0
     AND (
-      room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Library', 'Reading Room', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
-      OR usage_category IN ('Teaching', 'Lab Work', 'Meeting')
+      room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Library', 'Reading Room', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
+      OR usage_category IN ('Teaching', 'Lab Work', 'Multipurpose', 'Meeting')
     )
   `;
   const allRooms = minimumCapacity !== null
@@ -1478,8 +1496,8 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
       WHERE status = 'Available'
       AND COALESCE(is_bookable, 1) != 0
       AND (
-        room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Library', 'Reading Room', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
-        OR usage_category IN ('Teaching', 'Lab Work', 'Meeting')
+        room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Library', 'Reading Room', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
+        OR usage_category IN ('Teaching', 'Lab Work', 'Multipurpose', 'Meeting')
       )
     `).all() as any[];
     

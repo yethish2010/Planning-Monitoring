@@ -104,6 +104,11 @@ const ROOM_TYPE_OPTIONS = [
   'Conference Room',
   'Auditorium',
   'Exam Hall',
+  'Multipurpose Room',
+  'Multipurpose Classroom',
+  'Multipurpose Lecture Hall',
+  'Classroom Lab',
+  'Multipurpose Lab',
   'Lab',
   'Computer Lab',
   'Research Lab',
@@ -121,6 +126,12 @@ const ROOM_TYPE_OPTIONS = [
   'Meeting Room',
   'Board Room',
   'Reception',
+  'Entrance',
+  'Main Entrance',
+  'Emergency Exit',
+  'Exit',
+  'Corridor',
+  'Staircase',
   'Waiting Area',
   'Common Room',
   'Lounge',
@@ -147,6 +158,11 @@ const EVENT_ROOM_TYPE_OPTIONS = [
   'Conference Room',
   'Auditorium',
   'Exam Hall',
+  'Multipurpose Room',
+  'Multipurpose Classroom',
+  'Multipurpose Lecture Hall',
+  'Classroom Lab',
+  'Multipurpose Lab',
   'Lab',
   'Computer Lab',
   'Research Lab',
@@ -162,7 +178,7 @@ const EVENT_ROOM_TYPE_OPTIONS = [
 ];
 const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
 const ROOM_LAYOUT_OPTIONS = ['Normal', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
-const USAGE_CATEGORY_OPTIONS = ['Teaching', 'Lab Work', 'Meeting', 'Office', 'Administration', 'Storage', 'Utility', 'Restroom', 'Dining', 'Healthcare', 'Sports', 'Security', 'Restricted'];
+const USAGE_CATEGORY_OPTIONS = ['Teaching', 'Lab Work', 'Multipurpose', 'Meeting', 'Office', 'Administration', 'Storage', 'Utility', 'Access', 'Restroom', 'Dining', 'Healthcare', 'Sports', 'Security', 'Restricted'];
 const BOOKABLE_ROOM_TYPES = new Set([
   'Classroom',
   'Smart Classroom',
@@ -172,6 +188,11 @@ const BOOKABLE_ROOM_TYPES = new Set([
   'Conference Room',
   'Auditorium',
   'Exam Hall',
+  'Multipurpose Room',
+  'Multipurpose Classroom',
+  'Multipurpose Lecture Hall',
+  'Classroom Lab',
+  'Multipurpose Lab',
   'Lab',
   'Computer Lab',
   'Research Lab',
@@ -185,7 +206,7 @@ const BOOKABLE_ROOM_TYPES = new Set([
   'Sports Room',
   'Gym',
 ]);
-const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Meeting']);
+const BOOKABLE_USAGE_CATEGORIES = new Set(['Teaching', 'Lab Work', 'Multipurpose', 'Meeting']);
 const NON_CAPACITY_ROOM_TYPES = new Set([
   'Restroom',
   'Store',
@@ -194,6 +215,12 @@ const NON_CAPACITY_ROOM_TYPES = new Set([
   'Server Room',
   'Electrical Room',
   'Maintenance Room',
+  'Entrance',
+  'Main Entrance',
+  'Emergency Exit',
+  'Exit',
+  'Corridor',
+  'Staircase',
 ]);
 
 const normalizeRoomTypeValue = (value: unknown) => {
@@ -204,6 +231,11 @@ const normalizeRoomTypeValue = (value: unknown) => {
   if (['tutorial', 'tutorial room'].includes(normalized)) return 'Tutorial Room';
   if (['auditorium', 'auditoriums'].includes(normalized)) return 'Auditorium';
   if (['exam hall', 'examination hall'].includes(normalized)) return 'Exam Hall';
+  if (['multipurpose room', 'multi purpose room', 'multi-purpose room', 'multipurpose hall', 'multi purpose hall', 'multi-purpose hall'].includes(normalized)) return 'Multipurpose Room';
+  if (['multipurpose classroom', 'multi purpose classroom', 'multi-purpose classroom'].includes(normalized)) return 'Multipurpose Classroom';
+  if (['multipurpose lecture hall', 'multi purpose lecture hall', 'multi-purpose lecture hall', 'lecture hall lab', 'lecture hall/lab'].includes(normalized)) return 'Multipurpose Lecture Hall';
+  if (['classroom lab', 'classroom laboratory', 'classroom cum lab', 'classroom/lab', 'class room lab', 'class room laboratory'].includes(normalized)) return 'Classroom Lab';
+  if (['multipurpose lab', 'multi purpose lab', 'multi-purpose lab'].includes(normalized)) return 'Multipurpose Lab';
   if (normalized === 'restroom' || normalized === 'restrooms') return 'Restroom';
   if (normalized === 'lab' || normalized === 'laboratory') return 'Lab';
   if (['computer lab', 'computer laboratory'].includes(normalized)) return 'Computer Lab';
@@ -215,6 +247,12 @@ const normalizeRoomTypeValue = (value: unknown) => {
   if (['hod cabin', 'hod room', 'head room'].includes(normalized)) return 'HOD Cabin';
   if (['dean office', 'dean room'].includes(normalized)) return 'Dean Office';
   if (['admin office', 'administration office'].includes(normalized)) return 'Admin Office';
+  if (['entrance', 'entry', 'entry point'].includes(normalized)) return 'Entrance';
+  if (['main entrance', 'main entry'].includes(normalized)) return 'Main Entrance';
+  if (['emergency exit', 'fire exit'].includes(normalized)) return 'Emergency Exit';
+  if (['exit', 'exit point'].includes(normalized)) return 'Exit';
+  if (['corridor', 'passage', 'passageway'].includes(normalized)) return 'Corridor';
+  if (['staircase', 'stairs', 'stairway'].includes(normalized)) return 'Staircase';
   if (['meeting room'].includes(normalized)) return 'Meeting Room';
   if (['board room', 'boardroom'].includes(normalized)) return 'Board Room';
   if (['waiting area', 'waiting room'].includes(normalized)) return 'Waiting Area';
@@ -255,11 +293,13 @@ const normalizeUsageCategoryValue = (value: unknown, roomType?: unknown) => {
   }
 
   const normalizedRoomType = normalizeRoomTypeValue(roomType);
+  if (['Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab'].includes(normalizedRoomType)) return 'Multipurpose';
   if (['Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio'].includes(normalizedRoomType)) return 'Lab Work';
   if (['Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Auditorium', 'Exam Hall', 'Library', 'Reading Room'].includes(normalizedRoomType)) return 'Teaching';
   if (['Conference Room', 'Meeting Room', 'Board Room'].includes(normalizedRoomType)) return 'Meeting';
   if (['Office', 'Faculty Room', 'Staff Room', 'HOD Cabin', 'Dean Office'].includes(normalizedRoomType)) return 'Office';
   if (['Admin Office', 'Reception', 'Waiting Area'].includes(normalizedRoomType)) return 'Administration';
+  if (['Entrance', 'Main Entrance', 'Emergency Exit', 'Exit', 'Corridor', 'Staircase'].includes(normalizedRoomType)) return 'Access';
   if (['Store', 'Records Room'].includes(normalizedRoomType)) return 'Storage';
   if (normalizedRoomType === 'Restroom') return 'Restroom';
   if (['Utility', 'Server Room', 'Electrical Room', 'Maintenance Room'].includes(normalizedRoomType)) return 'Utility';
@@ -510,7 +550,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
       'Room Type belongs to the current row. A child room can have a different Room Type from its parent.',
-      'For Restroom, Store, Records Room, Utility, Server Room, Electrical Room, and Maintenance Room, leave Is Bookable and Capacity blank. They are imported as non-bookable infrastructure spaces with capacity 0.',
+      'For Restroom, Store, Records Room, Utility, Server Room, Electrical Room, Maintenance Room, Entrance, Main Entrance, Emergency Exit, Exit, Corridor, and Staircase, leave Is Bookable and Capacity blank. They are imported as non-bookable infrastructure/access spaces with capacity 0.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
     ],
     exampleRows: [
