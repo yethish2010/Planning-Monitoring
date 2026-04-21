@@ -1283,8 +1283,7 @@ export default function App() {
             <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
               <Layout title="Floor Management">
                 <DependencyGuard dependencies={[
-                  { table: 'buildings', label: 'Buildings' },
-                  { table: 'blocks', label: 'Blocks' }
+                  { table: 'buildings', label: 'Buildings' }
                 ]}>
                   <FloorManagement />
                 </DependencyGuard>
