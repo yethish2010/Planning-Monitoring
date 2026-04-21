@@ -215,6 +215,19 @@ const findBuildingForImport = (buildings: any[], row: any, blockOrFloorId?: unkn
     .sort((a, b) => b.building_id.toString().length - a.building_id.toString().length)[0];
 };
 
+const findCampusForImport = (campuses: any[], row: any) => {
+  const campusValue = getImportValue(row, ['Campus', 'Campus Name', 'Campus ID']);
+  const normalizedCampusValue = normalizeLookupValue(campusValue);
+
+  const matchedCampus = campuses.find(campus =>
+    normalizeLookupValue(campus.name) === normalizedCampusValue ||
+    normalizeLookupValue(campus.campus_id) === normalizedCampusValue
+  );
+  if (matchedCampus) return matchedCampus;
+
+  return campuses.length === 1 ? campuses[0] : undefined;
+};
+
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[] }> = {
   User: {
     headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
@@ -2314,8 +2327,11 @@ function BuildingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    for (const row of data) {
-      const campus = campuses.find(c => normalizeLookupValue(c.name) === normalizeLookupValue(getImportValue(row, ['Campus'])));
+    let importedCount = 0;
+    const skippedRows: string[] = [];
+
+    for (const [index, row] of data.entries()) {
+      const campus = findCampusForImport(campuses, row);
       const hasBlocks = isBlocksStructureType(getImportValue(row, ['Structure Type']));
       const payload = {
         building_id: row['Building ID']?.toString(),
@@ -2328,10 +2344,13 @@ function BuildingManagement() {
           ? 0
           : getImportValue(row, ['First Floor Number']) == null
             ? 0
-            : Number(getImportValue(row, ['First Floor Number'])),
+          : Number(getImportValue(row, ['First Floor Number'])),
         description: row['Description']
       };
-      if (!payload.building_id || !payload.name || !payload.campus_id) continue;
+      if (!payload.building_id || !payload.name || !payload.campus_id) {
+        skippedRows.push(`row ${index + 2}`);
+        continue;
+      }
       if (!hasBlocks && !getImportValue(row, ['Number of Floors'])) {
         payload.planned_floor_count = 1;
       }
@@ -2339,6 +2358,11 @@ function BuildingManagement() {
         throw new Error(`Invalid floor plan for building ${payload.building_id}`);
       }
       await upsertImportRecord('/api/buildings', payload, [['building_id'], ['campus_id', 'name']]);
+      importedCount += 1;
+    }
+
+    if (importedCount === 0) {
+      throw new Error(`No buildings were imported. Check that the Campus column matches an existing campus name or campus ID. Skipped ${skippedRows.join(', ') || 'all rows'}.`);
     }
   };
 
