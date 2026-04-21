@@ -245,7 +245,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     exampleRows: [
       {
         'Building ID': 'BLDG-001',
-        'Building Name': 'Academic Block',
+        'Building Name': 'M-Plaza',
         Campus: 'Main Campus',
         'Structure Type': 'Has blocks',
         'Number of Blocks': 2,
@@ -255,7 +255,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       },
       {
         'Building ID': 'BLDG-002',
-        'Building Name': 'Administration Block',
+        'Building Name': 'Pharmacy',
         Campus: 'Main Campus',
         'Structure Type': 'No blocks, floors directly under building',
         'Number of Blocks': '',
@@ -271,7 +271,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Block ID': 'BLDG-001-BLOCK-A',
         'Block Name': 'Block A',
-        Building: 'Academic Block',
+        Building: 'BLDG-001',
         'Number of Floors': 3,
         'First Floor Number': 0,
         Description: 'Classrooms and seminar halls',
@@ -283,10 +283,17 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     exampleRows: [
       {
         'Floor ID': 'BLDG-001-BLOCK-A-G',
-        Building: 'Academic Block',
+        Building: 'BLDG-001',
         'Block / Direct Floors': 'Block A',
         'Floor Number': 0,
         Description: 'Ground floor for Block A',
+      },
+      {
+        'Floor ID': 'BLDG-002-G',
+        Building: 'BLDG-002',
+        'Block / Direct Floors': 'Direct floors',
+        'Floor Number': 0,
+        Description: 'Ground floor for Pharmacy',
       },
     ],
   },
@@ -2231,7 +2238,7 @@ function BuildingManagement() {
     },
     {
       key: 'planned_floor_count',
-      label: 'Number of Floors',
+      label: 'Planned Number of Floors',
       type: 'number',
       required: false,
       show: (formData: any) => formData.structure_type === 'direct',
@@ -2374,7 +2381,7 @@ function BlockManagement() {
     },
     {
       key: 'planned_floor_count',
-      label: 'Number of Floors',
+      label: 'Planned Number of Floors',
       type: 'number',
       required: false,
     },
@@ -2537,7 +2544,9 @@ const getFloorDisplayLabel = (floor: any, blocks: any[], buildings: any[]) => {
 
 const ensureDirectBuildingBlock = async (buildingId: number | string, blocks: any[], buildings: any[]) => {
   const building = buildings.find(b => b.id == buildingId);
-  const existingBlock = blocks.find(b => b.building_id == buildingId && isImplicitBuildingBlock(b, building));
+  const latestRes = await fetch('/api/blocks', { credentials: 'include' });
+  const latestBlocks = latestRes.ok ? await latestRes.json() : blocks;
+  const existingBlock = latestBlocks.find((b: any) => b.building_id == buildingId && isImplicitBuildingBlock(b, building));
   if (existingBlock) return existingBlock.id;
 
   const res = await fetch('/api/blocks', {
@@ -2570,10 +2579,25 @@ const ensureDirectBuildingBlock = async (buildingId: number | string, blocks: an
 function FloorManagement() {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
+  const refreshBlocks = async () => {
+    const res = await fetch('/api/blocks', { credentials: 'include' });
+    const data = await res.json();
+    setBlocks(Array.isArray(data) ? data : []);
+  };
+  const refreshBuildings = async () => {
+    const res = await fetch('/api/buildings', { credentials: 'include' });
+    const data = await res.json();
+    setBuildings(Array.isArray(data) ? data : []);
+  };
   useEffect(() => {
-    fetch('/api/blocks').then(res => res.json()).then(setBlocks);
-    fetch('/api/buildings').then(res => res.json()).then(setBuildings);
+    refreshBlocks();
+    refreshBuildings();
   }, []);
+
+  const isBlockBasedBuilding = (building: any) =>
+    building?.structure_type === 'blocks' || (Number(building?.planned_block_count) || 0) > 0;
+  const isDirectFloorBuilding = (building: any) =>
+    !!building && !isBlockBasedBuilding(building);
 
   const fields = [
     { key: 'floor_id', label: 'Floor ID' },
@@ -2602,15 +2626,12 @@ function FloorManagement() {
         const building = buildings.find(b => b.id == selectedBuildingId);
         const buildingBlocks = blocks.filter(b => b.building_id == selectedBuildingId);
         const visibleBlocks = buildingBlocks.filter(b => !isImplicitBuildingBlock(b, building));
-        const directOption = {
-          value: '__direct__',
-          label: visibleBlocks.length > 0 ? 'Direct floors (no block)' : 'Direct floors',
-        };
 
-        return [
-          directOption,
-          ...visibleBlocks.map(b => ({ value: b.id, label: b.name })),
-        ];
+        if (isBlockBasedBuilding(building)) {
+          return visibleBlocks.map(b => ({ value: b.id, label: b.name }));
+        }
+
+        return [{ value: '__direct__', label: 'Direct floors' }];
       },
       render: (item: any) => {
         const block = blocks.find(b => b.id === item.block_id);
@@ -2628,6 +2649,11 @@ function FloorManagement() {
 
     if (!selectedBuildingId) {
       throw new Error('Please select a building');
+    }
+
+    const selectedBuilding = buildings.find(b => b.id == selectedBuildingId);
+    if (isBlockBasedBuilding(selectedBuilding) && (!payload.block_id || payload.block_id === '__direct__')) {
+      throw new Error('Please select a block for this building. Direct floors are only for buildings marked as no blocks.');
     }
 
     if (!payload.block_id || payload.block_id === '__direct__') {
@@ -2650,20 +2676,46 @@ function FloorManagement() {
   };
 
   const handleImport = async (data: any[]) => {
-    for (const row of data) {
-      const building = buildings.find(b => normalizeEntityName(b.name) === normalizeEntityName(getImportValue(row, ['Building'])));
-      const block = blocks.find(b =>
-        normalizeEntityName(b.name) === normalizeEntityName(getImportValue(row, ['Block / Direct Floors', 'Block'])) &&
-        (!building || b.building_id === building.id)
+    let importedCount = 0;
+    const skippedRows: string[] = [];
+
+    for (const [index, row] of data.entries()) {
+      const floorId = row['Floor ID']?.toString();
+      const building = findBuildingForImport(buildings, row, floorId);
+      const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block', 'Block ID']);
+      const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+      const wantsDirectFloors = !normalizedBlockLabel ||
+        normalizedBlockLabel === 'direct floors' ||
+        normalizedBlockLabel === 'direct floors (no block)';
+      const block = wantsDirectFloors ? undefined : blocks.find(b =>
+        (!building || b.building_id === building.id) &&
+        (
+          normalizeLookupValue(b.name) === normalizedBlockLabel ||
+          normalizeLookupValue(b.block_id) === normalizedBlockLabel
+        )
       );
+
+      if (!building || (isBlockBasedBuilding(building) && !block) || (isDirectFloorBuilding(building) && block)) {
+        skippedRows.push(`row ${index + 2}`);
+        continue;
+      }
+
       const payload = {
-        floor_id: row['Floor ID']?.toString(),
-        block_id: block?.id || (building ? await ensureDirectBuildingBlock(building.id, blocks, buildings) : undefined),
+        floor_id: floorId,
+        block_id: block?.id || await ensureDirectBuildingBlock(building.id, blocks, buildings),
         floor_number: parseInt(row['Floor Number']) || 0,
         description: row['Description']
       };
-      if (!payload.floor_id || !payload.block_id) continue;
+      if (!payload.floor_id || !payload.block_id) {
+        skippedRows.push(`row ${index + 2}`);
+        continue;
+      }
       await upsertImportRecord('/api/floors', payload, [['floor_id'], ['block_id', 'floor_number']]);
+      importedCount += 1;
+    }
+
+    if (importedCount === 0) {
+      throw new Error(`No floors were imported. For block buildings, provide a valid block. For no-block buildings, use "Direct floors". Skipped ${skippedRows.join(', ') || 'all rows'}.`);
     }
   };
 
@@ -2675,6 +2727,7 @@ function FloorManagement() {
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
       prepareFormData={prepareFormData}
+      onDataChanged={refreshBlocks}
     />
   );
 }
