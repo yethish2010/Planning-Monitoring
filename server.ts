@@ -95,6 +95,8 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       block_id TEXT UNIQUE NOT NULL,
       building_id INTEGER NOT NULL,
       name TEXT NOT NULL,
+      planned_floor_count INTEGER DEFAULT 0,
+      first_floor_number INTEGER DEFAULT 0,
       description TEXT,
       FOREIGN KEY(building_id) REFERENCES buildings(id)
     );
@@ -261,6 +263,8 @@ const ensureBookingColumns = async () => {
 await ensureBookingColumns();
 await ensureColumn("buildings", "structure_type", "TEXT DEFAULT 'direct'");
 await ensureColumn("buildings", "planned_block_count", "INTEGER DEFAULT 0");
+await ensureColumn("blocks", "planned_floor_count", "INTEGER DEFAULT 0");
+await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
