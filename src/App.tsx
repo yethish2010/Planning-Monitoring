@@ -1706,6 +1706,7 @@ function GenericCRUD({
   prepareFormData,
   afterSubmit,
   onDataChanged,
+  dataFilter,
 }: {
   type: string,
   fields: any[],
@@ -1715,6 +1716,7 @@ function GenericCRUD({
   prepareFormData?: (item: any) => any,
   afterSubmit?: (savedItem: any, formData: any, editingItem: any) => Promise<void> | void,
   onDataChanged?: () => Promise<void> | void,
+  dataFilter?: (item: any) => boolean,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -1777,7 +1779,8 @@ function GenericCRUD({
     return value;
   };
 
-  const filteredData = data.filter(item => {
+  const displayData = dataFilter ? data.filter(dataFilter) : data;
+  const filteredData = displayData.filter(item => {
     const query = searchTerm.trim().toLowerCase();
     if (!query) return true;
     return tableFields.some(field => getFieldDisplayValue(field, item)?.toString().toLowerCase().includes(query));
@@ -2349,10 +2352,16 @@ function BlockManagement() {
     fetch('/api/floors').then(res => res.json()).then(setFloors);
   }, []);
 
+  const blockEligibleBuildings = buildings.filter(building =>
+    building?.structure_type === 'blocks' || (Number(building?.planned_block_count) || 0) > 0
+  );
+  const isBlockEligibleBuilding = (building: any) =>
+    !!building && blockEligibleBuildings.some(item => item.id === building.id);
+
   const fields = [
     { key: 'block_id', label: 'Block ID' },
     { key: 'name', label: 'Block Name' },
-    { key: 'building_id', label: 'Building', type: 'select', options: buildings.map(b => ({ value: b.id, label: b.name })) },
+    { key: 'building_id', label: 'Building', type: 'select', options: blockEligibleBuildings.map(b => ({ value: b.id, label: b.name })) },
     {
       key: 'floor_progress',
       label: 'Floors Created / Planned',
@@ -2394,11 +2403,16 @@ function BlockManagement() {
   ];
 
   const prepareSubmitData = (data: any) => {
+    const selectedBuilding = buildings.find(building => building.id?.toString() === data.building_id?.toString());
     const floorCount = Number(data.planned_floor_count);
     const firstFloorNumber = data.first_floor_number === '' || data.first_floor_number == null
       ? 0
       : Number(data.first_floor_number);
     const existingFloorCount = data.id ? floors.filter(f => f.block_id === data.id).length : 0;
+
+    if (!isBlockEligibleBuilding(selectedBuilding)) {
+      throw new Error('Please select a building that is marked as "Has blocks".');
+    }
 
     if (!Number.isInteger(floorCount) || floorCount < 1) {
       throw new Error('Please enter at least 1 floor');
@@ -2447,7 +2461,7 @@ function BlockManagement() {
           : Number(getImportValue(row, ['First Floor Number'])),
         description: row['Description']
       };
-      if (!payload.block_id || !payload.name || !payload.building_id) {
+      if (!payload.block_id || !payload.name || !payload.building_id || !isBlockEligibleBuilding(building)) {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
@@ -2471,6 +2485,10 @@ function BlockManagement() {
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
       prepareFormData={prepareFormData}
+      dataFilter={(item: any) => {
+        const building = buildings.find(b => b.id === item.building_id);
+        return isBlockEligibleBuilding(building) && !isImplicitBuildingBlock(item, building);
+      }}
     />
   );
 }
