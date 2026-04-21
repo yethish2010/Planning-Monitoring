@@ -286,21 +286,23 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Floor: {
-    headers: ['Floor ID', 'Building', 'Block / Direct Floors', 'Floor Number', 'Description'],
+    headers: ['Floor ID Prefix', 'Building', 'Block / Direct Floors', 'Number of Floors', 'First Floor Number', 'Description'],
     exampleRows: [
       {
-        'Floor ID': 'BLDG-001-BLOCK-A-G',
+        'Floor ID Prefix': 'BLDG-001-BLOCK-A',
         Building: 'BLDG-001',
         'Block / Direct Floors': 'Block A',
-        'Floor Number': 0,
-        Description: 'Ground floor for Block A',
+        'Number of Floors': 3,
+        'First Floor Number': -1,
+        Description: 'Floors for Block A',
       },
       {
-        'Floor ID': 'BLDG-002-G',
+        'Floor ID Prefix': 'BLDG-002',
         Building: 'BLDG-002',
         'Block / Direct Floors': 'Direct floors',
-        'Floor Number': 0,
-        Description: 'Ground floor for Pharmacy',
+        'Number of Floors': 3,
+        'First Floor Number': 0,
+        Description: 'Direct floors for Pharmacy',
       },
     ],
   },
@@ -2414,6 +2416,13 @@ const getFloorShortName = (floorNumber: number | string) => {
   return value.toString();
 };
 
+const getGeneratedFloorId = (prefix: string, floorNumber: number) => {
+  const cleanPrefix = prefix.toString().trim().replace(/-+$/, '');
+  if (floorNumber < 0) return `${cleanPrefix}-B${Math.abs(floorNumber)}`;
+  if (floorNumber === 0) return `${cleanPrefix}-G`;
+  return `${cleanPrefix}-F${floorNumber}`;
+};
+
 const getFloorDisplayLabel = (floor: any, blocks: any[], buildings: any[]) => {
   const block = blocks.find(b => b.id === floor.block_id);
   const building = buildings.find(b => b.id === block?.building_id);
@@ -2480,9 +2489,20 @@ function FloorManagement() {
     building?.structure_type === 'blocks' || (Number(building?.planned_block_count) || 0) > 0;
   const isDirectFloorBuilding = (building: any) =>
     !!building && !isBlockBasedBuilding(building);
+  const getFloorSequenceDescription = (description: unknown, floorNumber: number) => {
+    const baseDescription = description?.toString().trim();
+    return baseDescription ? `${getFloorName(floorNumber)} - ${baseDescription}` : getFloorName(floorNumber);
+  };
 
   const fields = [
-    { key: 'floor_id', label: 'Floor ID' },
+    { key: 'floor_id', label: 'Floor ID', show: (_formData: any, editingItem: any) => !!editingItem },
+    {
+      key: 'floor_id_prefix',
+      label: 'Floor ID Prefix',
+      formOnly: true,
+      required: false,
+      show: (_formData: any, editingItem: any) => !editingItem,
+    },
     {
       key: 'building_id',
       label: 'Building',
@@ -2521,7 +2541,21 @@ function FloorManagement() {
         return getBlockDisplayLabel(block, building);
       }
     },
-    { key: 'floor_number', label: 'Floor Number', type: 'number' },
+    { key: 'floor_number', label: 'Floor Number', type: 'number', show: (_formData: any, editingItem: any) => !!editingItem },
+    {
+      key: 'floor_count',
+      label: 'Number of Floors',
+      type: 'number',
+      formOnly: true,
+      show: (_formData: any, editingItem: any) => !editingItem,
+    },
+    {
+      key: 'first_floor_number',
+      label: 'First Floor Number',
+      type: 'number',
+      formOnly: true,
+      show: (_formData: any, editingItem: any) => !editingItem,
+    },
     { key: 'description', label: 'Description', fullWidth: true },
   ];
 
@@ -2542,8 +2576,77 @@ function FloorManagement() {
       payload.block_id = await ensureDirectBuildingBlock(selectedBuildingId, blocks, buildings);
     }
 
+    if (editingItem) {
+      if (!payload.floor_id?.toString().trim()) throw new Error('Floor ID is required.');
+      if (!Number.isInteger(Number(payload.floor_number))) throw new Error('Floor number must be a whole number.');
+      payload.floor_number = Number(payload.floor_number);
+      delete payload.floor_id_prefix;
+      delete payload.floor_count;
+      delete payload.first_floor_number;
+      delete payload.building_id;
+      return payload;
+    }
+
+    const floorCount = Number(data.floor_count);
+    const firstFloorNumber = data.first_floor_number === '' || data.first_floor_number == null
+      ? 0
+      : Number(data.first_floor_number);
+
+    if (!Number.isInteger(floorCount) || floorCount < 1) {
+      throw new Error('Please enter at least 1 floor.');
+    }
+
+    if (!Number.isInteger(firstFloorNumber)) {
+      throw new Error('First floor number must be a whole number.');
+    }
+
+    const selectedBlock = blocks.find(block => block.id?.toString() === payload.block_id?.toString());
+    const prefix = data.floor_id_prefix?.toString().trim() ||
+      selectedBlock?.block_id ||
+      selectedBuilding?.building_id;
+
+    if (!prefix) {
+      throw new Error('Could not determine a Floor ID prefix.');
+    }
+
+    payload.floor_id = getGeneratedFloorId(prefix, firstFloorNumber);
+    payload.floor_number = firstFloorNumber;
+    payload.description = getFloorSequenceDescription(data.description, firstFloorNumber);
+    delete payload.floor_id_prefix;
+    delete payload.floor_count;
+    delete payload.first_floor_number;
     delete payload.building_id;
     return payload;
+  };
+
+  const afterSubmit = async (savedFloor: any, data: any, editingItem: any) => {
+    if (editingItem) return;
+
+    const floorCount = Number(data.floor_count);
+    if (!Number.isInteger(floorCount) || floorCount <= 1) return;
+
+    const firstFloorNumber = data.first_floor_number === '' || data.first_floor_number == null
+      ? 0
+      : Number(data.first_floor_number);
+    const selectedBuilding = buildings.find(building => building.id?.toString() === data.building_id?.toString());
+    const selectedBlock = blocks.find(block => block.id?.toString() === savedFloor.block_id?.toString());
+    const prefix = data.floor_id_prefix?.toString().trim() ||
+      selectedBlock?.block_id ||
+      selectedBuilding?.building_id;
+
+    if (!prefix) {
+      throw new Error('Could not determine a Floor ID prefix for the remaining floors.');
+    }
+
+    for (let offset = 1; offset < floorCount; offset += 1) {
+      const floorNumber = firstFloorNumber + offset;
+      await upsertImportRecord('/api/floors', {
+        floor_id: getGeneratedFloorId(prefix, floorNumber),
+        block_id: savedFloor.block_id,
+        floor_number: floorNumber,
+        description: getFloorSequenceDescription(data.description, floorNumber),
+      }, [['floor_id'], ['block_id', 'floor_number']]);
+    }
   };
 
   const prepareFormData = (item: any) => {
@@ -2554,6 +2657,8 @@ function FloorManagement() {
       ...item,
       building_id: block?.building_id || '',
       block_id: isImplicitBuildingBlock(block, building) ? '__direct__' : item.block_id,
+      floor_count: 1,
+      first_floor_number: item.floor_number ?? 0,
     };
   };
 
@@ -2563,7 +2668,8 @@ function FloorManagement() {
 
     for (const [index, row] of data.entries()) {
       const floorId = row['Floor ID']?.toString();
-      const building = findBuildingForImport(buildings, row, floorId);
+      const floorIdPrefix = getImportValue(row, ['Floor ID Prefix'])?.toString().trim();
+      const building = findBuildingForImport(buildings, row, floorIdPrefix || floorId);
       const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block', 'Block ID']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
       const wantsDirectFloors = !normalizedBlockLabel ||
@@ -2582,18 +2688,31 @@ function FloorManagement() {
         continue;
       }
 
-      const payload = {
-        floor_id: floorId,
-        block_id: block?.id || await ensureDirectBuildingBlock(building.id, blocks, buildings),
-        floor_number: parseInt(row['Floor Number']) || 0,
-        description: row['Description']
-      };
-      if (!payload.floor_id || !payload.block_id) {
+      const blockId = block?.id || await ensureDirectBuildingBlock(building.id, blocks, buildings);
+      const floorCountValue = getImportValue(row, ['Number of Floors', 'Floor Count']);
+      const floorCount = floorCountValue == null ? 1 : Number(floorCountValue);
+      const firstFloorNumberValue = getImportValue(row, ['First Floor Number', 'Floor Number']);
+      const firstFloorNumber = firstFloorNumberValue == null ? 0 : Number(firstFloorNumberValue);
+      const selectedBlock = blocks.find(item => item.id === blockId);
+      const prefix = floorIdPrefix ||
+        selectedBlock?.block_id ||
+        building.building_id;
+
+      if (!blockId || !Number.isInteger(floorCount) || floorCount < 1 || !Number.isInteger(firstFloorNumber) || (!prefix && !floorId)) {
         skippedRows.push(`row ${index + 2}`);
         continue;
       }
-      await upsertImportRecord('/api/floors', payload, [['floor_id'], ['block_id', 'floor_number']]);
-      importedCount += 1;
+
+      for (let offset = 0; offset < floorCount; offset += 1) {
+        const floorNumber = firstFloorNumber + offset;
+        await upsertImportRecord('/api/floors', {
+          floor_id: floorCount === 1 && floorId ? floorId : getGeneratedFloorId(prefix, floorNumber),
+          block_id: blockId,
+          floor_number: floorNumber,
+          description: getFloorSequenceDescription(row['Description'], floorNumber),
+        }, [['floor_id'], ['block_id', 'floor_number']]);
+        importedCount += 1;
+      }
     }
 
     if (importedCount === 0) {
@@ -2608,6 +2727,7 @@ function FloorManagement() {
       apiPath="/api/floors"
       onImport={handleImport}
       prepareSubmitData={prepareSubmitData}
+      afterSubmit={afterSubmit}
       prepareFormData={prepareFormData}
       onDataChanged={refreshBlocks}
     />
