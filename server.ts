@@ -313,7 +313,7 @@ const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
-  nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || null;
+  nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
   nextPayload.parent_room_id = nextPayload.parent_room_id ? Number(nextPayload.parent_room_id) : null;
   nextPayload.room_section_name = nextPayload.room_section_name?.toString().trim() || null;
