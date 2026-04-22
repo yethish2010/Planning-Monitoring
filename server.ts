@@ -19,7 +19,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || "";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const isProduction = process.env.NODE_ENV === "production";
 const isVercelRuntime = process.env.VERCEL === "1";
 const defaultDatabasePath = isVercelRuntime
@@ -884,11 +884,15 @@ If a slot has multiple subjects or is a lab, create separate entries if needed o
     const schedules = parseAIJsonResponse(await getAIResponseText(response));
     res.json({ schedules: Array.isArray(schedules) ? schedules : [] });
   } catch (err: any) {
-    const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key/i.test(err?.message || "");
+    const errorMessage = err?.message || "";
+    const leakedKey = /reported as leaked|leaked/i.test(errorMessage);
+    const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key|PERMISSION_DENIED/i.test(errorMessage);
     res.status(500).json({
-      error: invalidKey
-        ? `${err.message}. Please set a valid GEMINI_API_KEY on the backend and restart the server.`
-        : err.message || "Failed to extract timetable.",
+      error: leakedKey
+        ? "The configured Gemini API key was reported as leaked and cannot be used. Create a new key in Google AI Studio, set it as GEMINI_API_KEY in .env, remove the old VITE_GEMINI_API_KEY value, and restart the server."
+        : invalidKey
+          ? "Gemini rejected the configured API key. Set a valid GEMINI_API_KEY on the backend and restart the server."
+          : errorMessage || "Failed to extract timetable.",
     });
   }
 });
