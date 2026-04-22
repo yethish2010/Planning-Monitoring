@@ -845,7 +845,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
       'Semester accepts Odd/Even. If blank, Odd is used for the derived Department Room Mapping.',
-      'Rows without a matching room are skipped. Rows without a matching department still import as schedules but cannot create department mapping.',
+      'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
+      'Rows without a matching department still import as schedules but cannot create department mapping.',
     ],
   },
   Maintenance: {
@@ -2165,7 +2166,7 @@ function GenericCRUD({
   type: string,
   fields: any[],
   apiPath: string,
-  onImport?: (data: any[]) => Promise<void>,
+  onImport?: (data: any[]) => Promise<void | { message?: string }>,
   prepareSubmitData?: (formData: any, editingItem: any) => Promise<any> | any,
   prepareFormData?: (item: any) => any,
   afterSubmit?: (savedItem: any, formData: any, editingItem: any) => Promise<void> | void,
@@ -2286,13 +2287,21 @@ function GenericCRUD({
       try {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const jsonData = XLSX.utils.sheet_to_json(ws);
-        await onImport(jsonData);
+        const jsonData = wb.SheetNames.flatMap((sheetName) => {
+          const ws = wb.Sheets[sheetName];
+          return XLSX.utils.sheet_to_json(ws).map((row: any) => ({
+            ...row,
+            __sheetName: sheetName,
+          }));
+        });
+        const importResult = await onImport(jsonData);
         await fetchData();
         if (onDataChanged) await onDataChanged();
-        alert('Import successful!');
+        const importMessage =
+          importResult && typeof importResult === 'object' && 'message' in importResult
+            ? importResult.message
+            : '';
+        alert(importMessage || 'Import successful!');
       } catch (err: any) {
         alert(`Import failed: ${err.message}`);
       } finally {
@@ -4568,13 +4577,26 @@ function SchedulingManagement() {
   const fields = [
     { key: 'schedule_id', label: 'Schedule ID' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
+    { key: 'semester', label: 'Semester' },
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
     { key: 'faculty', label: 'Faculty' },
-    { key: 'room_id', label: 'Room', type: 'select', options: scheduleRoomOptions },
+    {
+      key: 'room_id',
+      label: 'Room',
+      type: 'select',
+      options: scheduleRoomOptions,
+      render: (schedule: any) => {
+        const room = rooms.find(item => idsMatch(item.id, schedule.room_id));
+        if (room) return getRoomDisplayLabel(room, rooms);
+        return schedule.room_label ? `Unmatched: ${schedule.room_label}` : 'Unassigned';
+      },
+    },
     { key: 'day_of_week', label: 'Day', type: 'select', options: scheduleDays },
     { key: 'start_time', label: 'Start Time', type: 'time' },
     { key: 'end_time', label: 'End Time', type: 'time' },
+    { key: 'import_status', label: 'Import Status', tableOnly: true },
+    { key: 'review_note', label: 'Review Note', tableOnly: true },
   ];
 
   const findDepartmentForSchedule = (value: unknown) =>
@@ -4613,29 +4635,61 @@ function SchedulingManagement() {
   };
 
   const handleImport = async (data: any[]) => {
+    let importedCount = 0;
+    let linkedCount = 0;
+    let unmatchedRoomCount = 0;
+    let skippedCount = 0;
+
     for (const row of data) {
-      const room = findRoomByImportLabel(rooms.filter(isRoomReservable), row['Room']);
+      const scheduleId = row['Schedule ID']?.toString().trim();
+      const courseName = row['Course Name']?.toString().trim();
+      const dayOfWeek = row['Day']?.toString().trim();
+      const startTime = formatExcelTime(row['Start Time']);
+      const endTime = formatExcelTime(row['End Time']);
+      const roomLabel = getImportValue(row, ['Room', 'Room Number'])?.toString().trim() || '';
+
+      if (!scheduleId || !courseName || !dayOfWeek || !startTime || !endTime) {
+        skippedCount += 1;
+        continue;
+      }
+
+      const room = findRoomByImportLabel(rooms.filter(isRoomReservable), roomLabel);
       const dept = findDepartmentForSchedule(row['Department']);
+      const importStatus = room
+        ? 'Linked'
+        : roomLabel
+          ? 'Unmatched Room'
+          : 'Room Missing';
       
       const payload = {
-        schedule_id: row['Schedule ID']?.toString(),
+        schedule_id: scheduleId,
         department_id: dept?.id,
         course_code: row['Course Code'],
-        course_name: row['Course Name'],
+        course_name: courseName,
         faculty: row['Faculty'],
-        room_id: room?.id,
-        day_of_week: row['Day'],
-        start_time: formatExcelTime(row['Start Time']),
-        end_time: formatExcelTime(row['End Time'])
+        room_id: room?.id ?? null,
+        room_label: roomLabel || null,
+        day_of_week: dayOfWeek,
+        start_time: startTime,
+        end_time: endTime,
+        semester: normalizeSemesterValue(getImportValue(row, ['Semester', 'Term'])),
+        import_status: importStatus,
+        review_note: row['Review Note'] || null,
+        source_file: row['Source File'] || null,
       };
 
-      if (!payload.schedule_id || !payload.course_name || !payload.room_id) continue;
-
       await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'day_of_week', 'start_time', 'end_time']]);
+      importedCount += 1;
+      if (room) linkedCount += 1;
+      else unmatchedRoomCount += 1;
       await ensureAllocationFromSchedule(room, dept, getImportValue(row, ['Semester', 'Term']));
     }
     setRefreshKey(prev => prev + 1);
     await refreshSchedulingLookups();
+
+    return {
+      message: `Schedule import complete. Imported/updated ${importedCount} rows (${linkedCount} linked to rooms, ${unmatchedRoomCount} kept for review). Skipped ${skippedCount} non-schedule rows.`,
+    };
   };
 
   const handleFileUpload = async (file: File) => {

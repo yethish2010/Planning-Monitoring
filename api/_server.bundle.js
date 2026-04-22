@@ -327,10 +327,15 @@ var getPrimarySchemaSql = (dialect) => {
       course_name TEXT,
       faculty TEXT,
       room_id INTEGER,
+      room_label TEXT,
       day_of_week TEXT,
       start_time TEXT,
       end_time TEXT,
       student_count INTEGER,
+      semester TEXT,
+      import_status TEXT,
+      review_note TEXT,
+      source_file TEXT,
       FOREIGN KEY(department_id) REFERENCES departments(id),
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
@@ -426,6 +431,11 @@ await ensureColumn("rooms", "usage_category", "TEXT");
 await ensureColumn("rooms", "is_bookable", "INTEGER DEFAULT 1");
 await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
+await ensureColumn("schedules", "room_label", "TEXT");
+await ensureColumn("schedules", "semester", "TEXT");
+await ensureColumn("schedules", "import_status", "TEXT");
+await ensureColumn("schedules", "review_note", "TEXT");
+await ensureColumn("schedules", "source_file", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
