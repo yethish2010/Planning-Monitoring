@@ -2063,6 +2063,7 @@ function GenericCRUD({
   afterSubmit,
   onDataChanged,
   dataFilter,
+  filterControls,
 }: {
   type: string,
   fields: any[],
@@ -2073,6 +2074,7 @@ function GenericCRUD({
   afterSubmit?: (savedItem: any, formData: any, editingItem: any) => Promise<void> | void,
   onDataChanged?: () => Promise<void> | void,
   dataFilter?: (item: any) => boolean,
+  filterControls?: React.ReactNode,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -2315,6 +2317,12 @@ function GenericCRUD({
           </button>
         </div>
       </div>
+
+      {filterControls && (
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+          {filterControls}
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
         <table className="w-full text-left border-collapse">
@@ -3076,10 +3084,17 @@ function FloorManagement() {
 }
 
 function RoomManagement() {
+  const [campuses, setCampuses] = useState<any[]>([]);
   const [floors, setFloors] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
+  const [roomFilters, setRoomFilters] = useState({
+    campus_id: '',
+    building_id: '',
+    block_id: '',
+    floor_id: '',
+  });
 
   const refreshRooms = async () => {
     const roomData = await fetch('/api/rooms').then(res => res.json());
@@ -3087,11 +3102,154 @@ function RoomManagement() {
   };
 
   useEffect(() => {
+    fetch('/api/campuses').then(res => res.json()).then(setCampuses);
     fetch('/api/floors').then(res => res.json()).then(setFloors);
     fetch('/api/blocks').then(res => res.json()).then(setBlocks);
     fetch('/api/buildings').then(res => res.json()).then(setBuildings);
     refreshRooms();
   }, []);
+
+  const getRoomLocation = (room: any) => {
+    const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
+    const block = blocks.find(item => idsMatch(item.id, floor?.block_id));
+    const building = buildings.find(item => idsMatch(item.id, block?.building_id));
+    const campus = campuses.find(item => idsMatch(item.id, building?.campus_id));
+    return { floor, block, building, campus };
+  };
+
+  const getRoomFilterBlockOptions = () => {
+    const selectedBuilding = buildings.find(item => idsMatch(item.id, roomFilters.building_id));
+    if (!selectedBuilding) return [];
+
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, selectedBuilding.id));
+    const visibleBlocks = buildingBlocks.filter(block => !isImplicitBuildingBlock(block, selectedBuilding));
+    const directBlock = buildingBlocks.find(block => isImplicitBuildingBlock(block, selectedBuilding));
+    const directHasFloors = directBlock && floors.some(floor => idsMatch(floor.block_id, directBlock.id));
+
+    return [
+      ...(directHasFloors ? [{ value: directBlock.id, label: 'Direct floors' }] : []),
+      ...visibleBlocks.map(block => ({ value: block.id, label: block.name })),
+    ];
+  };
+
+  const getRoomFilterFloorOptions = () => {
+    if (!roomFilters.building_id) return [];
+    const selectedBuilding = buildings.find(item => idsMatch(item.id, roomFilters.building_id));
+    if (!selectedBuilding) return [];
+
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, selectedBuilding.id));
+    const allowedBlockIds = roomFilters.block_id
+      ? [roomFilters.block_id]
+      : buildingBlocks.map(block => block.id);
+
+    return floors
+      .filter(floor => allowedBlockIds.some(blockId => idsMatch(blockId, floor.block_id)))
+      .sort((a, b) => Number(a.floor_number || 0) - Number(b.floor_number || 0))
+      .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) }));
+  };
+
+  const roomMatchesLocationFilters = (room: any) => {
+    const { floor, block, building } = getRoomLocation(room);
+    if (roomFilters.campus_id && !idsMatch(building?.campus_id, roomFilters.campus_id)) return false;
+    if (roomFilters.building_id && !idsMatch(building?.id, roomFilters.building_id)) return false;
+    if (roomFilters.block_id && !idsMatch(block?.id, roomFilters.block_id)) return false;
+    if (roomFilters.floor_id && !idsMatch(floor?.id, roomFilters.floor_id)) return false;
+    return true;
+  };
+
+  const roomFilterBuildings = buildings
+    .filter(building => !roomFilters.campus_id || idsMatch(building.campus_id, roomFilters.campus_id))
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
+  const roomFilterBlockOptions = getRoomFilterBlockOptions();
+  const roomFilterFloorOptions = getRoomFilterFloorOptions();
+  const hasActiveRoomFilters = Object.values(roomFilters).some(Boolean);
+  const roomFilterControls = (
+    <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Campus</label>
+        <select
+          value={roomFilters.campus_id}
+          onChange={(event) => setRoomFilters({
+            campus_id: event.target.value,
+            building_id: '',
+            block_id: '',
+            floor_id: '',
+          })}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All campuses</option>
+          {campuses
+            .slice()
+            .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+            .map(campus => (
+              <option key={campus.id} value={campus.id}>{campus.name}</option>
+            ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Building</label>
+        <select
+          value={roomFilters.building_id}
+          onChange={(event) => setRoomFilters(prev => ({
+            ...prev,
+            building_id: event.target.value,
+            block_id: '',
+            floor_id: '',
+          }))}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All buildings</option>
+          {roomFilterBuildings.map(building => (
+            <option key={building.id} value={building.id}>{building.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Block / Direct Floors</label>
+        <select
+          value={roomFilters.block_id}
+          onChange={(event) => setRoomFilters(prev => ({
+            ...prev,
+            block_id: event.target.value,
+            floor_id: '',
+          }))}
+          disabled={!roomFilters.building_id}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+        >
+          <option value="">All blocks/direct floors</option>
+          {roomFilterBlockOptions.map(option => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Floor</label>
+        <select
+          value={roomFilters.floor_id}
+          onChange={(event) => setRoomFilters(prev => ({ ...prev, floor_id: event.target.value }))}
+          disabled={!roomFilters.building_id}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+        >
+          <option value="">All floors</option>
+          {roomFilterFloorOptions.map(option => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setRoomFilters({ campus_id: '', building_id: '', block_id: '', floor_id: '' })}
+        disabled={!hasActiveRoomFilters}
+        className="px-4 py-2 border border-slate-200 rounded-xl text-slate-700 font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        Clear Filters
+      </button>
+    </div>
+  );
 
   const normalizeRoomFormPayload = (data: any, roomPool = rooms) => {
     const roomType = normalizeRoomTypeValue(data.room_type);
@@ -3519,6 +3677,8 @@ function RoomManagement() {
       prepareSubmitData={prepareSubmitData}
       prepareFormData={prepareFormData}
       onDataChanged={refreshRooms}
+      dataFilter={roomMatchesLocationFilters}
+      filterControls={roomFilterControls}
     />
   );
 }
