@@ -8,8 +8,6 @@ const configuredApiBaseUrl = ((import.meta as any).env?.VITE_API_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '');
 const isGitHubPages = typeof window !== 'undefined' && window.location.hostname === 'yethish2010.github.io';
-const isLocalHost = typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname);
-const isStaticFrontendDeployment = typeof window !== 'undefined' && !isLocalHost;
 const apiBaseUrl = configuredApiBaseUrl;
 
 const STATIC_SESSION_STORAGE_KEY = 'smart-campus-static-session';
@@ -344,7 +342,7 @@ if (apiBaseUrl && typeof window !== 'undefined') {
 
     return nativeFetch(input, init);
   };
-} else if ((isGitHubPages || isStaticFrontendDeployment) && typeof window !== 'undefined') {
+} else if (isGitHubPages && typeof window !== 'undefined') {
   const nativeFetch = window.fetch.bind(window);
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

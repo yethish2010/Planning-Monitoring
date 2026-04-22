@@ -2,4 +2,4 @@ export const config = {
   runtime: "nodejs",
 };
 
-export { default } from "../server";
+export { default } from "./_server";
