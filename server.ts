@@ -302,6 +302,7 @@ await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 const normalizeRoomTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase();
   if (!normalized) return "";
+  if (["class", "classroom", "classrooms", "class room", "class rooms"].includes(normalized)) return "Classroom";
   if (["smart class", "smart classroom"].includes(normalized)) return "Smart Classroom";
   if (["lecture theatre", "lecture theater", "lecture hall"].includes(normalized)) return "Lecture Hall";
   if (["tutorial", "tutorial room"].includes(normalized)) return "Tutorial Room";
@@ -438,7 +439,6 @@ const NON_CAPACITY_ROOM_TYPE_VALUES = [
   "Corridor",
   "Staircase",
 ];
-const nonCapacityRoomTypeSqlList = NON_CAPACITY_ROOM_TYPE_VALUES.map(roomType => `'${roomType.replace(/'/g, "''")}'`).join(", ");
 const isNonCapacityRoomType = (roomType: any) =>
   NON_CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
 const CAPACITY_ROOM_TYPE_VALUES = [
@@ -454,6 +454,41 @@ const CAPACITY_ROOM_TYPE_VALUES = [
 ];
 const isCapacityRoomType = (roomType: any) =>
   CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
+const BOOKABLE_ROOM_TYPE_VALUES = [
+  "Classroom",
+  "Smart Classroom",
+  "Lecture Hall",
+  "Tutorial Room",
+  "Seminar Hall",
+  "Conference Room",
+  "Auditorium",
+  "Exam Hall",
+  "Multipurpose Room",
+  "Multipurpose Classroom",
+  "Multipurpose Lecture Hall",
+  "Classroom Lab",
+  "Multipurpose Lab",
+  "Lab",
+  "Computer Lab",
+  "Research Lab",
+  "Language Lab",
+  "Workshop",
+  "Studio",
+  "Meeting Room",
+  "Board Room",
+  "Sports Room",
+  "Gym",
+];
+const BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
+const isReservableRoomRecord = (room: any) => {
+  if (!room) return false;
+  if (room.status && room.status !== "Available") return false;
+  if (room.is_bookable === 0) return false;
+  const roomType = normalizeRoomTypeValue(room.room_type);
+  if (isNonCapacityRoomType(roomType)) return false;
+  const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
+  return BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) || BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "");
+};
 
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
@@ -548,34 +583,7 @@ const getBookableRoomError = async (roomId: any) => {
     return `Room ${room.room_number} cannot be booked because ${roomType} is a non-bookable room type.`;
   }
   const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
-  if (
-    ![
-      "Classroom",
-      "Smart Classroom",
-      "Lecture Hall",
-      "Tutorial Room",
-      "Seminar Hall",
-      "Conference Room",
-      "Auditorium",
-      "Exam Hall",
-      "Multipurpose Room",
-      "Multipurpose Classroom",
-      "Multipurpose Lecture Hall",
-      "Classroom Lab",
-      "Multipurpose Lab",
-      "Lab",
-      "Computer Lab",
-      "Research Lab",
-      "Language Lab",
-      "Workshop",
-      "Studio",
-      "Meeting Room",
-      "Board Room",
-      "Sports Room",
-      "Gym",
-    ].includes(roomType) &&
-    !["Teaching", "Lab Work", "Multipurpose", "Meeting"].includes(usageCategory || "")
-  ) {
+  if (!BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) && !BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "")) {
     return `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
   }
   return null;
@@ -1585,19 +1593,11 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   endDate.setMinutes(endDate.getMinutes() + durationMinutes);
   const requestedEnd = `${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}`;
 
-  // Find all rooms
-  const reservableWhere = `
-    status = 'Available'
-    AND COALESCE(is_bookable, 1) != 0
-    AND room_type NOT IN (${nonCapacityRoomTypeSqlList})
-    AND (
-      room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
-      OR usage_category IN ('Teaching', 'Lab Work', 'Multipurpose', 'Meeting')
-    )
-  `;
-  const allRooms = minimumCapacity !== null
-    ? await db.prepare(`SELECT * FROM rooms WHERE ${reservableWhere} AND capacity >= ?`).all(minimumCapacity) as any[]
-    : await db.prepare(`SELECT * FROM rooms WHERE ${reservableWhere}`).all() as any[];
+  const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
+  const allRooms = allRoomsRaw.filter(room =>
+    isReservableRoomRecord(room) &&
+    (minimumCapacity === null || (parseInt(room.capacity, 10) || 0) >= minimumCapacity)
+  );
 
   // Filter out rooms that have schedules
   const busySchedules = await db.prepare(`
@@ -1648,17 +1648,9 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
   const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
 
   try {
-    // 1. Get all rooms
-    const allRooms = await db.prepare(`
-      SELECT * FROM rooms
-      WHERE status = 'Available'
-      AND COALESCE(is_bookable, 1) != 0
-      AND room_type NOT IN (${nonCapacityRoomTypeSqlList})
-      AND (
-        room_type IN ('Classroom', 'Smart Classroom', 'Lecture Hall', 'Tutorial Room', 'Seminar Hall', 'Conference Room', 'Auditorium', 'Exam Hall', 'Multipurpose Room', 'Multipurpose Classroom', 'Multipurpose Lecture Hall', 'Classroom Lab', 'Multipurpose Lab', 'Lab', 'Computer Lab', 'Research Lab', 'Language Lab', 'Workshop', 'Studio', 'Meeting Room', 'Board Room', 'Sports Room', 'Gym')
-        OR usage_category IN ('Teaching', 'Lab Work', 'Multipurpose', 'Meeting')
-      )
-    `).all() as any[];
+    // 1. Get all reservable rooms using the same normalized rules as room management.
+    const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
+    const allRooms = allRoomsRaw.filter(isReservableRoomRecord);
     
     // 2. Get busy rooms from schedules
     const busyInSchedules = await db.prepare(`

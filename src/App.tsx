@@ -326,6 +326,7 @@ const NON_CAPACITY_ROOM_TYPES = new Set([
 const normalizeRoomTypeValue = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
   if (!normalized) return '';
+  if (['class', 'classroom', 'classrooms', 'class room', 'class rooms'].includes(normalized)) return 'Classroom';
   if (['smart class', 'smart classroom'].includes(normalized)) return 'Smart Classroom';
   if (['lecture theatre', 'lecture theater', 'lecture hall'].includes(normalized)) return 'Lecture Hall';
   if (['tutorial', 'tutorial room'].includes(normalized)) return 'Tutorial Room';
