@@ -179,7 +179,10 @@ const EVENT_ROOM_TYPE_OPTIONS = [
   'Workshop',
 ];
 const RESTROOM_TYPE_OPTIONS = ['Male', 'Female'];
-const ROOM_LAYOUT_OPTIONS = ['Normal', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
+const ROOM_LAYOUT_OPTIONS = ['Normal', 'Shared Room', 'Split Parent', 'Split Child', 'Inside Parent', 'Inside Child'];
+const HIERARCHY_PARENT_ROOM_LAYOUTS = ['Split Parent', 'Inside Parent'];
+const HIERARCHY_CHILD_ROOM_LAYOUTS = ['Split Child', 'Inside Child'];
+const HIERARCHY_ROOM_LAYOUTS = [...HIERARCHY_PARENT_ROOM_LAYOUTS, ...HIERARCHY_CHILD_ROOM_LAYOUTS];
 const USAGE_CATEGORY_OPTIONS = ['Access', 'Administration', 'Dining', 'Examination', 'Healthcare', 'Lab Work', 'Meeting', 'Multipurpose', 'Office', 'Restricted', 'Restroom', 'Security', 'Sports', 'Storage', 'Teaching', 'Utility'];
 const BOOKABLE_ROOM_TYPES = new Set([
   'Classroom',
@@ -301,6 +304,7 @@ const normalizeRoomLayoutValue = (value: unknown) => {
   if (['split child', 'split section', 'section'].includes(normalized)) return 'Split Child';
   if (['inside parent', 'room inside', 'contains room', 'room inside parent'].includes(normalized)) return 'Inside Parent';
   if (['inside child', 'inside room', 'child room'].includes(normalized)) return 'Inside Child';
+  if (['shared', 'shared room', 'multi entrance room', 'multi-entrance room', 'multiple entrance room', 'multiple door room', 'multi door room', 'multi-door room'].includes(normalized)) return 'Shared Room';
   return ROOM_LAYOUT_OPTIONS.find(option => normalizeLookupValue(option) === normalized) || value?.toString().trim() || 'Normal';
 };
 
@@ -567,6 +571,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
   Room: {
     headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
     instructions: [
+      'Use Shared Room for one physical room with multiple doors/entrances. It behaves like a normal single room and does not need Sub Room Count, Sub Room Name, or Parent Room.',
       'Use one row for the parent room and one separate row for every split/inside child room.',
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
@@ -3092,13 +3097,13 @@ function RoomManagement() {
       capacity: isInfrastructureSpace ? 0 : parseInt(data.capacity, 10) || 0,
     };
 
-    if (payload.room_layout === 'Normal') {
+    if (!HIERARCHY_ROOM_LAYOUTS.includes(payload.room_layout)) {
       payload.parent_room_id = null;
       payload.sub_room_count = null;
       payload.room_section_name = '';
-    } else if (['Split Parent', 'Inside Parent'].includes(payload.room_layout)) {
+    } else if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(payload.room_layout)) {
       payload.parent_room_id = null;
-    } else if (['Split Child', 'Inside Child'].includes(payload.room_layout)) {
+    } else if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(payload.room_layout)) {
       payload.sub_room_count = null;
     }
 
@@ -3115,19 +3120,19 @@ function RoomManagement() {
       throw new Error('The parent room must be on the same floor.');
     }
 
-    if (['Split Child', 'Inside Child'].includes(payload.room_layout) && !payload.parent_room_id) {
+    if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(payload.room_layout) && !payload.parent_room_id) {
       throw new Error('Please select a parent room for split child or inside child rooms.');
     }
 
-    if (payload.parent_room_id && !['Split Child', 'Inside Child'].includes(payload.room_layout)) {
+    if (payload.parent_room_id && !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(payload.room_layout)) {
       payload.room_layout = payload.room_layout === 'Split Parent' ? 'Split Child' : 'Inside Child';
     }
 
-    if (payload.room_layout !== 'Normal' && !payload.room_section_name) {
+    if (HIERARCHY_ROOM_LAYOUTS.includes(payload.room_layout) && !payload.room_section_name) {
       throw new Error('Please enter the sub room name for split or inside room layouts.');
     }
 
-    if (['Split Parent', 'Inside Parent'].includes(payload.room_layout) && (!payload.sub_room_count || payload.sub_room_count <= 0)) {
+    if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(payload.room_layout) && (!payload.sub_room_count || payload.sub_room_count <= 0)) {
       throw new Error('Please enter the sub room count for split parent or inside parent rooms.');
     }
 
@@ -3241,10 +3246,10 @@ function RoomManagement() {
       type: 'select',
       options: ROOM_LAYOUT_OPTIONS,
       onChange: (nextData: any, value: string) => {
-        if (value === 'Normal') {
+        if (!HIERARCHY_ROOM_LAYOUTS.includes(value)) {
           return { ...nextData, parent_room_id: '', sub_room_count: '', room_section_name: '' };
         }
-        if (['Split Parent', 'Inside Parent'].includes(value)) {
+        if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(value)) {
           return { ...nextData, parent_room_id: '' };
         }
         return { ...nextData, sub_room_count: '' };
@@ -3255,7 +3260,7 @@ function RoomManagement() {
       label: 'Sub Room Count',
       type: 'number',
       required: false,
-      show: (formData: any) => ['Split Parent', 'Inside Parent'].includes(normalizeRoomLayoutValue(formData.room_layout)),
+      show: (formData: any) => HIERARCHY_PARENT_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(formData.room_layout)),
     },
     {
       key: 'room_type',
@@ -3276,7 +3281,7 @@ function RoomManagement() {
       key: 'room_section_name',
       label: 'Sub Room Name',
       required: false,
-      show: (formData: any) => normalizeRoomLayoutValue(formData.room_layout) !== 'Normal',
+      show: (formData: any) => HIERARCHY_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(formData.room_layout)),
       render: (item: any) => item.room_section_name || '-',
     },
     {
@@ -3284,7 +3289,7 @@ function RoomManagement() {
       label: 'Inside / Parent Room',
       type: 'select',
       required: false,
-      show: (formData: any) => ['Split Child', 'Inside Child'].includes(normalizeRoomLayoutValue(formData.room_layout)),
+      show: (formData: any) => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(formData.room_layout)),
       options: (formData: any) => rooms
         .filter(room => {
           if (formData.id && room.id?.toString() === formData.id?.toString()) return false;
@@ -3374,22 +3379,22 @@ function RoomManagement() {
     const getRowSubRoomName = (row: any) => getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString().trim() || '';
     const getRowSubRoomCount = (row: any) => parseInt(getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside'])?.toString() || '0', 10) || 0;
 
-    const parentRows = data.filter(row => ['Split Parent', 'Inside Parent'].includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
-    const childRows = data.filter(row => ['Split Child', 'Inside Child'].includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
+    const parentRows = data.filter(row => HIERARCHY_PARENT_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
+    const childRows = data.filter(row => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
 
     for (const row of data) {
       const layout = normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']));
       const roomLabel = row['Room Number'] || row['Room ID'] || 'Unnamed room';
 
-      if (layout !== 'Normal' && !getRowSubRoomName(row)) {
+      if (HIERARCHY_ROOM_LAYOUTS.includes(layout) && !getRowSubRoomName(row)) {
         throw new Error(`Room "${roomLabel}" uses ${layout}, so Sub Room Name is required.`);
       }
 
-      if (['Split Parent', 'Inside Parent'].includes(layout) && getRowSubRoomCount(row) <= 0) {
+      if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(layout) && getRowSubRoomCount(row) <= 0) {
         throw new Error(`Room "${roomLabel}" is a ${layout}, so Sub Room Count must be greater than zero.`);
       }
 
-      if (['Split Child', 'Inside Child'].includes(layout) && !getRowParentLabel(row)) {
+      if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(layout) && !getRowParentLabel(row)) {
         throw new Error(`Room "${roomLabel}" is a ${layout}, so Parent Room is required.`);
       }
     }

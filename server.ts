@@ -350,8 +350,13 @@ const normalizeRoomLayoutValue = (value: any) => {
   if (["split child", "split section", "section"].includes(normalized)) return "Split Child";
   if (["inside parent", "room inside", "contains room", "room inside parent"].includes(normalized)) return "Inside Parent";
   if (["inside child", "inside room", "child room"].includes(normalized)) return "Inside Child";
-  return ["Normal", "Split Parent", "Split Child", "Inside Parent", "Inside Child"].find(option => option.toLowerCase() === normalized) || value?.toString().trim() || "Normal";
+  if (["shared", "shared room", "multi entrance room", "multi-entrance room", "multiple entrance room", "multiple door room", "multi door room", "multi-door room"].includes(normalized)) return "Shared Room";
+  return ["Normal", "Shared Room", "Split Parent", "Split Child", "Inside Parent", "Inside Child"].find(option => option.toLowerCase() === normalized) || value?.toString().trim() || "Normal";
 };
+
+const HIERARCHY_PARENT_ROOM_LAYOUTS = ["Split Parent", "Inside Parent"];
+const HIERARCHY_CHILD_ROOM_LAYOUTS = ["Split Child", "Inside Child"];
+const HIERARCHY_ROOM_LAYOUTS = [...HIERARCHY_PARENT_ROOM_LAYOUTS, ...HIERARCHY_CHILD_ROOM_LAYOUTS];
 
 const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
   const normalized = value?.toString().trim().toLowerCase();
@@ -445,29 +450,29 @@ const normalizeRoomPayload = (payload: any) => {
     nextPayload.capacity = 0;
   }
 
-  if (nextPayload.room_layout === "Normal") {
+  if (!HIERARCHY_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.parent_room_id = null;
     nextPayload.sub_room_count = null;
     nextPayload.room_section_name = null;
-  } else if (["Split Parent", "Inside Parent"].includes(nextPayload.room_layout)) {
+  } else if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.parent_room_id = null;
-  } else if (["Split Child", "Inside Child"].includes(nextPayload.room_layout)) {
+  } else if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.sub_room_count = null;
   }
 
-  if (["Split Child", "Inside Child"].includes(nextPayload.room_layout) && !nextPayload.parent_room_id) {
+  if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout) && !nextPayload.parent_room_id) {
     throw new Error("Please select a parent room for split child or inside child rooms.");
   }
 
-  if (nextPayload.parent_room_id && !["Split Child", "Inside Child"].includes(nextPayload.room_layout)) {
+  if (nextPayload.parent_room_id && !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.room_layout = nextPayload.room_layout === "Split Parent" ? "Split Child" : "Inside Child";
   }
 
-  if (nextPayload.room_layout !== "Normal" && !nextPayload.room_section_name) {
+  if (HIERARCHY_ROOM_LAYOUTS.includes(nextPayload.room_layout) && !nextPayload.room_section_name) {
     throw new Error("Sub room name is required for split or inside room layouts.");
   }
 
-  if (["Split Parent", "Inside Parent"].includes(nextPayload.room_layout) && (!nextPayload.sub_room_count || nextPayload.sub_room_count <= 0)) {
+  if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(nextPayload.room_layout) && (!nextPayload.sub_room_count || nextPayload.sub_room_count <= 0)) {
     throw new Error("Sub room count must be greater than zero for split parent or inside parent rooms.");
   }
 
