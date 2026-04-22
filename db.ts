@@ -207,7 +207,7 @@ export const createDatabaseClient = async (options: CreateDatabaseOptions): Prom
 
   const pool = new Pool({
     connectionString: options.databaseUrl,
-    ssl: process.env.PGSSL === "disable" ? false : undefined,
+    ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false },
   });
 
   await pool.query("SELECT 1");
