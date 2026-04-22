@@ -431,6 +431,19 @@ const NON_CAPACITY_ROOM_TYPE_VALUES = [
 const nonCapacityRoomTypeSqlList = NON_CAPACITY_ROOM_TYPE_VALUES.map(roomType => `'${roomType.replace(/'/g, "''")}'`).join(", ");
 const isNonCapacityRoomType = (roomType: any) =>
   NON_CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
+const CAPACITY_ROOM_TYPE_VALUES = [
+  "Classroom",
+  "Smart Classroom",
+  "Multipurpose Classroom",
+  "Classroom Lab",
+  "Multipurpose Lab",
+  "Lab",
+  "Computer Lab",
+  "Research Lab",
+  "Language Lab",
+];
+const isCapacityRoomType = (roomType: any) =>
+  CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
 
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
@@ -443,7 +456,7 @@ const normalizeRoomPayload = (payload: any) => {
   nextPayload.room_section_name = nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.usage_category = normalizeUsageCategoryValue(nextPayload.usage_category, nextPayload.room_type);
   nextPayload.is_bookable = normalizeBooleanLikeValue(nextPayload.is_bookable, true) ? 1 : 0;
-  nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
+  nextPayload.capacity = isCapacityRoomType(nextPayload.room_type) ? parseInt(nextPayload.capacity, 10) || 0 : 0;
 
   if (isNonCapacityRoomType(nextPayload.room_type)) {
     nextPayload.is_bookable = 0;
@@ -491,8 +504,8 @@ const normalizeRoomPayload = (payload: any) => {
     nextPayload.restroom_type = null;
   }
 
-  if (!isNonCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
-    throw new Error("Capacity is required for this room type.");
+  if (isCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
+    throw new Error("Capacity is required for classroom and lab room types.");
   }
 
   return nextPayload;
