@@ -98,6 +98,63 @@ const normalizeLookupValue = (value: unknown) =>
 const idsMatch = (left: unknown, right: unknown) =>
   left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
 
+const SCHOOL_TYPE_OPTIONS = [
+  'Administration',
+  'Agriculture',
+  'Arts and Design',
+  'Commerce and Management',
+  'Computing',
+  'Distance and Online Education',
+  'Engineering',
+  'Film Academy',
+  'Liberal Arts and Sciences',
+  'Media Studies',
+  'Nursing',
+  'Paramedical and Health Sciences',
+  'Pharmacy',
+];
+
+const normalizeSchoolTypeValue = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return 'Administration';
+
+  const aliases: Record<string, string> = {
+    admin: 'Administration',
+    administrative: 'Administration',
+    agriculture: 'Agriculture',
+    art: 'Arts and Design',
+    arts: 'Arts and Design',
+    design: 'Arts and Design',
+    business: 'Commerce and Management',
+    commerce: 'Commerce and Management',
+    management: 'Commerce and Management',
+    computing: 'Computing',
+    computer: 'Computing',
+    cse: 'Computing',
+    online: 'Distance and Online Education',
+    distance: 'Distance and Online Education',
+    engineering: 'Engineering',
+    film: 'Film Academy',
+    liberal: 'Liberal Arts and Sciences',
+    science: 'Liberal Arts and Sciences',
+    sciences: 'Liberal Arts and Sciences',
+    media: 'Media Studies',
+    nursing: 'Nursing',
+    paramedical: 'Paramedical and Health Sciences',
+    health: 'Paramedical and Health Sciences',
+    medical: 'Paramedical and Health Sciences',
+    pharma: 'Pharmacy',
+    pharmacy: 'Pharmacy',
+    pharmaceutical: 'Pharmacy',
+  };
+
+  const matchedOption = SCHOOL_TYPE_OPTIONS.find(option => normalizeLookupValue(option) === normalized);
+  if (matchedOption) return matchedOption;
+
+  const matchedAlias = Object.entries(aliases).find(([alias]) => normalized.includes(alias));
+  return matchedAlias?.[1] || value?.toString().trim() || 'Administration';
+};
+
 const ROOM_TYPE_OPTIONS = [
   'Admin Office',
   'Auditorium',
@@ -691,11 +748,22 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     headers: ['School ID', 'School Name', 'Type', 'Description'],
     exampleRows: [
       {
-        'School ID': 'SCH-001',
-        'School Name': 'School of Engineering',
-        Type: 'Engineering',
-        Description: 'Engineering programs and laboratories',
+        'School ID': 'SCH-COMP',
+        'School Name': 'School of Computing',
+        Type: 'Computing',
+        Description: 'Computing programs from MBU program list',
       },
+      {
+        'School ID': 'SCH-ADMIN',
+        'School Name': 'Central Administration',
+        Type: 'Administration',
+        Description: 'Administrative and support departments',
+      },
+    ],
+    instructions: [
+      `Allowed Type values: ${SCHOOL_TYPE_OPTIONS.join(', ')}.`,
+      'Create/import schools before importing departments because every department must map to a school.',
+      'Use Central Administration for non-academic units such as Accounts, Transport, Exams, Library, or Establishment.',
     ],
   },
   Department: {
@@ -704,9 +772,16 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Department ID': 'DEPT-001',
         'Department Name': 'Computer Science and Engineering',
-        School: 'School of Engineering',
+        School: 'School of Computing',
         Type: 'Academic',
         Description: 'Core computer science department',
+      },
+      {
+        'Department ID': 'DEPT-ADMIN-001',
+        'Department Name': 'Accounts',
+        School: 'Central Administration',
+        Type: 'Administrative',
+        Description: 'Administrative department',
       },
     ],
   },
@@ -3710,7 +3785,7 @@ function SchoolManagement() {
   const fields = [
     { key: 'school_id', label: 'School ID' },
     { key: 'name', label: 'School Name' },
-    { key: 'type', label: 'Type', type: 'select', options: ['Engineering', 'Science', 'Arts', 'Business', 'Medical', 'Law', 'Architecture'] },
+    { key: 'type', label: 'Type', type: 'select', options: SCHOOL_TYPE_OPTIONS },
     { key: 'description', label: 'Description', fullWidth: true },
   ];
 
@@ -3719,7 +3794,7 @@ function SchoolManagement() {
       const payload = {
         school_id: row['School ID']?.toString(),
         name: row['School Name'],
-        type: row['Type'],
+        type: normalizeSchoolTypeValue(row['Type']),
         description: row['Description']
       };
       if (!payload.school_id || !payload.name) continue;
@@ -3736,17 +3811,25 @@ function DepartmentManagement() {
     fetch('/api/schools').then(res => res.json()).then(setSchools);
   }, []);
 
+  const schoolOptions = schools
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+    .map(school => ({ value: school.id, label: school.name }));
+
   const fields = [
     { key: 'department_id', label: 'Department ID' },
     { key: 'name', label: 'Department Name' },
-    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schools.map(s => ({ value: s.id, label: s.name })) },
+    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schoolOptions },
     { key: 'type', label: 'Type', type: 'select', options: ['Academic', 'Research', 'Administrative', 'Support'] },
     { key: 'description', label: 'Description', fullWidth: true },
   ];
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const school = schools.find(s => s.name === row['School']);
+      const school = schools.find(s =>
+        normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
+        normalizeLookupValue(s.school_id) === normalizeLookupValue(row['School'])
+      );
       const payload = {
         department_id: row['Department ID']?.toString(),
         name: row['Department Name'],
@@ -3874,7 +3957,14 @@ function DepartmentAllocationManagement() {
     return room?.capacity ?? 'Unknown';
   };
 
-  const lookupDepartments = departments.filter(department =>
+  const schoolOptions = schools
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+    .map(school => ({ value: school.id, label: school.name }));
+  const sortedDepartments = departments
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
+  const lookupDepartments = sortedDepartments.filter(department =>
     !lookupFilters.school_id || department.school_id?.toString() === lookupFilters.school_id
   );
 
@@ -3894,13 +3984,13 @@ function DepartmentAllocationManagement() {
   };
 
   const fields = [
-    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schools.map(s => ({ value: s.id, label: s.name })) },
+    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schoolOptions },
     { 
       key: 'department_id', 
       label: 'Department', 
       type: 'select', 
       options: (formData: any) => {
-        return departments
+        return sortedDepartments
           .filter(d => idsMatch(d.school_id, formData.school_id))
           .map(d => ({ value: d.id, label: d.name }));
       }
@@ -3976,8 +4066,17 @@ function DepartmentAllocationManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
-      const school = schools.find(s => normalizeLookupValue(s.name) === normalizeLookupValue(row['School']));
-      const department = departments.find(d => normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']));
+      const school = schools.find(s =>
+        normalizeLookupValue(s.name) === normalizeLookupValue(row['School']) ||
+        normalizeLookupValue(s.school_id) === normalizeLookupValue(row['School'])
+      );
+      const department = departments.find(d =>
+        (!school || idsMatch(d.school_id, school.id)) &&
+        (
+          normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']) ||
+          normalizeLookupValue(d.department_id) === normalizeLookupValue(row['Department'])
+        )
+      );
       const building = buildings.find(b => normalizeLookupValue(b.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
       const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
@@ -4081,7 +4180,7 @@ function DepartmentAllocationManagement() {
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
             >
               <option value="">Select School</option>
-              {schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}
+              {schoolOptions.map(school => <option key={school.value} value={school.value}>{school.label}</option>)}
             </select>
           </div>
           <div className="space-y-1">
