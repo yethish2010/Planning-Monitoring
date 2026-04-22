@@ -7,6 +7,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
+import { GoogleGenAI } from "@google/genai";
+import * as mammoth from "mammoth";
 import { createDatabaseClient, type DatabaseDialect } from "./db.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -17,6 +19,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || "";
 const isProduction = process.env.NODE_ENV === "production";
 const isVercelRuntime = process.env.VERCEL === "1";
 const defaultDatabasePath = isVercelRuntime
@@ -715,7 +718,7 @@ const markAllNotificationsRead = async (user: any, notificationIds?: number[]) =
   });
 };
 
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
 app.use(cookieParser());
 app.use((req, res, next) => {
   const requestOrigin = normalizeOrigin(typeof req.headers.origin === "string" ? req.headers.origin : "");
@@ -752,6 +755,24 @@ const authenticate = (req: any, res: any, next: any) => {
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
   }
+};
+
+const getAIResponseText = async (response: any) => {
+  const textValue = response?.text;
+  if (typeof textValue === "function") return await textValue.call(response);
+  if (typeof textValue === "string") return textValue;
+  if (typeof response?.response?.text === "function") return await response.response.text();
+  throw new Error("AI response did not include readable text.");
+};
+
+const parseAIJsonResponse = (text: string) => {
+  let cleanText = text.trim();
+  if (cleanText.includes("```json")) {
+    cleanText = cleanText.split("```json")[1].split("```")[0];
+  } else if (cleanText.includes("```")) {
+    cleanText = cleanText.split("```")[1].split("```")[0];
+  }
+  return JSON.parse(cleanText);
 };
 
 // --- AUTH ROUTES ---
@@ -798,6 +819,77 @@ app.get("/api/auth/me", (req, res) => {
     res.json({ user: decoded });
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
+  }
+});
+
+app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {
+  try {
+    if (!GEMINI_API_KEY) {
+      return res.status(500).json({ error: "Gemini API key is missing. Set GEMINI_API_KEY on the backend." });
+    }
+
+    const { data, mimeType, fileName } = req.body || {};
+    if (!data || !mimeType) {
+      return res.status(400).json({ error: "File data and mime type are required." });
+    }
+
+    const base64Data = data.toString().includes(",")
+      ? data.toString().split(",").pop()
+      : data.toString();
+    const parts: any[] = [];
+
+    if (mimeType === "application/pdf") {
+      parts.push({
+        inlineData: {
+          data: base64Data,
+          mimeType,
+        },
+      });
+    } else if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      const buffer = Buffer.from(base64Data, "base64");
+      const result = await mammoth.extractRawText({ buffer });
+      parts.push({ text: `Extracted text from ${fileName || "DOCX document"}:\n\n${result.value}` });
+    } else {
+      return res.status(400).json({ error: "Unsupported file type. Please upload a PDF or DOCX file." });
+    }
+
+    parts.push({ text: `Extract all timetable entries from this document.
+The document contains multiple sections (A1, A2, etc.).
+Extract info for ALL sections.
+
+Return a JSON array of objects with these fields:
+- department (e.g., "Computer Science and Engineering")
+- semester (Odd or Even if available, else null)
+- course_code (if available, else null)
+- course_name (the subject name, e.g., "Computer Networks")
+- faculty (the teacher's name)
+- room (the room number, e.g., "322")
+- day_of_week (Full name: Monday, Tuesday, etc.)
+- start_time (24h format HH:mm, e.g., "09:00")
+- end_time (24h format HH:mm, e.g., "09:55")
+- student_count (estimate or null)
+
+Ensure you capture the Room No mentioned in the header of each timetable.
+Only extract actual class sessions.
+Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
+The course_name must always be the real subject title.
+If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
+
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ parts }],
+      config: { responseMimeType: "application/json" },
+    });
+    const schedules = parseAIJsonResponse(await getAIResponseText(response));
+    res.json({ schedules: Array.isArray(schedules) ? schedules : [] });
+  } catch (err: any) {
+    const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key/i.test(err?.message || "");
+    res.status(500).json({
+      error: invalidKey
+        ? `${err.message}. Please set a valid GEMINI_API_KEY on the backend and restart the server.`
+        : err.message || "Failed to extract timetable.",
+    });
   }
 });
 

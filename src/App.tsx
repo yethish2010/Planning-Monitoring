@@ -11,12 +11,10 @@ import {
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Text, PerspectiveCamera, Environment, ContactShadows, Float, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import * as XLSX from 'xlsx';
-
-import * as mammoth from 'mammoth';
 
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
@@ -4416,61 +4414,37 @@ function SchedulingManagement() {
   const handleFileUpload = async (file: File) => {
     setIsExtracting(true);
     try {
-      const ai = getGenAIClient();
-      let parts: any[] = [];
-
-      if (file.type === 'application/pdf') {
-        const reader = new FileReader();
-        const filePart = await new Promise<any>((resolve) => {
-          reader.onloadend = () => {
-            const base64 = (reader.result as string).split(',')[1];
-            resolve({
-              inlineData: {
-                data: base64,
-                mimeType: file.type,
-              },
-            });
-          };
-          reader.readAsDataURL(file);
-        });
-        parts.push(filePart);
-      } else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        parts.push({ text: `Extracted text from DOCX document:\n\n${result.value}` });
-      } else {
+      const supportedTypes = [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ];
+      if (!supportedTypes.includes(file.type)) {
         throw new Error("Unsupported file type. Please upload a PDF or DOCX file.");
       }
 
-      parts.push({ text: `Extract all timetable entries from this document. 
-      The document contains multiple sections (A1, A2, etc.). 
-      Extract info for ALL sections.
-      
-      Return a JSON array of objects with these fields:
-      - department (e.g., "Computer Science and Engineering")
-      - semester (Odd or Even if available, else null)
-      - course_code (if available, else null)
-      - course_name (the subject name, e.g., "Computer Networks")
-      - faculty (the teacher's name)
-      - room (the room number, e.g., "322")
-      - day_of_week (Full name: Monday, Tuesday, etc.)
-      - start_time (24h format HH:mm, e.g., "09:00") 
-      - end_time (24h format HH:mm, e.g., "09:55")
-      - student_count (estimate or null)
-      
-      Ensure you capture the Room No mentioned in the header of each timetable.
-      Only extract actual class sessions.
-      Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
-      The course_name must always be the real subject title.
-      If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{ parts }],
-        config: { responseMimeType: "application/json" }
+      const fileData = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1] || '');
+        reader.onerror = () => reject(new Error('Failed to read timetable file.'));
+        reader.readAsDataURL(file);
       });
 
-      const extractedSchedules = parseAIResponse(await getAIResponseText(response));
+      const extractResponse = await fetch('/api/ai/extract-timetable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type,
+          data: fileData,
+        }),
+      });
+      const extractResult = await extractResponse.json().catch(() => ({}));
+      if (!extractResponse.ok) {
+        throw new Error(extractResult?.error || 'Failed to extract timetable.');
+      }
+
+      const extractedSchedules = extractResult.schedules;
       
       if (Array.isArray(extractedSchedules)) {
         const validSchedules = extractedSchedules
@@ -4524,7 +4498,7 @@ function SchedulingManagement() {
       let msg = err.message || 'Unknown error';
       const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key/i.test(msg);
       if (invalidKey) {
-        msg = `${msg}. Please set a valid VITE_GEMINI_API_KEY in .env and restart the app.`;
+        msg = `${msg}. Please set a valid GEMINI_API_KEY on the backend and restart the server.`;
       }
       alert(`Failed to extract timetable: ${msg}`);
     } finally {
