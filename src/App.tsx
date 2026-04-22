@@ -155,6 +155,20 @@ const normalizeSchoolTypeValue = (value: unknown) => {
   return matchedAlias?.[1] || value?.toString().trim() || 'Administration';
 };
 
+const normalizeSemesterValue = (value: unknown, fallback = 'Odd') => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return fallback;
+  if (normalized.includes('odd') || normalized.includes('fall')) return 'Odd';
+  if (normalized.includes('even') || normalized.includes('spring') || normalized.includes('summer')) return 'Even';
+
+  const semesterNumber = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
+  if (semesterNumber) {
+    return Number(semesterNumber) % 2 === 0 ? 'Even' : 'Odd';
+  }
+
+  return fallback;
+};
+
 const ROOM_TYPE_OPTIONS = [
   'Admin Office',
   'Auditorium',
@@ -814,11 +828,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Schedule: {
-    headers: ['Schedule ID', 'Department', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time'],
+    headers: ['Schedule ID', 'Department', 'Semester', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time'],
     exampleRows: [
       {
         'Schedule ID': 'SCHD-001',
         Department: 'Computer Science and Engineering',
+        Semester: 'Odd',
         'Course Code': 'CSE301',
         'Course Name': 'Database Management Systems',
         Faculty: 'Dr. Rao',
@@ -827,6 +842,11 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Start Time': '09:00',
         'End Time': '10:00',
       },
+    ],
+    instructions: [
+      'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
+      'Semester accepts Odd/Even. If blank, Odd is used for the derived Department Room Mapping.',
+      'Rows without a matching room are skipped. Rows without a matching department still import as schedules but cannot create department mapping.',
     ],
   },
   Maintenance: {
@@ -1789,7 +1809,10 @@ export default function App() {
           <Route path="/scheduling" element={
             <ProtectedRoute roles={['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)']}>
               <Layout title="Schedule Records">
-                <DependencyGuard dependencies={[{ table: 'rooms', label: 'Rooms' }]}>
+                <DependencyGuard dependencies={[
+                  { table: 'rooms', label: 'Rooms' },
+                  { table: 'departments', label: 'Departments' }
+                ]}>
                   <SchedulingManagement />
                 </DependencyGuard>
               </Layout>
@@ -3919,17 +3942,9 @@ function DepartmentAllocationManagement() {
   };
 
   const getAvailableRoomOptions = (formData: any) => {
-    const selectedRoomId = formData.room_id?.toString();
-    const allocatedRoomIds = new Set(
-      allocations
-        .filter(allocation => allocation.id !== formData.id)
-        .map(allocation => allocation.room_id?.toString())
-    );
-
     return rooms
       .filter(room => {
         if (!isRoomReservable(room)) return false;
-        if (allocatedRoomIds.has(room.id?.toString()) && room.id?.toString() !== selectedRoomId) return false;
 
         const { floor, block, building } = getRoomPath(room);
         if (!floor || !block || !building) return false;
@@ -4116,7 +4131,7 @@ function DepartmentAllocationManagement() {
         !semesterOptions.includes(payload.semester)
       ) continue;
       
-      await upsertImportRecord('/api/department_allocations', payload, [['room_id']]);
+      await upsertImportRecord('/api/department_allocations', payload, [['room_id', 'department_id', 'semester']]);
     }
   };
 
@@ -4136,16 +4151,18 @@ function DepartmentAllocationManagement() {
     const payload = { ...data };
     const room = rooms.find(r => r.id?.toString() === payload.room_id?.toString());
     const requiredCapacity = parseInt(payload.capacity, 10) || 0;
-    const duplicateRoom = allocations.some(allocation =>
+    const duplicateAllocation = allocations.some(allocation =>
       allocation.id !== payload.id &&
-      allocation.room_id?.toString() === payload.room_id?.toString()
+      allocation.room_id?.toString() === payload.room_id?.toString() &&
+      allocation.department_id?.toString() === payload.department_id?.toString() &&
+      allocation.semester === payload.semester
     );
 
     if (!payload.semester) throw new Error('Semester is required.');
     if (!room) throw new Error('Please select a valid room.');
     if (requiredCapacity <= 0) throw new Error('Required capacity must be greater than zero.');
     if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
-    if (duplicateRoom) throw new Error('This room is already mapped to a department.');
+    if (duplicateAllocation) throw new Error('This room is already mapped to this department for the selected semester.');
 
     payload.room_type = room.room_type;
     delete payload.building_id;
@@ -4303,13 +4320,24 @@ function EquipmentManagement() {
 function SchedulingManagement() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [allocations, setAllocations] = useState<any[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  const refreshSchedulingLookups = async () => {
+    const [roomData, departmentData, allocationData] = await Promise.all([
+      fetch('/api/rooms').then(res => res.json()),
+      fetch('/api/departments').then(res => res.json()),
+      fetch('/api/department_allocations').then(res => res.json()),
+    ]);
+    setRooms(Array.isArray(roomData) ? roomData : []);
+    setDepartments(Array.isArray(departmentData) ? departmentData : []);
+    setAllocations(Array.isArray(allocationData) ? allocationData : []);
+  };
+
   useEffect(() => {
-    fetch('/api/rooms').then(res => res.json()).then(setRooms);
-    fetch('/api/departments').then(res => res.json()).then(setDepartments);
+    refreshSchedulingLookups();
   }, []);
 
   const fields = [
@@ -4324,10 +4352,45 @@ function SchedulingManagement() {
     { key: 'end_time', label: 'End Time', type: 'time' },
   ];
 
+  const findDepartmentForSchedule = (value: unknown) =>
+    departments.find(department =>
+      normalizeLookupValue(department.name) === normalizeLookupValue(value) ||
+      normalizeLookupValue(department.department_id) === normalizeLookupValue(value)
+    );
+
+  const ensureAllocationFromSchedule = async (room: any, department: any, semesterValue: unknown) => {
+    if (!room?.id || !department?.id || !department?.school_id) return null;
+
+    const payload = {
+      school_id: department.school_id,
+      department_id: department.id,
+      room_id: room.id,
+      semester: normalizeSemesterValue(semesterValue),
+      room_type: room.room_type,
+      capacity: room.capacity || 1,
+    };
+
+    const savedAllocation = await upsertImportRecord('/api/department_allocations', payload, [
+      ['room_id', 'department_id', 'semester'],
+    ]);
+
+    setAllocations(prev => {
+      const existingIndex = prev.findIndex(allocation => allocation.id?.toString() === savedAllocation.id?.toString());
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        next[existingIndex] = { ...next[existingIndex], ...savedAllocation };
+        return next;
+      }
+      return [...prev, savedAllocation];
+    });
+
+    return savedAllocation;
+  };
+
   const handleImport = async (data: any[]) => {
     for (const row of data) {
       const room = findRoomByImportLabel(rooms.filter(isRoomReservable), row['Room']);
-      const dept = departments.find(d => normalizeLookupValue(d.name) === normalizeLookupValue(row['Department']));
+      const dept = findDepartmentForSchedule(row['Department']);
       
       const payload = {
         schedule_id: row['Schedule ID']?.toString(),
@@ -4344,8 +4407,10 @@ function SchedulingManagement() {
       if (!payload.schedule_id || !payload.course_name || !payload.room_id) continue;
 
       await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'day_of_week', 'start_time', 'end_time']]);
+      await ensureAllocationFromSchedule(room, dept, getImportValue(row, ['Semester', 'Term']));
     }
     setRefreshKey(prev => prev + 1);
+    await refreshSchedulingLookups();
   };
 
   const handleFileUpload = async (file: File) => {
@@ -4383,6 +4448,7 @@ function SchedulingManagement() {
       
       Return a JSON array of objects with these fields:
       - department (e.g., "Computer Science and Engineering")
+      - semester (Odd or Even if available, else null)
       - course_code (if available, else null)
       - course_name (the subject name, e.g., "Computer Networks")
       - faculty (the teacher's name)
@@ -4415,9 +4481,7 @@ function SchedulingManagement() {
 
         for (const schedule of validSchedules) {
           const room = findRoomByImportLabel(rooms.filter(isRoomReservable), schedule.room);
-          const dept = departments.find(d =>
-            normalizeLookupValue(d.name) === normalizeLookupValue(schedule.department)
-          );
+          const dept = findDepartmentForSchedule(schedule.department);
 
           if (!room) continue;
 
@@ -4441,9 +4505,13 @@ function SchedulingManagement() {
             credentials: 'include'
           });
 
-          if (res.ok) importedCount += 1;
+          if (res.ok) {
+            importedCount += 1;
+            await ensureAllocationFromSchedule(room, dept, schedule.semester);
+          }
         }
         setRefreshKey(prev => prev + 1);
+        await refreshSchedulingLookups();
 
         if (importedCount === 0) {
           throw new Error('Timetable was read, but no rows could be matched to existing rooms. Check that the room numbers in the file match Room Management exactly.');

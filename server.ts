@@ -882,7 +882,7 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
     { fields: ["school_id", "name"], label: "Department name in this school" },
   ],
   department_allocations: [
-    { fields: ["room_id"], label: "Room allocation" },
+    { fields: ["room_id", "department_id", "semester"], label: "Room allocation for this department and semester" },
   ],
   equipment: [
     { fields: ["equipment_id"], label: "Equipment ID" },
