@@ -95,6 +95,9 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+const idsMatch = (left: unknown, right: unknown) =>
+  left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
+
 const ROOM_TYPE_OPTIONS = [
   'Admin Office',
   'Auditorium',
@@ -2518,7 +2521,7 @@ function BuildingManagement() {
   }, []);
 
   const getVisibleBlocksForBuilding = (building: any) =>
-    blocks.filter(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building));
+    blocks.filter(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building));
 
   const getBuildingStructureType = (building: any) =>
     building?.structure_type === 'blocks' || getVisibleBlocksForBuilding(building).length > 0 ? 'blocks' : 'direct';
@@ -2742,8 +2745,8 @@ const getGeneratedFloorId = (prefix: string, floorNumber: number) => {
 };
 
 const getFloorDisplayLabel = (floor: any, blocks: any[], buildings: any[]) => {
-  const block = blocks.find(b => b.id === floor.block_id);
-  const building = buildings.find(b => b.id === block?.building_id);
+  const block = blocks.find(b => idsMatch(b.id, floor.block_id));
+  const building = buildings.find(b => idsMatch(b.id, block?.building_id));
   const floorName = getFloorName(floor.floor_number);
 
   if (!block || !building) return `${floorName} (Unknown Building)`;
@@ -2828,8 +2831,8 @@ function FloorManagement() {
       resetKeys: ['block_id'],
       options: buildings.map(b => ({ value: b.id, label: b.name })),
       render: (item: any) => {
-        const block = blocks.find(b => b.id === item.block_id);
-        const building = buildings.find(b => b.id === block?.building_id);
+        const block = blocks.find(b => idsMatch(b.id, item.block_id));
+        const building = buildings.find(b => idsMatch(b.id, block?.building_id));
         return building?.name || 'Unknown';
       }
     },
@@ -2839,7 +2842,7 @@ function FloorManagement() {
       type: 'select',
       options: (formData: any) => {
         const selectedBuildingId = formData.building_id ||
-          blocks.find(b => b.id === formData.block_id)?.building_id;
+          blocks.find(b => idsMatch(b.id, formData.block_id))?.building_id;
 
         if (!selectedBuildingId) return [];
 
@@ -2854,8 +2857,8 @@ function FloorManagement() {
         return [{ value: '__direct__', label: 'Direct floors' }];
       },
       render: (item: any) => {
-        const block = blocks.find(b => b.id === item.block_id);
-        const building = buildings.find(b => b.id === block?.building_id);
+        const block = blocks.find(b => idsMatch(b.id, item.block_id));
+        const building = buildings.find(b => idsMatch(b.id, block?.building_id));
         return getBlockDisplayLabel(block, building);
       }
     },
@@ -2968,8 +2971,8 @@ function FloorManagement() {
   };
 
   const prepareFormData = (item: any) => {
-    const block = blocks.find(b => b.id === item.block_id);
-    const building = buildings.find(b => b.id === block?.building_id);
+    const block = blocks.find(b => idsMatch(b.id, item.block_id));
+    const building = buildings.find(b => idsMatch(b.id, block?.building_id));
 
     return {
       ...item,
@@ -2994,7 +2997,7 @@ function FloorManagement() {
         normalizedBlockLabel === 'direct floors' ||
         normalizedBlockLabel === 'direct floors (no block)';
       const block = wantsDirectFloors ? undefined : blocks.find(b =>
-        (!building || b.building_id === building.id) &&
+        (!building || idsMatch(b.building_id, building.id)) &&
         (
           normalizeLookupValue(b.name) === normalizedBlockLabel ||
           normalizeLookupValue(b.block_id) === normalizedBlockLabel
@@ -3164,9 +3167,9 @@ function RoomManagement() {
       resetKeys: ['block_id', 'floor_id', 'parent_room_id'],
       options: buildings.map(b => ({ value: b.id, label: b.name })),
       render: (item: any) => {
-        const floor = floors.find(f => f.id === item?.floor_id);
-        const block = blocks.find(b => b.id === floor?.block_id);
-        const building = buildings.find(b => b.id === block?.building_id);
+        const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
+        const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
+        const building = buildings.find(b => idsMatch(b.id, block?.building_id));
         return building?.name || 'Unknown';
       },
     },
@@ -3196,9 +3199,9 @@ function RoomManagement() {
         ];
       },
       render: (item: any) => {
-        const floor = floors.find(f => f.id === item?.floor_id);
-        const block = blocks.find(b => b.id === floor?.block_id);
-        const building = buildings.find(b => b.id === block?.building_id);
+        const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
+        const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
+        const building = buildings.find(b => idsMatch(b.id, block?.building_id));
         return getBlockDisplayLabel(block, building);
       },
     },
@@ -3224,11 +3227,11 @@ function RoomManagement() {
               : buildingBlocks.map(b => b.id);
 
         return floors
-          .filter(f => allowedBlockIds.includes(f.block_id))
+          .filter(f => allowedBlockIds.some(blockId => idsMatch(blockId, f.block_id)))
           .map(f => ({ value: f.id, label: getFloorDisplayLabel(f, blocks, buildings) }));
       },
       render: (item: any) => {
-        const floor = floors.find(f => f.id === item?.floor_id);
+        const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
         return floor ? getFloorDisplayLabel(floor, blocks, buildings) : 'Unknown Floor';
       },
     },
@@ -3339,8 +3342,8 @@ function RoomManagement() {
   ];
 
   const prepareFormData = (item: any) => {
-    const floor = floors.find(f => f.id === item?.floor_id);
-    const block = blocks.find(b => b.id === floor?.block_id);
+    const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
+    const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
 
     return {
       ...item,
@@ -3427,7 +3430,7 @@ function RoomManagement() {
       const blockLabel = getImportValue(row, ['Block / Direct Floors', 'Block']);
       const normalizedBlockLabel = normalizeLookupValue(blockLabel);
       const block = blocks.find(b =>
-        (!building || b.building_id === building.id) &&
+        (!building || idsMatch(b.building_id, building.id)) &&
         (
           normalizeLookupValue(b.name) === normalizedBlockLabel ||
           ((normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)' || !normalizedBlockLabel) && isImplicitBuildingBlock(b, building))
@@ -3591,30 +3594,30 @@ function DepartmentAllocationManagement() {
   }, []);
 
   const getRoomPath = (room: any) => {
-    const floor = floors.find(f => f.id === room?.floor_id);
-    const block = blocks.find(b => b.id === floor?.block_id);
-    const building = buildings.find(b => b.id === block?.building_id);
+    const floor = floors.find(f => idsMatch(f.id, room?.floor_id));
+    const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
+    const building = buildings.find(b => idsMatch(b.id, block?.building_id));
     return { floor, block, building };
   };
 
   const buildingHasVisibleBlocks = (buildingId: unknown) => {
     const building = buildings.find(b => b.id == buildingId);
     if (!building) return false;
-    return blocks.some(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building));
+    return blocks.some(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building));
   };
 
   const getBlockOptionsForBuilding = (formData: any) => {
     const building = buildings.find(b => b.id == formData.building_id);
     if (!building) return [];
     return blocks
-      .filter(block => block.building_id === building.id && !isImplicitBuildingBlock(block, building))
+      .filter(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building))
       .map(block => ({ value: block.id, label: block.name }));
   };
 
   const getFloorOptionsForSelection = (formData: any) => {
     const building = buildings.find(b => b.id == formData.building_id);
     if (!building) return [];
-    const buildingBlocks = blocks.filter(block => block.building_id === building.id);
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, building.id));
     const directBlock = buildingBlocks.find(block => isImplicitBuildingBlock(block, building));
     const allowedBlockIds = formData.block_id
       ? [parseInt(formData.block_id)]
@@ -3623,7 +3626,7 @@ function DepartmentAllocationManagement() {
         : directBlock ? [directBlock.id] : buildingBlocks.map(block => block.id);
 
     return floors
-      .filter(floor => allowedBlockIds.includes(floor.block_id))
+      .filter(floor => allowedBlockIds.some(blockId => idsMatch(blockId, floor.block_id)))
       .sort((a, b) => a.floor_number - b.floor_number)
       .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) }));
   };
@@ -3663,7 +3666,7 @@ function DepartmentAllocationManagement() {
   };
 
   const getRoomCapacity = (item: any) => {
-    const room = rooms.find(r => r.id === item.room_id);
+    const room = rooms.find(r => idsMatch(r.id, item.room_id));
     return room?.capacity ?? 'Unknown';
   };
 
@@ -3679,9 +3682,9 @@ function DepartmentAllocationManagement() {
   });
 
   const getAllocationDetails = (allocation: any) => {
-    const school = schools.find(s => s.id === allocation.school_id);
-    const department = departments.find(d => d.id === allocation.department_id);
-    const room = rooms.find(r => r.id === allocation.room_id);
+    const school = schools.find(s => idsMatch(s.id, allocation.school_id));
+    const department = departments.find(d => idsMatch(d.id, allocation.department_id));
+    const room = rooms.find(r => idsMatch(r.id, allocation.room_id));
     const { floor, block, building } = getRoomPath(room);
     return { school, department, room, floor, block, building };
   };
@@ -3694,7 +3697,7 @@ function DepartmentAllocationManagement() {
       type: 'select', 
       options: (formData: any) => {
         return departments
-          .filter(d => d.school_id === parseInt(formData.school_id))
+          .filter(d => idsMatch(d.school_id, formData.school_id))
           .map(d => ({ value: d.id, label: d.name }));
       }
     },
@@ -3706,7 +3709,7 @@ function DepartmentAllocationManagement() {
       resetKeys: ['block_id', 'floor_id', 'room_id'],
       options: buildings.map(building => ({ value: building.id, label: building.name })),
       render: (item: any) => {
-        const room = rooms.find(r => r.id === item.room_id);
+        const room = rooms.find(r => idsMatch(r.id, item.room_id));
         return getRoomPath(room)?.building?.name || 'Unknown';
       },
     },
@@ -3718,7 +3721,7 @@ function DepartmentAllocationManagement() {
       show: (formData: any) => buildingHasVisibleBlocks(formData.building_id),
       options: getBlockOptionsForBuilding,
       render: (item: any) => {
-        const room = rooms.find(r => r.id === item.room_id);
+        const room = rooms.find(r => idsMatch(r.id, item.room_id));
         const { block, building } = getRoomPath(room);
         return getBlockDisplayLabel(block, building);
       },
@@ -3736,7 +3739,7 @@ function DepartmentAllocationManagement() {
       label: 'Floor',
       tableOnly: true,
       render: (item: any) => {
-        const room = rooms.find(r => r.id === item.room_id);
+        const room = rooms.find(r => idsMatch(r.id, item.room_id));
         const { floor } = getRoomPath(room);
         return floor ? getFloorName(floor.floor_number) : 'Unknown';
       },
@@ -3783,7 +3786,7 @@ function DepartmentAllocationManagement() {
           normalizeLookupValue(getRoomDisplayLabel(r, rooms)),
         ].includes(normalizedRoomValue)) return false;
         const { block, building: roomBuilding } = getRoomPath(r);
-        if (building && roomBuilding?.id !== building.id) return false;
+        if (building && !idsMatch(roomBuilding?.id, building.id)) return false;
         if (normalizedBlockLabel) {
           const wantsDirectBlock = normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)';
           if (wantsDirectBlock && !isImplicitBuildingBlock(block, roomBuilding)) return false;
@@ -3815,7 +3818,7 @@ function DepartmentAllocationManagement() {
   };
 
   const prepareFormData = (item: any) => {
-    const room = rooms.find(r => r.id === item.room_id);
+    const room = rooms.find(r => idsMatch(r.id, item.room_id));
     const { floor, block, building } = getRoomPath(room);
 
     return {
@@ -4420,17 +4423,17 @@ function BookingManagement() {
   const directBlock = selectedBuilding ? selectedBuildingBlocks.find(block => isImplicitBuildingBlock(block, selectedBuilding)) : null;
   const floorOptions = floors.filter(floor => {
     if (!searchCriteria.buildingId) return true;
-    if (searchCriteria.blockId === '__direct__') return directBlock?.id === floor.block_id;
+    if (searchCriteria.blockId === '__direct__') return idsMatch(directBlock?.id, floor.block_id);
     if (searchCriteria.blockId) return floor.block_id == searchCriteria.blockId;
-    return selectedBuildingBlocks.some(block => block.id === floor.block_id);
+    return selectedBuildingBlocks.some(block => idsMatch(block.id, floor.block_id));
   });
   const roomTypes = Array.from(new Set(rooms.filter(isRoomReservable).map(room => room.room_type).filter(Boolean))).sort();
   const equipmentNames = Array.from(new Set(equipment.map(item => item.name).filter(Boolean))).sort();
   const getRoomDetails = (room: any) => {
-    const fullRoom = room ? (rooms.find(r => r.id === room.id) || room) : null;
-    const floor = floors.find(f => f.id === fullRoom?.floor_id);
-    const block = floor ? blocks.find(b => b.id === floor.block_id) : null;
-    const building = block ? buildings.find(b => b.id === block.building_id) : null;
+    const fullRoom = room ? (rooms.find(r => idsMatch(r.id, room.id)) || room) : null;
+    const floor = floors.find(f => idsMatch(f.id, fullRoom?.floor_id));
+    const block = floor ? blocks.find(b => idsMatch(b.id, floor.block_id)) : null;
+    const building = block ? buildings.find(b => idsMatch(b.id, block.building_id)) : null;
     return { floor, block, building };
   };
   const getRoomPath = (room: any) => {
@@ -7252,9 +7255,9 @@ function DigitalTwin() {
     if (!room) return false;
     const query = normalizeLookupValue(filters.search);
     const { floor, block, building } = (() => {
-      const floor = floors.find(item => item.id === room?.floor_id);
-      const block = blocks.find(item => item.id === floor?.block_id);
-      const building = buildings.find(item => item.id === block?.building_id);
+      const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
+      const block = blocks.find(item => idsMatch(item.id, floor?.block_id));
+      const building = buildings.find(item => idsMatch(item.id, block?.building_id));
       return { floor, block, building };
     })();
     const haystack = [
