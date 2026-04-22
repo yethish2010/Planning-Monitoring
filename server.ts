@@ -1983,6 +1983,15 @@ async function healInfrastructureHierarchy() {
   };
 }
 
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    database: db.dialect,
+    geminiConfigured: Boolean(GEMINI_API_KEY),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.get('/api/health/heal', authenticate, async (req, res) => {
   try {
     const healed = await healInfrastructureHierarchy();
