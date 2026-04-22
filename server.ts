@@ -238,6 +238,13 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
   `;
 };
 
+if (process.env.DATABASE_RESET === "true" && (!databaseProvider || databaseProvider.trim().toLowerCase() === "sqlite") && !databaseUrl) {
+  if (fs.existsSync(databasePath)) {
+    fs.rmSync(databasePath);
+    console.log(`DATABASE_RESET=true: deleted existing database at ${databasePath}`);
+  }
+}
+
 const db = await createDatabaseClient({
   databasePath,
   databaseUrl,
