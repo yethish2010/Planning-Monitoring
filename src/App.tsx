@@ -7525,12 +7525,12 @@ function TimetableBuilder() {
     return schedules
       .filter(s => {
         if (s.day_of_week !== day) return false;
-        if (activeRoom && s.room_id != null) return s.room_id === activeRoom.id;
+        if (activeRoom && s.room_id != null) return idsMatch(s.room_id, activeRoom.id);
         return activeRoom ? false : s.room === selectedRoom;
       })
       .map(s => ({
         ...s,
-        department_name: departments.find(d => d.id === s.department_id)?.name ?? s.department,
+        department_name: departments.find(d => idsMatch(d.id, s.department_id))?.name ?? s.department,
       }))
       .flatMap(expandScheduleForDisplay)
       .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
@@ -7772,11 +7772,12 @@ function DigitalTwin() {
     maintenanceRooms: rooms.filter(r => r.status === 'Maintenance').length,
     utilization: Math.round((rooms.filter(r => r.status !== 'Available').length / (rooms.length || 1)) * 100),
     totalBuildings: buildings.length,
-    totalBlocks: blocks.length
+    totalBlocks: blocks.length,
+    totalSchedules: schedules.length,
   };
 
   const getBlocksForBuilding = (buildingId: number) =>
-    blocks.filter(block => block.building_id === buildingId);
+    blocks.filter(block => idsMatch(block.building_id, buildingId));
 
   const getVisibleBlocksForBuilding = (building: any) =>
     getBlocksForBuilding(building.id).filter(block => !isImplicitBuildingBlock(block, building));
@@ -7785,48 +7786,82 @@ function DigitalTwin() {
     getBlocksForBuilding(building.id).find(block => isImplicitBuildingBlock(block, building));
 
   const getFloorsForBlock = (blockId: number) =>
-    floors.filter(floor => floor.block_id === blockId);
+    floors.filter(floor => idsMatch(floor.block_id, blockId));
 
   const getRoomsForBuilding = (building: any) => {
     const buildingBlockIds = getBlocksForBuilding(building.id).map(block => block.id);
-    const buildingFloorIds = floors.filter(floor => buildingBlockIds.includes(floor.block_id)).map(floor => floor.id);
-    return rooms.filter(room => room && buildingFloorIds.includes(room.floor_id));
+    const buildingFloorIds = floors.filter(floor => buildingBlockIds.some(blockId => idsMatch(blockId, floor.block_id))).map(floor => floor.id);
+    return rooms.filter(room => room && buildingFloorIds.some(floorId => idsMatch(floorId, room.floor_id)));
   };
 
   const currentDate = formatLocalDate(new Date());
   const currentDay = new Date().toLocaleDateString('en-US', { weekday: 'long' });
   const currentTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
+  const scheduleDaysOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const roomTypes = Array.from(new Set(rooms.map(room => room.room_type).filter(Boolean))).sort();
 
   const getRoomMaintenance = (room: any) =>
-    maintenance.filter(item => item.room_id === room.id && item.status !== 'Completed');
+    maintenance.filter(item => idsMatch(item.room_id, room.id) && item.status !== 'Completed');
 
   const getRoomEquipmentLabels = (room: any) =>
-    equipment.filter(item => item.room_id === room.id).map(item => item.name).filter(Boolean);
+    equipment.filter(item => idsMatch(item.room_id, room.id)).map(item => item.name).filter(Boolean);
 
   const getRoomDepartmentLabel = (room: any) => {
-    const allocation = allocations.find(item => item.room_id === room.id);
-    const department = departments.find(item => item.id === allocation?.department_id);
+    const allocation = allocations.find(item => idsMatch(item.room_id, room.id));
+    const department = departments.find(item => idsMatch(item.id, allocation?.department_id));
     return department?.name || 'Unmapped';
+  };
+
+  const getRoomSchedules = (room: any) =>
+    schedules
+      .filter(schedule => idsMatch(schedule.room_id, room.id))
+      .map(schedule => ({
+        ...schedule,
+        department_name: departments.find(item => idsMatch(item.id, schedule.department_id))?.name || '',
+      }))
+      .sort((a, b) => {
+        const dayCompare = scheduleDaysOrder.indexOf(a.day_of_week) - scheduleDaysOrder.indexOf(b.day_of_week);
+        if (dayCompare !== 0) return dayCompare;
+        return (a.start_time || '').localeCompare(b.start_time || '');
+      });
+
+  const getCurrentSchedule = (room: any) =>
+    getRoomSchedules(room).find(schedule =>
+      schedule.day_of_week === currentDay &&
+      schedule.start_time <= currentTime &&
+      schedule.end_time > currentTime
+    );
+
+  const getNextSchedule = (room: any) => {
+    const dayIndex = scheduleDaysOrder.indexOf(currentDay);
+    const orderedDays = [
+      ...scheduleDaysOrder.slice(Math.max(dayIndex, 0)),
+      ...scheduleDaysOrder.slice(0, Math.max(dayIndex, 0)),
+    ];
+    const roomSchedules = getRoomSchedules(room);
+
+    for (const day of orderedDays) {
+      const daySchedules = roomSchedules.filter(schedule => schedule.day_of_week === day);
+      const upcomingSchedules = day === currentDay
+        ? daySchedules.filter(schedule => schedule.start_time > currentTime)
+        : daySchedules;
+      if (upcomingSchedules.length > 0) return upcomingSchedules[0];
+    }
+
+    return null;
   };
 
   const getRoomLiveStatus = (room: any) => {
     if (getRoomMaintenance(room).length > 0 || room.status === 'Maintenance') return 'Maintenance';
     const hasBooking = bookings.some(booking =>
-      booking.room_id === room.id &&
+      idsMatch(booking.room_id, room.id) &&
       booking.status === 'Approved' &&
       booking.date === currentDate &&
       booking.start_time <= currentTime &&
       booking.end_time > currentTime
     );
     if (hasBooking) return 'Booked';
-    const hasSchedule = schedules.some(schedule =>
-      schedule.room_id === room.id &&
-      schedule.day_of_week === currentDay &&
-      schedule.start_time <= currentTime &&
-      schedule.end_time > currentTime
-    );
-    if (hasSchedule) return 'Scheduled';
+    if (getCurrentSchedule(room)) return 'Scheduled';
     return room.status || 'Available';
   };
 
@@ -7844,6 +7879,13 @@ function DigitalTwin() {
       room.room_type,
       getRoomLiveStatus(room),
       getRoomDepartmentLabel(room),
+      ...getRoomSchedules(room).flatMap(schedule => [
+        schedule.course_name,
+        schedule.course_code,
+        schedule.faculty,
+        schedule.department_name,
+        schedule.day_of_week,
+      ]),
       building?.name,
       block?.name,
       floor ? getFloorName(floor.floor_number) : ''
@@ -7881,7 +7923,7 @@ function DigitalTwin() {
   return (
     <div className="space-y-8">
       {/* Digital Twin Header Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
         <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
           <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-500">
             <DoorOpen size={24} />
@@ -7916,6 +7958,15 @@ function DigitalTwin() {
           <div>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Buildings</p>
             <p className="text-xl font-bold text-slate-800">{stats.totalBuildings}</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-12 h-12 bg-cyan-50 rounded-2xl flex items-center justify-center text-cyan-500">
+            <Calendar size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Timetable Rows</p>
+            <p className="text-xl font-bold text-slate-800">{stats.totalSchedules}</p>
           </div>
         </div>
       </div>
@@ -8060,7 +8111,7 @@ function DigitalTwin() {
                     rooms={rooms}
                     maintenance={maintenance}
                     onClick={setSelectedBuilding}
-                    isSelected={selectedBuilding?.id === b.id}
+                    isSelected={idsMatch(selectedBuilding?.id, b.id)}
                     heatmapMode={heatmapMode}
                   />
                 ))}
@@ -8082,6 +8133,7 @@ function DigitalTwin() {
               const visibleBlocks = getVisibleBlocksForBuilding(b);
               const buildingRooms = getRoomsForBuilding(b);
               const visibleRooms = buildingRooms.filter(roomMatchesFilters);
+              const buildingScheduleCount = buildingRooms.reduce((count, room) => count + getRoomSchedules(room).length, 0);
               const utilization = getBuildingUtilization(b);
 
               return (
@@ -8110,6 +8162,10 @@ function DigitalTwin() {
                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Live Use</span>
                         <span className="text-sm font-bold text-white">{utilization}%</span>
                       </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Classes</span>
+                        <span className="text-sm font-bold text-white">{buildingScheduleCount}</span>
+                      </div>
                     </div>
                     <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center text-slate-500 group-hover:text-emerald-500 group-hover:bg-emerald-500/10 transition-all">
                       <ChevronRight size={20} />
@@ -8127,7 +8183,7 @@ function DigitalTwin() {
         ) : shouldShowBlockLevel && !selectedBlock ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative z-10">
             {selectedBuildingBlockOptions
-              .filter(block => floors.some(floor => floor.block_id === block.id && rooms.some(room => room.floor_id === floor.id && roomMatchesFilters(room))))
+              .filter(block => floors.some(floor => idsMatch(floor.block_id, block.id) && rooms.some(room => idsMatch(room.floor_id, floor.id) && roomMatchesFilters(room))))
               .map(bl => (
               <div 
                 key={bl.id} 
@@ -8139,13 +8195,13 @@ function DigitalTwin() {
                 </div>
                 <h4 className="text-xl font-bold text-white mb-2">{getBlockDisplayLabel(bl, selectedBuilding)}</h4>
                 <p className="text-sm text-slate-400">{bl.description}</p>
-                <p className="text-xs text-slate-500 mt-3 font-bold">{floors.filter(floor => floor.block_id === bl.id).reduce((count, floor) => count + rooms.filter(room => room.floor_id === floor.id && roomMatchesFilters(room)).length, 0)} matching rooms</p>
+                <p className="text-xs text-slate-500 mt-3 font-bold">{floors.filter(floor => idsMatch(floor.block_id, bl.id)).reduce((count, floor) => count + rooms.filter(room => idsMatch(room.floor_id, floor.id) && roomMatchesFilters(room)).length, 0)} matching rooms</p>
               </div>
             ))}
           </div>
         ) : !selectedFloor ? (
           <div className="space-y-4 relative z-10 max-w-2xl mx-auto">
-            {floors.filter(f => f.block_id === activeBlock?.id && rooms.some(room => room.floor_id === f.id && roomMatchesFilters(room))).sort((a,b) => a.floor_number - b.floor_number).map(f => (
+            {floors.filter(f => idsMatch(f.block_id, activeBlock?.id) && rooms.some(room => idsMatch(room.floor_id, f.id) && roomMatchesFilters(room))).sort((a,b) => a.floor_number - b.floor_number).map(f => (
               <div 
                 key={f.id} 
                 onClick={() => setSelectedFloor(f)}
@@ -8163,7 +8219,7 @@ function DigitalTwin() {
                 <div className="flex items-center gap-4">
                   <div className="text-right">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Rooms</p>
-                    <p className="text-sm font-bold text-white">{rooms.filter(r => r.floor_id === f.id && roomMatchesFilters(r)).length}/{rooms.filter(r => r.floor_id === f.id).length}</p>
+                    <p className="text-sm font-bold text-white">{rooms.filter(r => idsMatch(r.floor_id, f.id) && roomMatchesFilters(r)).length}/{rooms.filter(r => idsMatch(r.floor_id, f.id)).length}</p>
                   </div>
                   <ChevronRight className="text-slate-500 group-hover:text-emerald-500" />
                 </div>
@@ -8172,10 +8228,13 @@ function DigitalTwin() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6 relative z-10">
-            {rooms.filter(r => r.floor_id === selectedFloor.id && roomMatchesFilters(r)).map(r => {
+            {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomMatchesFilters(r)).map(r => {
               const liveStatus = getRoomLiveStatus(r);
               const equipmentLabels = getRoomEquipmentLabels(r);
               const departmentLabel = getRoomDepartmentLabel(r);
+              const roomSchedules = getRoomSchedules(r);
+              const currentSchedule = getCurrentSchedule(r);
+              const nextSchedule = currentSchedule ? null : getNextSchedule(r);
               const statusClass =
                 liveStatus === 'Available' ? "bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20" :
                 liveStatus === 'Booked' || liveStatus === 'Scheduled' ? "bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20" :
@@ -8200,10 +8259,26 @@ function DigitalTwin() {
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{getRoomTypeDisplay(r)}</p>
                 <p className="text-[10px] text-slate-300 font-bold mb-1">{liveStatus}</p>
                 <p className="text-[10px] text-slate-500 mb-1">{departmentLabel}</p>
+                {currentSchedule ? (
+                  <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-rose-300">Current Class</p>
+                    <p className="mt-1 text-xs font-bold text-white line-clamp-1">{currentSchedule.course_name}</p>
+                    <p className="text-[10px] text-slate-400">{currentSchedule.start_time} - {currentSchedule.end_time} • {currentSchedule.faculty || 'Faculty not set'}</p>
+                  </div>
+                ) : nextSchedule ? (
+                  <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-300">Next Class</p>
+                    <p className="mt-1 text-xs font-bold text-white line-clamp-1">{nextSchedule.course_name}</p>
+                    <p className="text-[10px] text-slate-400">{nextSchedule.day_of_week} • {nextSchedule.start_time} - {nextSchedule.end_time}</p>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-[10px] text-slate-500">No timetable rows linked to this room.</p>
+                )}
                 <p className="text-[10px] text-slate-500 line-clamp-1">Equipment: {equipmentLabels.join(', ') || 'None'}</p>
                 <div className="flex items-center justify-between mt-4">
                   <span className="text-[10px] font-bold text-slate-500">CAP: {r.capacity}</span>
-                  {maintenance.some(m => m.room_id === r.id && m.status !== 'Completed') && (
+                  <span className="text-[10px] font-bold text-slate-500">CLS: {roomSchedules.length}</span>
+                  {maintenance.some(m => idsMatch(m.room_id, r.id) && m.status !== 'Completed') && (
                     <AlertTriangle size={14} className="text-amber-500" />
                   )}
                 </div>
@@ -8215,7 +8290,7 @@ function DigitalTwin() {
                 </div>
               </div>
             );})}
-            {rooms.filter(r => r.floor_id === selectedFloor.id && roomMatchesFilters(r)).length === 0 && (
+            {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomMatchesFilters(r)).length === 0 && (
               <div className="col-span-full p-12 text-center border-2 border-dashed border-slate-700 rounded-3xl">
                 <p className="text-sm font-bold text-slate-400">No rooms match the current filters on this floor.</p>
               </div>
