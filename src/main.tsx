@@ -294,9 +294,37 @@ const handleStaticApiRequest = async (input: RequestInfo | URL, init?: RequestIn
 if (apiBaseUrl && typeof window !== 'undefined') {
   const nativeFetch = window.fetch.bind(window);
 
+  const fetchWithStaticFallback = async (
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+    rewrittenInput: RequestInfo | URL,
+    rewrittenInit?: RequestInit,
+  ) => {
+    try {
+      const response = await nativeFetch(rewrittenInput, rewrittenInit);
+      if (response.status !== 404 && response.status < 500) return response;
+
+      const requestPath = getRequestPath(input);
+      if (requestPath.startsWith('/api/')) {
+        const mockResponse = await handleStaticApiRequest(input, init);
+        if (mockResponse) return mockResponse;
+      }
+
+      return response;
+    } catch (error) {
+      const requestPath = getRequestPath(input);
+      if (requestPath.startsWith('/api/')) {
+        const mockResponse = await handleStaticApiRequest(input, init);
+        if (mockResponse) return mockResponse;
+      }
+
+      throw error;
+    }
+  };
+
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     if (typeof input === 'string' && input.startsWith('/api/')) {
-      return nativeFetch(`${apiBaseUrl}${input}`, {
+      return fetchWithStaticFallback(input, init, `${apiBaseUrl}${input}`, {
         ...init,
         credentials: init?.credentials ?? 'include',
       });
@@ -307,10 +335,10 @@ if (apiBaseUrl && typeof window !== 'undefined') {
       if (input.url.startsWith(`${currentOrigin}/api/`)) {
         const rewrittenUrl = `${apiBaseUrl}${input.url.slice(currentOrigin.length)}`;
         const rewrittenRequest = new Request(rewrittenUrl, input);
-        return nativeFetch(rewrittenRequest, {
+        return fetchWithStaticFallback(input, {
           ...init,
           credentials: init?.credentials ?? input.credentials ?? 'include',
-        });
+        }, rewrittenRequest);
       }
     }
 
