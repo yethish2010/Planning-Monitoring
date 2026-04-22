@@ -4316,19 +4316,40 @@ function EquipmentManagement() {
 }
 
 function SchedulingManagement() {
+  const [campuses, setCampuses] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [scheduleFilters, setScheduleFilters] = useState({
+    campus_id: '',
+    building_id: '',
+    block_id: '',
+    floor_id: '',
+    department_id: '',
+    room_id: '',
+    day_of_week: '',
+  });
 
   const refreshSchedulingLookups = async () => {
-    const [roomData, departmentData, allocationData] = await Promise.all([
+    const [campusData, buildingData, blockData, floorData, roomData, departmentData, allocationData] = await Promise.all([
+      fetch('/api/campuses').then(res => res.json()),
+      fetch('/api/buildings').then(res => res.json()),
+      fetch('/api/blocks').then(res => res.json()),
+      fetch('/api/floors').then(res => res.json()),
       fetch('/api/rooms').then(res => res.json()),
       fetch('/api/departments').then(res => res.json()),
       fetch('/api/department_allocations').then(res => res.json()),
     ]);
+    setCampuses(Array.isArray(campusData) ? campusData : []);
+    setBuildings(Array.isArray(buildingData) ? buildingData : []);
+    setBlocks(Array.isArray(blockData) ? blockData : []);
+    setFloors(Array.isArray(floorData) ? floorData : []);
     setRooms(Array.isArray(roomData) ? roomData : []);
     setDepartments(Array.isArray(departmentData) ? departmentData : []);
     setAllocations(Array.isArray(allocationData) ? allocationData : []);
@@ -4338,14 +4359,219 @@ function SchedulingManagement() {
     refreshSchedulingLookups();
   }, []);
 
+  const scheduleDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  const getScheduleRoomLocation = (room: any) => {
+    const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
+    const block = blocks.find(item => idsMatch(item.id, floor?.block_id));
+    const building = buildings.find(item => idsMatch(item.id, block?.building_id));
+    const campus = campuses.find(item => idsMatch(item.id, building?.campus_id));
+    return { floor, block, building, campus };
+  };
+
+  const scheduleFilterBuildings = buildings
+    .filter(building => !scheduleFilters.campus_id || idsMatch(building.campus_id, scheduleFilters.campus_id))
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
+
+  const getScheduleFilterBlockOptions = () => {
+    const selectedBuilding = buildings.find(item => idsMatch(item.id, scheduleFilters.building_id));
+    if (!selectedBuilding) return [];
+
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, selectedBuilding.id));
+    const visibleBlocks = buildingBlocks.filter(block => !isImplicitBuildingBlock(block, selectedBuilding));
+    const directBlock = buildingBlocks.find(block => isImplicitBuildingBlock(block, selectedBuilding));
+    const directHasFloors = directBlock && floors.some(floor => idsMatch(floor.block_id, directBlock.id));
+
+    return [
+      ...(directHasFloors ? [{ value: directBlock.id, label: 'Direct floors' }] : []),
+      ...visibleBlocks.map(block => ({ value: block.id, label: block.name })),
+    ];
+  };
+
+  const getScheduleFilterFloorOptions = () => {
+    if (!scheduleFilters.building_id) return [];
+    const selectedBuilding = buildings.find(item => idsMatch(item.id, scheduleFilters.building_id));
+    if (!selectedBuilding) return [];
+
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, selectedBuilding.id));
+    const allowedBlockIds = scheduleFilters.block_id
+      ? [scheduleFilters.block_id]
+      : buildingBlocks.map(block => block.id);
+
+    return floors
+      .filter(floor => allowedBlockIds.some(blockId => idsMatch(blockId, floor.block_id)))
+      .sort((a, b) => Number(a.floor_number || 0) - Number(b.floor_number || 0))
+      .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) }));
+  };
+
+  const roomMatchesScheduleLocationFilters = (room: any) => {
+    const { floor, block, building } = getScheduleRoomLocation(room);
+    if (scheduleFilters.campus_id && !idsMatch(building?.campus_id, scheduleFilters.campus_id)) return false;
+    if (scheduleFilters.building_id && !idsMatch(building?.id, scheduleFilters.building_id)) return false;
+    if (scheduleFilters.block_id && !idsMatch(block?.id, scheduleFilters.block_id)) return false;
+    if (scheduleFilters.floor_id && !idsMatch(floor?.id, scheduleFilters.floor_id)) return false;
+    return true;
+  };
+
+  const scheduleRoomOptions = rooms
+    .filter(isRoomReservable)
+    .filter(roomMatchesScheduleLocationFilters)
+    .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms)))
+    .map(room => {
+      const { floor, block, building } = getScheduleRoomLocation(room);
+      const locationLabel = floor ? getFloorDisplayLabel(floor, blocks, buildings) : getBlockDisplayLabel(block, building);
+      return {
+        value: room.id,
+        label: `${getRoomDisplayLabel(room, rooms)} - ${locationLabel || 'Location not set'}`,
+      };
+    });
+
+  const scheduleMatchesFilters = (schedule: any) => {
+    if (scheduleFilters.department_id && !idsMatch(schedule.department_id, scheduleFilters.department_id)) return false;
+    if (scheduleFilters.room_id && !idsMatch(schedule.room_id, scheduleFilters.room_id)) return false;
+    if (scheduleFilters.day_of_week && schedule.day_of_week !== scheduleFilters.day_of_week) return false;
+
+    if (scheduleFilters.campus_id || scheduleFilters.building_id || scheduleFilters.block_id || scheduleFilters.floor_id) {
+      const room = rooms.find(item => idsMatch(item.id, schedule.room_id));
+      if (!room || !roomMatchesScheduleLocationFilters(room)) return false;
+    }
+
+    return true;
+  };
+
+  const hasActiveScheduleFilters = Object.values(scheduleFilters).some(Boolean);
+  const scheduleFilterControls = (
+    <div className="grid grid-cols-1 md:grid-cols-4 xl:grid-cols-8 gap-3 items-end">
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Campus</label>
+        <select
+          value={scheduleFilters.campus_id}
+          onChange={(event) => setScheduleFilters({
+            campus_id: event.target.value,
+            building_id: '',
+            block_id: '',
+            floor_id: '',
+            department_id: scheduleFilters.department_id,
+            room_id: '',
+            day_of_week: scheduleFilters.day_of_week,
+          })}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All campuses</option>
+          {campuses
+            .slice()
+            .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+            .map(campus => <option key={campus.id} value={campus.id}>{campus.name}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Building</label>
+        <select
+          value={scheduleFilters.building_id}
+          onChange={(event) => setScheduleFilters(prev => ({
+            ...prev,
+            building_id: event.target.value,
+            block_id: '',
+            floor_id: '',
+            room_id: '',
+          }))}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All buildings</option>
+          {scheduleFilterBuildings.map(building => <option key={building.id} value={building.id}>{building.name}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Block / Direct Floors</label>
+        <select
+          value={scheduleFilters.block_id}
+          onChange={(event) => setScheduleFilters(prev => ({
+            ...prev,
+            block_id: event.target.value,
+            floor_id: '',
+            room_id: '',
+          }))}
+          disabled={!scheduleFilters.building_id}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+        >
+          <option value="">All blocks/direct floors</option>
+          {getScheduleFilterBlockOptions().map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Floor</label>
+        <select
+          value={scheduleFilters.floor_id}
+          onChange={(event) => setScheduleFilters(prev => ({ ...prev, floor_id: event.target.value, room_id: '' }))}
+          disabled={!scheduleFilters.building_id}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-400"
+        >
+          <option value="">All floors</option>
+          {getScheduleFilterFloorOptions().map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Department</label>
+        <select
+          value={scheduleFilters.department_id}
+          onChange={(event) => setScheduleFilters(prev => ({ ...prev, department_id: event.target.value }))}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All departments</option>
+          {departments
+            .slice()
+            .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+            .map(department => <option key={department.id} value={department.id}>{department.name}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Room</label>
+        <select
+          value={scheduleFilters.room_id}
+          onChange={(event) => setScheduleFilters(prev => ({ ...prev, room_id: event.target.value }))}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All rooms</option>
+          {scheduleRoomOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Day</label>
+        <select
+          value={scheduleFilters.day_of_week}
+          onChange={(event) => setScheduleFilters(prev => ({ ...prev, day_of_week: event.target.value }))}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All days</option>
+          {scheduleDays.map(day => <option key={day} value={day}>{day}</option>)}
+        </select>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setScheduleFilters({ campus_id: '', building_id: '', block_id: '', floor_id: '', department_id: '', room_id: '', day_of_week: '' })}
+        disabled={!hasActiveScheduleFilters}
+        className="px-4 py-2 border border-slate-200 rounded-xl text-slate-700 font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        Clear Filters
+      </button>
+    </div>
+  );
+
   const fields = [
     { key: 'schedule_id', label: 'Schedule ID' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
     { key: 'faculty', label: 'Faculty' },
-    { key: 'room_id', label: 'Room', type: 'select', options: rooms.filter(isRoomReservable).map(r => ({ value: r.id, label: getRoomDisplayLabel(r, rooms) })) },
-    { key: 'day_of_week', label: 'Day', type: 'select', options: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] },
+    { key: 'room_id', label: 'Room', type: 'select', options: scheduleRoomOptions },
+    { key: 'day_of_week', label: 'Day', type: 'select', options: scheduleDays },
     { key: 'start_time', label: 'Start Time', type: 'time' },
     { key: 'end_time', label: 'End Time', type: 'time' },
   ];
@@ -4571,7 +4797,15 @@ function SchedulingManagement() {
           </div>
         )}
       </div>
-      <GenericCRUD key={refreshKey} type="Schedule" fields={fields} apiPath="/api/schedules" onImport={handleImport} />
+      <GenericCRUD
+        key={refreshKey}
+        type="Schedule"
+        fields={fields}
+        apiPath="/api/schedules"
+        onImport={handleImport}
+        dataFilter={scheduleMatchesFilters}
+        filterControls={scheduleFilterControls}
+      />
     </div>
   );
 }
