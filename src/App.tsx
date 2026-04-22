@@ -2143,6 +2143,7 @@ function GenericCRUD({
     if (!query) return true;
     return tableFields.some(field => getFieldDisplayValue(field, item)?.toString().toLowerCase().includes(query));
   });
+  const sanitizeExcelName = (value: string) => value.replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Export';
 
   const downloadTemplate = () => {
     const templateConfig = IMPORT_TEMPLATE_CONFIG[type];
@@ -2161,6 +2162,20 @@ function GenericCRUD({
     XLSX.utils.book_append_sheet(wb, ws, "Template");
     XLSX.utils.book_append_sheet(wb, noteSheet, "Instructions");
     XLSX.writeFile(wb, `${type}_Template.xlsx`);
+  };
+
+  const downloadExport = () => {
+    const headers = tableFields.map(field => field.label);
+    const rows = filteredData.map(item =>
+      tableFields.map(field => {
+        const value = getFieldDisplayValue(field, item);
+        return value === undefined || value === null ? '' : value;
+      })
+    );
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeExcelName(`${type} Data`));
+    XLSX.writeFile(workbook, `${type}_Export.xlsx`);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2301,6 +2316,14 @@ function GenericCRUD({
               </button>
             </>
           )}
+          <button
+            onClick={downloadExport}
+            disabled={filteredData.length === 0}
+            className="flex items-center gap-2 bg-sky-50 text-sky-700 border border-sky-200 px-4 py-2 rounded-lg font-bold hover:bg-sky-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <FileSpreadsheet size={18} />
+            Export Excel
+          </button>
           <button
             onClick={handleReset}
             className="flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-200 px-4 py-2 rounded-lg font-bold hover:bg-rose-100 transition-all"
