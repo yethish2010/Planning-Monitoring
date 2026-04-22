@@ -5025,7 +5025,6 @@ function BookingManagement() {
   const filterAndSortRooms = (roomList: any[]) => {
     const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
     return roomList.filter(room => {
-      if (!isRoomReservable(room)) return false;
       const { floor, block, building } = getRoomDetails(room);
       if (searchCriteria.buildingId && building?.id != searchCriteria.buildingId) return false;
       if (searchCriteria.blockId === '__direct__' && block && building && !isImplicitBuildingBlock(block, building)) return false;
