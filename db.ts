@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import Database from "better-sqlite3";
 import { Pool, type PoolClient } from "pg";
 
 export type DatabaseDialect = "sqlite" | "postgres";
@@ -30,6 +29,8 @@ type CreateDatabaseOptions = {
   databaseUrl?: string;
   provider?: string;
 };
+
+type SqliteDatabaseConstructor = typeof import("better-sqlite3").default;
 
 type PostgresQueryable = {
   query: (text: string, params?: any[]) => Promise<any>;
@@ -77,7 +78,7 @@ const createPreparedStatement = (
   run: (...params: any[]) => executor(sql, params, "run"),
 });
 
-const createSqliteClient = (databasePath: string): DatabaseClient => {
+const createSqliteClient = (Database: SqliteDatabaseConstructor, databasePath: string): DatabaseClient => {
   const databaseDir = path.dirname(databasePath);
   if (!fs.existsSync(databaseDir)) {
     fs.mkdirSync(databaseDir, { recursive: true });
@@ -196,7 +197,8 @@ export const createDatabaseClient = async (options: CreateDatabaseOptions): Prom
   const dialect = inferDialect(options);
 
   if (dialect === "sqlite") {
-    return createSqliteClient(options.databasePath);
+    const { default: Database } = await import("better-sqlite3");
+    return createSqliteClient(Database, options.databasePath);
   }
 
   if (!options.databaseUrl) {
