@@ -1,6 +1,7 @@
-﻿import express from "express";
-import fs from "fs";
-import path, { dirname } from "path";
+// api/_server.ts
+import express from "express";
+import fs2 from "fs";
+import path2, { dirname } from "path";
 import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -8,53 +9,193 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import * as mammoth from "mammoth";
-import { createDatabaseClient, type DatabaseDialect } from "./_db.ts";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// api/_db.ts
+import fs from "fs";
+import path from "path";
+import { Pool } from "pg";
+var inferDialect = ({ databaseUrl: databaseUrl2, provider }) => {
+  const normalizedProvider = provider?.trim().toLowerCase();
+  if (normalizedProvider === "postgres" || normalizedProvider === "postgresql") return "postgres";
+  if (normalizedProvider === "sqlite") return "sqlite";
+  return databaseUrl2 ? "postgres" : "sqlite";
+};
+var replacePositionalParameters = (sql) => {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+};
+var adaptPostgresSql = (sql, mode) => {
+  let normalizedSql = sql.trim().replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO");
+  if (/INSERT\s+OR\s+IGNORE\s+INTO/i.test(sql) && !/ON\s+CONFLICT/i.test(normalizedSql)) {
+    normalizedSql = `${normalizedSql} ON CONFLICT DO NOTHING`;
+  }
+  normalizedSql = replacePositionalParameters(normalizedSql);
+  if (mode === "run" && /^INSERT\s+INTO\s+/i.test(normalizedSql) && !/\bRETURNING\b/i.test(normalizedSql)) {
+    normalizedSql = `${normalizedSql} RETURNING id`;
+  }
+  return normalizedSql;
+};
+var createPreparedStatement = (dialect, executor) => (sql) => ({
+  get: (...params) => executor(sql, params, "get"),
+  all: (...params) => executor(sql, params, "all"),
+  run: (...params) => executor(sql, params, "run")
+});
+var createSqliteClient = (Database, databasePath2) => {
+  const databaseDir = path.dirname(databasePath2);
+  if (!fs.existsSync(databaseDir)) {
+    fs.mkdirSync(databaseDir, { recursive: true });
+  }
+  const sqlite = new Database(databasePath2);
+  sqlite.pragma("foreign_keys = ON");
+  const client = {
+    dialect: "sqlite",
+    prepare: createPreparedStatement("sqlite", async (sql, params, mode) => {
+      const statement = sqlite.prepare(sql);
+      if (mode === "get") return statement.get(...params);
+      if (mode === "all") return statement.all(...params);
+      const result = statement.run(...params);
+      return {
+        changes: result.changes,
+        lastInsertRowid: Number(result.lastInsertRowid)
+      };
+    }),
+    exec: async (sql) => {
+      sqlite.exec(sql);
+    },
+    ensureColumn: async (tableName, columnName, definition) => {
+      const columns = sqlite.prepare(`PRAGMA table_info(${tableName})`).all();
+      if (!columns.some((column) => column.name === columnName)) {
+        sqlite.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
+      }
+    },
+    transaction: async (callback) => {
+      sqlite.exec("BEGIN");
+      try {
+        const result = await callback(client);
+        sqlite.exec("COMMIT");
+        return result;
+      } catch (error) {
+        sqlite.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    close: async () => {
+      sqlite.close();
+    }
+  };
+  return client;
+};
+var createPostgresAdapter = (clientProvider) => {
+  const execute = async (sql, params, mode) => {
+    const text = adaptPostgresSql(sql, mode);
+    const result = await clientProvider().query(text, params);
+    if (mode === "get") return result.rows[0];
+    if (mode === "all") return result.rows;
+    return {
+      changes: result.rowCount || 0,
+      lastInsertRowid: result.rows[0]?.id != null ? Number(result.rows[0].id) : void 0
+    };
+  };
+  return {
+    dialect: "postgres",
+    prepare: createPreparedStatement("postgres", execute),
+    exec: async (sql) => {
+      await clientProvider().query(sql);
+    },
+    ensureColumn: async (tableName, columnName, definition) => {
+      const columnCheck = await clientProvider().query(
+        `
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = $1
+            AND column_name = $2
+          LIMIT 1
+        `,
+        [tableName, columnName]
+      );
+      if (columnCheck.rowCount) return;
+      await clientProvider().query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+    },
+    transaction: async (callback) => {
+      const pool = clientProvider();
+      if (!pool.connect) {
+        throw new Error("PostgreSQL transactions require a pool-backed client.");
+      }
+      const transactionClient = await pool.connect();
+      try {
+        await transactionClient.query("BEGIN");
+        const transactionDb = createPostgresAdapter(() => transactionClient);
+        const result = await callback(transactionDb);
+        await transactionClient.query("COMMIT");
+        return result;
+      } catch (error) {
+        await transactionClient.query("ROLLBACK");
+        throw error;
+      } finally {
+        transactionClient.release();
+      }
+    },
+    close: async () => {
+      const pool = clientProvider();
+      if (pool.end) {
+        await pool.end();
+      }
+    }
+  };
+};
+var createDatabaseClient = async (options) => {
+  const dialect = inferDialect(options);
+  if (dialect === "sqlite") {
+    const { default: Database } = await import("better-sqlite3");
+    return createSqliteClient(Database, options.databasePath);
+  }
+  if (!options.databaseUrl) {
+    throw new Error("DATABASE_URL is required when DATABASE_PROVIDER is postgres.");
+  }
+  const pool = new Pool({
+    connectionString: options.databaseUrl,
+    ssl: process.env.PGSSL === "disable" ? false : { rejectUnauthorized: false }
+  });
+  await pool.query("SELECT 1");
+  return createPostgresAdapter(() => pool);
+};
 
+// api/_server.ts
+var __filename = fileURLToPath(import.meta.url);
+var __dirname = dirname(__filename);
 dotenv.config();
-
-const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const isProduction = process.env.NODE_ENV === "production";
-const isVercelRuntime = process.env.VERCEL === "1";
-const defaultDatabasePath = isVercelRuntime
-  ? path.join("/tmp", "campus.db")
-  : path.join(process.cwd(), "campus.db");
-const databasePath = process.env.DATABASE_PATH
-  ? path.resolve(process.env.DATABASE_PATH)
-  : defaultDatabasePath;
-const databaseProvider = process.env.DATABASE_PROVIDER || "";
-const databaseUrl = process.env.DATABASE_URL || "";
-const normalizeOrigin = (value?: string | null) => {
+var app = express();
+var PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
+var JWT_SECRET = process.env.JWT_SECRET || "smart-campus-secret-key";
+var GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+var isProduction = process.env.NODE_ENV === "production";
+var isVercelRuntime = process.env.VERCEL === "1";
+var defaultDatabasePath = isVercelRuntime ? path2.join("/tmp", "campus.db") : path2.join(process.cwd(), "campus.db");
+var databasePath = process.env.DATABASE_PATH ? path2.resolve(process.env.DATABASE_PATH) : defaultDatabasePath;
+var databaseProvider = process.env.DATABASE_PROVIDER || "";
+var databaseUrl = process.env.DATABASE_URL || "";
+var normalizeOrigin = (value) => {
   const trimmed = value?.trim();
   if (!trimmed) return "";
-
   try {
     return new URL(trimmed).origin;
   } catch {
     return trimmed.replace(/\/+$/, "");
   }
 };
-const allowedOrigins = new Set(
+var allowedOrigins = new Set(
   [
     process.env.FRONTEND_ORIGIN,
     process.env.APP_URL,
     "https://yethish2010.github.io",
     "http://localhost:5173",
-    "http://localhost:3000",
-  ]
-    .map(normalizeOrigin)
-    .filter(Boolean)
+    "http://localhost:3000"
+  ].map(normalizeOrigin).filter(Boolean)
 );
-
-const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
+var getPrimarySchemaSql = (dialect) => {
   const idDefinition = dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
   const timestampType = dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
-
   return `
     CREATE TABLE IF NOT EXISTS users (
       id ${idDefinition},
@@ -236,24 +377,19 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
     );
   `;
 };
-
 if (process.env.DATABASE_RESET === "true" && (!databaseProvider || databaseProvider.trim().toLowerCase() === "sqlite") && !databaseUrl) {
-  if (fs.existsSync(databasePath)) {
-    fs.rmSync(databasePath);
+  if (fs2.existsSync(databasePath)) {
+    fs2.rmSync(databasePath);
     console.log(`DATABASE_RESET=true: deleted existing database at ${databasePath}`);
   }
 }
-
-const db = await createDatabaseClient({
+var db = await createDatabaseClient({
   databasePath,
   databaseUrl,
-  provider: databaseProvider,
+  provider: databaseProvider
 });
-
 await db.exec(getPrimarySchemaSql(db.dialect));
-
-// Seed Master Admin
-const seedAdmin = async () => {
+var seedAdmin = async () => {
   const admin = await db.prepare("SELECT * FROM users WHERE role = 'Administrator'").get();
   if (!admin) {
     const hashedPassword = bcrypt.hashSync("admin123", 10);
@@ -265,19 +401,16 @@ const seedAdmin = async () => {
   }
 };
 await seedAdmin();
-
-const ensureColumn = async (tableName: string, columnName: string, definition: string) => {
+var ensureColumn = async (tableName, columnName, definition) => {
   await db.ensureColumn(tableName, columnName, definition);
 };
-
-const ensureBookingColumns = async () => {
+var ensureBookingColumns = async () => {
   await ensureColumn("bookings", "purpose", "TEXT");
   await ensureColumn("bookings", "notes", "TEXT");
   await ensureColumn("bookings", "recommended_by", "TEXT");
   await ensureColumn("bookings", "decided_by", "TEXT");
   await ensureColumn("bookings", "request_group_id", "TEXT");
 };
-
 await ensureBookingColumns();
 await ensureColumn("buildings", "structure_type", "TEXT DEFAULT 'direct'");
 await ensureColumn("buildings", "planned_block_count", "INTEGER DEFAULT 0");
@@ -297,8 +430,7 @@ await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
-
-const normalizeRoomTypeValue = (value: any) => {
+var normalizeRoomTypeValue = (value) => {
   const normalized = value?.toString().trim().toLowerCase();
   if (!normalized) return "";
   if (["class", "classroom", "classrooms", "class room", "class rooms"].includes(normalized)) return "Classroom";
@@ -344,16 +476,14 @@ const normalizeRoomTypeValue = (value: any) => {
   if (["sports room", "sports hall"].includes(normalized)) return "Sports Room";
   return value?.toString().trim() || "";
 };
-
-const normalizeRestroomTypeValue = (value: any) => {
+var normalizeRestroomTypeValue = (value) => {
   const normalized = value?.toString().trim().toLowerCase();
   if (!normalized) return "";
   if (normalized === "male" || normalized === "boys" || normalized === "men") return "Male";
   if (normalized === "female" || normalized === "girls" || normalized === "women") return "Female";
   return value?.toString().trim() || "";
 };
-
-const normalizeRoomLayoutValue = (value: any) => {
+var normalizeRoomLayoutValue = (value) => {
   const normalized = value?.toString().trim().toLowerCase();
   if (!normalized) return "Normal";
   if (["split parent", "split room", "split"].includes(normalized)) return "Split Parent";
@@ -361,21 +491,18 @@ const normalizeRoomLayoutValue = (value: any) => {
   if (["inside parent", "room inside", "contains room", "room inside parent"].includes(normalized)) return "Inside Parent";
   if (["inside child", "inside room", "child room"].includes(normalized)) return "Inside Child";
   if (["shared", "shared room", "multi entrance room", "multi-entrance room", "multiple entrance room", "multiple door room", "multi door room", "multi-door room"].includes(normalized)) return "Shared Room";
-  return ["Normal", "Shared Room", "Split Parent", "Split Child", "Inside Parent", "Inside Child"].find(option => option.toLowerCase() === normalized) || value?.toString().trim() || "Normal";
+  return ["Normal", "Shared Room", "Split Parent", "Split Child", "Inside Parent", "Inside Child"].find((option) => option.toLowerCase() === normalized) || value?.toString().trim() || "Normal";
 };
-
-const HIERARCHY_PARENT_ROOM_LAYOUTS = ["Split Parent", "Inside Parent"];
-const HIERARCHY_CHILD_ROOM_LAYOUTS = ["Split Child", "Inside Child"];
-const HIERARCHY_ROOM_LAYOUTS = [...HIERARCHY_PARENT_ROOM_LAYOUTS, ...HIERARCHY_CHILD_ROOM_LAYOUTS];
-
-const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
+var HIERARCHY_PARENT_ROOM_LAYOUTS = ["Split Parent", "Inside Parent"];
+var HIERARCHY_CHILD_ROOM_LAYOUTS = ["Split Child", "Inside Child"];
+var HIERARCHY_ROOM_LAYOUTS = [...HIERARCHY_PARENT_ROOM_LAYOUTS, ...HIERARCHY_CHILD_ROOM_LAYOUTS];
+var normalizeUsageCategoryValue = (value, roomType) => {
   const normalized = value?.toString().trim().toLowerCase();
   const options = ["Access", "Administration", "Dining", "Examination", "Healthcare", "Lab Work", "Meeting", "Multipurpose", "Office", "Restricted", "Restroom", "Security", "Sports", "Storage", "Teaching", "Utility"];
   if (normalized) {
     if (["exam", "exams", "examination", "examination section", "exam section", "examination cell", "exam cell"].includes(normalized)) return "Examination";
-    return options.find(option => option.toLowerCase() === normalized) || value?.toString().trim() || null;
+    return options.find((option) => option.toLowerCase() === normalized) || value?.toString().trim() || null;
   }
-
   const normalizedRoomType = normalizeRoomTypeValue(roomType);
   if (["Multipurpose Room", "Multipurpose Classroom", "Multipurpose Lecture Hall", "Classroom Lab", "Multipurpose Lab"].includes(normalizedRoomType)) return "Multipurpose";
   if (["Lab", "Computer Lab", "Research Lab", "Language Lab", "Workshop", "Studio"].includes(normalizedRoomType)) return "Lab Work";
@@ -394,19 +521,16 @@ const normalizeUsageCategoryValue = (value: any, roomType?: any) => {
   if (normalizedRoomType === "Security Room") return "Security";
   return null;
 };
-
-const normalizeBooleanLikeValue = (value: any, defaultValue = true) => {
-  if (value === undefined || value === null || value === "") return defaultValue;
+var normalizeBooleanLikeValue = (value, defaultValue = true) => {
+  if (value === void 0 || value === null || value === "") return defaultValue;
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
-
   const normalized = value?.toString().trim().toLowerCase();
   if (["yes", "y", "true", "1", "bookable", "available"].includes(normalized)) return true;
   if (["no", "n", "false", "0", "not bookable", "internal only", "internal"].includes(normalized)) return false;
   return defaultValue;
 };
-
-const NON_CAPACITY_ROOM_TYPE_VALUES = [
+var NON_CAPACITY_ROOM_TYPE_VALUES = [
   "Office",
   "Faculty Room",
   "Staff Room",
@@ -436,11 +560,10 @@ const NON_CAPACITY_ROOM_TYPE_VALUES = [
   "Emergency Exit",
   "Exit",
   "Corridor",
-  "Staircase",
+  "Staircase"
 ];
-const isNonCapacityRoomType = (roomType: any) =>
-  NON_CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
-const CAPACITY_ROOM_TYPE_VALUES = [
+var isNonCapacityRoomType = (roomType) => NON_CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
+var CAPACITY_ROOM_TYPE_VALUES = [
   "Classroom",
   "Smart Classroom",
   "Multipurpose Classroom",
@@ -449,11 +572,10 @@ const CAPACITY_ROOM_TYPE_VALUES = [
   "Lab",
   "Computer Lab",
   "Research Lab",
-  "Language Lab",
+  "Language Lab"
 ];
-const isCapacityRoomType = (roomType: any) =>
-  CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
-const BOOKABLE_ROOM_TYPE_VALUES = [
+var isCapacityRoomType = (roomType) => CAPACITY_ROOM_TYPE_VALUES.includes(normalizeRoomTypeValue(roomType));
+var BOOKABLE_ROOM_TYPE_VALUES = [
   "Classroom",
   "Smart Classroom",
   "Lecture Hall",
@@ -476,10 +598,10 @@ const BOOKABLE_ROOM_TYPE_VALUES = [
   "Meeting Room",
   "Board Room",
   "Sports Room",
-  "Gym",
+  "Gym"
 ];
-const BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
-const isReservableRoomRecord = (room: any) => {
+var BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
+var isReservableRoomRecord = (room) => {
   if (!room) return false;
   if (room.status && room.status !== "Available") return false;
   if (room.is_bookable === 0) return false;
@@ -488,8 +610,7 @@ const isReservableRoomRecord = (room: any) => {
   const usageCategory = normalizeUsageCategoryValue(room.usage_category, roomType);
   return BOOKABLE_ROOM_TYPE_VALUES.includes(roomType) || BOOKABLE_USAGE_CATEGORY_VALUES.includes(usageCategory || "");
 };
-
-const normalizeRoomPayload = (payload: any) => {
+var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
   nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || nextPayload.room_section_name?.toString().trim() || null;
@@ -501,12 +622,10 @@ const normalizeRoomPayload = (payload: any) => {
   nextPayload.usage_category = normalizeUsageCategoryValue(nextPayload.usage_category, nextPayload.room_type);
   nextPayload.is_bookable = normalizeBooleanLikeValue(nextPayload.is_bookable, true) ? 1 : 0;
   nextPayload.capacity = isCapacityRoomType(nextPayload.room_type) ? parseInt(nextPayload.capacity, 10) || 0 : 0;
-
   if (isNonCapacityRoomType(nextPayload.room_type)) {
     nextPayload.is_bookable = 0;
     nextPayload.capacity = 0;
   }
-
   if (!HIERARCHY_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.parent_room_id = null;
     nextPayload.sub_room_count = null;
@@ -516,23 +635,18 @@ const normalizeRoomPayload = (payload: any) => {
   } else if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.sub_room_count = null;
   }
-
   if (HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout) && !nextPayload.parent_room_id) {
     throw new Error("Please select a parent room for split child or inside child rooms.");
   }
-
   if (nextPayload.parent_room_id && !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(nextPayload.room_layout)) {
     nextPayload.room_layout = nextPayload.room_layout === "Split Parent" ? "Split Child" : "Inside Child";
   }
-
   if (HIERARCHY_ROOM_LAYOUTS.includes(nextPayload.room_layout) && !nextPayload.room_section_name) {
     throw new Error("Sub room name is required for split or inside room layouts.");
   }
-
   if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(nextPayload.room_layout) && (!nextPayload.sub_room_count || nextPayload.sub_room_count <= 0)) {
     throw new Error("Sub room count must be greater than zero for split parent or inside parent rooms.");
   }
-
   if (nextPayload.room_type === "Lab") {
     if (!nextPayload.lab_name) {
       throw new Error("Lab name is required when the room type is Lab.");
@@ -547,33 +661,26 @@ const normalizeRoomPayload = (payload: any) => {
     nextPayload.lab_name = null;
     nextPayload.restroom_type = null;
   }
-
   if (isCapacityRoomType(nextPayload.room_type) && nextPayload.capacity <= 0) {
     throw new Error("Capacity is required for classroom and lab room types.");
   }
-
   return nextPayload;
 };
-
-const validateRoomHierarchy = async (room: any, excludeId?: string | number) => {
+var validateRoomHierarchy = async (room, excludeId) => {
   if (!room?.parent_room_id) return null;
-
   if (excludeId && room.parent_room_id?.toString() === excludeId.toString()) {
     return "A room cannot be inside itself.";
   }
-
-  const parentRoom = await db.prepare("SELECT id, floor_id FROM rooms WHERE id = ?").get(room.parent_room_id) as any;
+  const parentRoom = await db.prepare("SELECT id, floor_id FROM rooms WHERE id = ?").get(room.parent_room_id);
   if (!parentRoom) return "Please select a valid parent room.";
   if (parentRoom.floor_id?.toString() !== room.floor_id?.toString()) {
     return "The parent room must be on the same floor.";
   }
-
   return null;
 };
-
-const getBookableRoomError = async (roomId: any) => {
+var getBookableRoomError = async (roomId) => {
   if (!roomId) return null;
-  const room = await db.prepare("SELECT room_number, room_type, usage_category, is_bookable, status FROM rooms WHERE id = ?").get(roomId) as any;
+  const room = await db.prepare("SELECT room_number, room_type, usage_category, is_bookable, status FROM rooms WHERE id = ?").get(roomId);
   if (!room) return "Please select a valid room.";
   if (room.is_bookable === 0) return `Room ${room.room_number} is marked as not bookable.`;
   if (room.status && room.status !== "Available") return `Room ${room.room_number} is not available.`;
@@ -587,11 +694,9 @@ const getBookableRoomError = async (roomId: any) => {
   }
   return null;
 };
-
-const ensureNotificationsTable = async () => {
+var ensureNotificationsTable = async () => {
   const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
   const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
-
   await db.exec(`
     CREATE TABLE IF NOT EXISTS notifications (
       id ${idDefinition},
@@ -605,10 +710,8 @@ const ensureNotificationsTable = async () => {
   `);
   await ensureColumn("notifications", "target_department", "TEXT");
 };
-
-const ensureNotificationReadsTable = async () => {
+var ensureNotificationReadsTable = async () => {
   const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
-
   await db.exec(`
     CREATE TABLE IF NOT EXISTS notification_reads (
       notification_id INTEGER NOT NULL,
@@ -620,42 +723,32 @@ const ensureNotificationReadsTable = async () => {
     );
   `);
 };
-
 await ensureNotificationsTable();
 await ensureNotificationReadsTable();
-
-const createNotification = async (targetRole: string | null, targetName: string | null, title: string, message: string, targetDepartment: string | null = null) => {
+var createNotification = async (targetRole, targetName, title, message, targetDepartment = null) => {
   await ensureNotificationsTable();
-  await db.prepare("INSERT INTO notifications (target_role, target_name, target_department, title, message) VALUES (?, ?, ?, ?, ?)")
-    .run(targetRole, targetName, targetDepartment, title, message);
+  await db.prepare("INSERT INTO notifications (target_role, target_name, target_department, title, message) VALUES (?, ?, ?, ?, ?)").run(targetRole, targetName, targetDepartment, title, message);
 };
-
-const getDepartmentNameById = async (departmentId?: string | number | null) => {
+var getDepartmentNameById = async (departmentId) => {
   if (!departmentId) return null;
-  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId) as any;
+  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(departmentId);
   return department?.name || null;
 };
-
-const backfillNotificationsIfEmpty = async () => {
+var backfillNotificationsIfEmpty = async () => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
-  const notificationCount = await db.prepare("SELECT COUNT(*) as count FROM notifications").get() as any;
+  const notificationCount = await db.prepare("SELECT COUNT(*) as count FROM notifications").get();
   if ((notificationCount?.count || 0) > 0) return;
-
-  const bookings = await db.prepare("SELECT * FROM bookings ORDER BY id ASC").all() as any[];
+  const bookings = await db.prepare("SELECT * FROM bookings ORDER BY id ASC").all();
   for (const booking of bookings) {
     const bookingLabel = booking.event_name || "room request";
-    const bookingTime = booking.date && booking.start_time && booking.end_time
-      ? `${booking.date} from ${booking.start_time} to ${booking.end_time}`
-      : booking.date || "the selected slot";
+    const bookingTime = booking.date && booking.start_time && booking.end_time ? `${booking.date} from ${booking.start_time} to ${booking.end_time}` : booking.date || "the selected slot";
     const departmentName = await getDepartmentNameById(booking.department_id);
-
     if (booking.status === "Pending") {
       await createNotification(null, booking.faculty_name, "Room request submitted", `${bookingLabel} was submitted for approval for ${bookingTime}.`);
       await notifyBookingAuthorities(booking, "New room request", `${booking.faculty_name} requested ${bookingLabel} on ${bookingTime}.`);
       continue;
     }
-
     if (booking.status === "HOD Recommended") {
       await createNotification(null, booking.faculty_name, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
       await createNotification("Dean (P&M)", null, "Request recommended", `${bookingLabel} was recommended by HOD for ${bookingTime}.`);
@@ -665,31 +758,25 @@ const backfillNotificationsIfEmpty = async () => {
       }
       continue;
     }
-
     if (booking.status === "Approved") {
       await createNotification(null, booking.faculty_name, "Room booking approved", `${bookingLabel} was approved for ${bookingTime}.`);
       continue;
     }
-
     if (booking.status === "Rejected" || booking.status === "Postponed") {
       await createNotification(null, booking.faculty_name, `Request ${booking.status}`, `${bookingLabel} was marked as ${booking.status.toLowerCase()} for ${bookingTime}.`);
     }
   }
 };
-
-const getNotificationAudienceParams = (user: any) => {
+var getNotificationAudienceParams = (user) => {
   const normalizedRole = user?.role || null;
   const normalizedName = user?.name?.toString().trim().toLowerCase() || null;
   const normalizedDepartment = user?.department?.toString().trim().toLowerCase() || null;
-
   return { normalizedRole, normalizedName, normalizedDepartment };
 };
-
-const getNotificationsForUser = async (user: any, limit = 20) => {
+var getNotificationsForUser = async (user, limit = 20) => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
   const { normalizedRole, normalizedName, normalizedDepartment } = getNotificationAudienceParams(user);
-
   return await db.prepare(`
     SELECT
       n.*,
@@ -706,24 +793,16 @@ const getNotificationsForUser = async (user: any, limit = 20) => {
     LIMIT ?
   `).all(user.id, normalizedRole, normalizedName, normalizedRole, normalizedDepartment, limit);
 };
-
-const markAllNotificationsRead = async (user: any, notificationIds?: number[]) => {
+var markAllNotificationsRead = async (user, notificationIds) => {
   await ensureNotificationsTable();
   await ensureNotificationReadsTable();
-  const normalizedIds = Array.isArray(notificationIds)
-    ? notificationIds.map(id => parseInt(id as any, 10)).filter(id => Number.isInteger(id) && id > 0)
-    : [];
-  const visibleNotificationIds = (await getNotificationsForUser(user, 1000))
-    .map((notification: any) => notification.id)
-    .filter((id: number) => normalizedIds.length === 0 || normalizedIds.includes(id));
-
+  const normalizedIds = Array.isArray(notificationIds) ? notificationIds.map((id) => parseInt(id, 10)).filter((id) => Number.isInteger(id) && id > 0) : [];
+  const visibleNotificationIds = (await getNotificationsForUser(user, 1e3)).map((notification) => notification.id).filter((id) => normalizedIds.length === 0 || normalizedIds.includes(id));
   if (visibleNotificationIds.length === 0) return;
-
   const insertSql = `
     INSERT OR IGNORE INTO notification_reads (notification_id, user_id, read_at)
     VALUES (?, ?, CURRENT_TIMESTAMP)
   `;
-
   await db.transaction(async (transactionDb) => {
     const insertRead = transactionDb.prepare(insertSql);
     for (const id of visibleNotificationIds) {
@@ -731,35 +810,28 @@ const markAllNotificationsRead = async (user: any, notificationIds?: number[]) =
     }
   });
 };
-
 app.use(express.json({ limit: "25mb" }));
 app.use(cookieParser());
 app.use((req, res, next) => {
   const requestOrigin = normalizeOrigin(typeof req.headers.origin === "string" ? req.headers.origin : "");
-
   if (requestOrigin && allowedOrigins.has(requestOrigin)) {
     res.header("Access-Control-Allow-Origin", requestOrigin);
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     res.header("Vary", "Origin");
-
     if (req.method === "OPTIONS") {
       return res.sendStatus(204);
     }
   }
-
   next();
 });
-
-const getAuthCookieOptions = () => ({
+var getAuthCookieOptions = () => ({
   httpOnly: true,
   secure: isProduction,
-  sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
+  sameSite: isProduction ? "none" : "lax"
 });
-
-// Auth Middleware
-const authenticate = (req: any, res: any, next: any) => {
+var authenticate = (req, res, next) => {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: "Unauthorized" });
   try {
@@ -770,16 +842,14 @@ const authenticate = (req: any, res: any, next: any) => {
     res.status(401).json({ error: "Invalid token" });
   }
 };
-
-const getAIResponseText = async (response: any) => {
+var getAIResponseText = async (response) => {
   const textValue = response?.text;
   if (typeof textValue === "function") return await textValue.call(response);
   if (typeof textValue === "string") return textValue;
   if (typeof response?.response?.text === "function") return await response.response.text();
   throw new Error("AI response did not include readable text.");
 };
-
-const parseAIJsonResponse = (text: string) => {
+var parseAIJsonResponse = (text) => {
   let cleanText = text.trim();
   if (cleanText.includes("```json")) {
     cleanText = cleanText.split("```json")[1].split("```")[0];
@@ -788,10 +858,7 @@ const parseAIJsonResponse = (text: string) => {
   }
   return JSON.parse(cleanText);
 };
-
-// --- AUTH ROUTES ---
-
-const getUserSessionPayload = (user: any) => ({
+var getUserSessionPayload = (user) => ({
   id: user.id,
   email: user.email,
   role: user.role,
@@ -803,11 +870,10 @@ const getUserSessionPayload = (user: any) => ({
   access_paths: user.access_paths,
   force_password_change: !!user.force_password_change
 });
-
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user: any = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    const user = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
     if (!user || !bcrypt.compareSync(password, user.password)) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
@@ -815,16 +881,14 @@ app.post("/api/auth/login", async (req, res) => {
     const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.post("/api/auth/logout", (req, res) => {
   res.clearCookie("token", getAuthCookieOptions());
   res.json({ success: true });
 });
-
 app.get("/api/auth/me", (req, res) => {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: "Not logged in" });
@@ -835,38 +899,33 @@ app.get("/api/auth/me", (req, res) => {
     res.status(401).json({ error: "Invalid token" });
   }
 });
-
 app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {
   try {
     if (!GEMINI_API_KEY) {
       return res.status(500).json({ error: "Gemini API key is missing. Set GEMINI_API_KEY on the backend." });
     }
-
     const { data, mimeType, fileName } = req.body || {};
     if (!data || !mimeType) {
       return res.status(400).json({ error: "File data and mime type are required." });
     }
-
-    const base64Data = data.toString().includes(",")
-      ? data.toString().split(",").pop()
-      : data.toString();
-    const parts: any[] = [];
-
+    const base64Data = data.toString().includes(",") ? data.toString().split(",").pop() : data.toString();
+    const parts = [];
     if (mimeType === "application/pdf") {
       parts.push({
         inlineData: {
           data: base64Data,
-          mimeType,
-        },
+          mimeType
+        }
       });
     } else if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
       const buffer = Buffer.from(base64Data, "base64");
       const result = await mammoth.extractRawText({ buffer });
-      parts.push({ text: `Extracted text from ${fileName || "DOCX document"}:\n\n${result.value}` });
+      parts.push({ text: `Extracted text from ${fileName || "DOCX document"}:
+
+${result.value}` });
     } else {
       return res.status(400).json({ error: "Unsupported file type. Please upload a PDF or DOCX file." });
     }
-
     parts.push({ text: `Extract all timetable entries from this document.
 The document contains multiple sections (A1, A2, etc.).
 Extract info for ALL sections.
@@ -888,167 +947,140 @@ Only extract actual class sessions.
 Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
 The course_name must always be the real subject title.
 If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
-
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [{ parts }],
-      config: { responseMimeType: "application/json" },
+      config: { responseMimeType: "application/json" }
     });
     const schedules = parseAIJsonResponse(await getAIResponseText(response));
     res.json({ schedules: Array.isArray(schedules) ? schedules : [] });
-  } catch (err: any) {
+  } catch (err) {
     const errorMessage = err?.message || "";
     const leakedKey = /reported as leaked|leaked/i.test(errorMessage);
     const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key|PERMISSION_DENIED/i.test(errorMessage);
     res.status(500).json({
-      error: leakedKey
-        ? "The configured Gemini API key was reported as leaked and cannot be used. Create a new key in Google AI Studio, set it as GEMINI_API_KEY in .env, remove the old VITE_GEMINI_API_KEY value, and restart the server."
-        : invalidKey
-          ? "Gemini rejected the configured API key. Set a valid GEMINI_API_KEY on the backend and restart the server."
-          : errorMessage || "Failed to extract timetable.",
+      error: leakedKey ? "The configured Gemini API key was reported as leaked and cannot be used. Create a new key in Google AI Studio, set it as GEMINI_API_KEY in .env, remove the old VITE_GEMINI_API_KEY value, and restart the server." : invalidKey ? "Gemini rejected the configured API key. Set a valid GEMINI_API_KEY on the backend and restart the server." : errorMessage || "Failed to extract timetable."
     });
   }
 });
-
-app.get("/api/notifications", authenticate, async (req: any, res) => {
+app.get("/api/notifications", authenticate, async (req, res) => {
   try {
     const notifications = await getNotificationsForUser(req.user);
     res.json(notifications);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-app.post("/api/notifications/read-all", authenticate, async (req: any, res) => {
+app.post("/api/notifications/read-all", authenticate, async (req, res) => {
   try {
     await markAllNotificationsRead(req.user, req.body?.notificationIds);
     res.json({ success: true });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 app.post("/api/auth/forgot-password", (req, res) => {
   res.status(403).json({ error: "Password reset is handled by the Administrator." });
 });
-
 app.post("/api/auth/reset-password", (req, res) => {
   res.status(403).json({ error: "Password reset is handled by the Administrator." });
 });
-
-app.post("/api/auth/change-password", authenticate, async (req: any, res) => {
+app.post("/api/auth/change-password", authenticate, async (req, res) => {
   try {
     const { password } = req.body;
     if (!password || password.toString().trim().length < 8) {
       return res.status(400).json({ error: "Password must be at least 8 characters." });
     }
-
     const hashedPassword = bcrypt.hashSync(password.toString(), 10);
     await db.prepare("UPDATE users SET password = ?, force_password_change = 0 WHERE id = ?").run(hashedPassword, req.user.id);
-    const user: any = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
+    const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
     const sessionUser = getUserSessionPayload(user);
     const token = jwt.sign(sessionUser, JWT_SECRET, { expiresIn: "24h" });
     res.cookie("token", token, getAuthCookieOptions());
     res.json({ user: sessionUser });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- CRUD ROUTES ---
-
-const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>> = {
+var duplicateRules = {
   users: [
     { fields: ["employee_id"], label: "Employee ID" },
-    { fields: ["email"], label: "Email" },
+    { fields: ["email"], label: "Email" }
   ],
   campuses: [
     { fields: ["campus_id"], label: "Campus ID" },
-    { fields: ["name"], label: "Campus name" },
+    { fields: ["name"], label: "Campus name" }
   ],
   buildings: [
     { fields: ["building_id"], label: "Building ID" },
-    { fields: ["campus_id", "name"], label: "Building name in this campus" },
+    { fields: ["campus_id", "name"], label: "Building name in this campus" }
   ],
   blocks: [
     { fields: ["block_id"], label: "Block ID" },
-    { fields: ["building_id", "name"], label: "Block name in this building" },
+    { fields: ["building_id", "name"], label: "Block name in this building" }
   ],
   floors: [
     { fields: ["floor_id"], label: "Floor ID" },
-    { fields: ["block_id", "floor_number"], label: "Floor number in this block" },
+    { fields: ["block_id", "floor_number"], label: "Floor number in this block" }
   ],
   rooms: [
     { fields: ["room_id"], label: "Room ID" },
-    { fields: ["room_number"], label: "Room number" },
+    { fields: ["room_number"], label: "Room number" }
   ],
   schools: [
     { fields: ["school_id"], label: "School ID" },
-    { fields: ["name"], label: "School name" },
+    { fields: ["name"], label: "School name" }
   ],
   departments: [
     { fields: ["department_id"], label: "Department ID" },
-    { fields: ["school_id", "name"], label: "Department name in this school" },
+    { fields: ["school_id", "name"], label: "Department name in this school" }
   ],
   department_allocations: [
-    { fields: ["room_id", "department_id", "semester"], label: "Room allocation for this department and semester" },
+    { fields: ["room_id", "department_id", "semester"], label: "Room allocation for this department and semester" }
   ],
   equipment: [
     { fields: ["equipment_id"], label: "Equipment ID" },
-    { fields: ["room_id", "name"], label: "Equipment name in this room" },
+    { fields: ["room_id", "name"], label: "Equipment name in this room" }
   ],
   schedules: [
     { fields: ["schedule_id"], label: "Schedule ID" },
-    { fields: ["room_id", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room" },
+    { fields: ["room_id", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room" }
   ],
   bookings: [
-    { fields: ["request_id"], label: "Request ID" },
+    { fields: ["request_id"], label: "Request ID" }
   ],
   maintenance: [
-    { fields: ["maintenance_id"], label: "Maintenance ID" },
-  ],
+    { fields: ["maintenance_id"], label: "Maintenance ID" }
+  ]
 };
-
-const normalizeDuplicateValue = (value: any) =>
-  typeof value === "string" ? value.trim().toLowerCase() : value;
-
-const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: string | number) => {
+var normalizeDuplicateValue = (value) => typeof value === "string" ? value.trim().toLowerCase() : value;
+var checkDuplicateRecord = async (tableName, data, excludeId) => {
   const rules = duplicateRules[tableName] || [];
-
   for (const rule of rules) {
-    if (rule.fields.some(field => data[field] == null || data[field] === "")) continue;
-
-    const whereClause = rule.fields
-      .map(field => typeof data[field] === "string" ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`)
-      .join(" AND ");
-    const values = rule.fields.map(field => normalizeDuplicateValue(data[field]));
+    if (rule.fields.some((field) => data[field] == null || data[field] === "")) continue;
+    const whereClause = rule.fields.map((field) => typeof data[field] === "string" ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`).join(" AND ");
+    const values = rule.fields.map((field) => normalizeDuplicateValue(data[field]));
     const query = `SELECT id FROM ${tableName} WHERE ${whereClause}${excludeId ? " AND id != ?" : ""}`;
-    const existing = await db.prepare(query).get(...values, ...(excludeId ? [excludeId] : []));
-
+    const existing = await db.prepare(query).get(...values, ...excludeId ? [excludeId] : []);
     if (existing) {
       return `${rule.label} already exists. Duplicate records are not allowed.`;
     }
   }
-
   return null;
 };
-
-const isPastDateTime = (date: string, time: string) => {
-  const value = new Date(`${date}T${time}`);
+var isPastDateTime = (date, time) => {
+  const value = /* @__PURE__ */ new Date(`${date}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
 };
-
-const getBookingDepartmentName = async (booking: any) => {
+var getBookingDepartmentName = async (booking) => {
   if (!booking?.department_id) return null;
-  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id) as any;
+  const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(booking.department_id);
   return department?.name || null;
 };
-
-const isDecisionRole = (role: string) => ["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
-const openBookingStatuses = ["Pending", "HOD Recommended", "Approved"];
-
-const getApprovedBookingConflict = async (booking: any, excludeId?: string | number) => {
+var isDecisionRole = (role) => ["Administrator", "Dean (P&M)", "Deputy Dean (P&M)"].includes(role);
+var openBookingStatuses = ["Pending", "HOD Recommended", "Approved"];
+var getApprovedBookingConflict = async (booking, excludeId) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
   return await db.prepare(`
     SELECT id FROM bookings
@@ -1060,13 +1092,12 @@ const getApprovedBookingConflict = async (booking: any, excludeId?: string | num
   `).get(
     booking.room_id,
     booking.date,
-    ...(excludeId ? [excludeId] : []),
+    ...excludeId ? [excludeId] : [],
     booking.start_time,
     booking.end_time
-  ) as any;
+  );
 };
-
-const getDuplicateOpenBookingRequest = async (booking: any, excludeId?: string | number) => {
+var getDuplicateOpenBookingRequest = async (booking, excludeId) => {
   if (!booking?.faculty_name || !booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return null;
   return await db.prepare(`
     SELECT id FROM bookings
@@ -1084,11 +1115,10 @@ const getDuplicateOpenBookingRequest = async (booking: any, excludeId?: string |
     booking.start_time,
     booking.end_time,
     ...openBookingStatuses,
-    ...(excludeId ? [excludeId] : [])
-  ) as any;
+    ...excludeId ? [excludeId] : []
+  );
 };
-
-const getCompetingOpenBookingRequests = async (booking: any, excludeId?: string | number) => {
+var getCompetingOpenBookingRequests = async (booking, excludeId) => {
   if (!booking?.room_id || !booking?.date || !booking?.start_time || !booking?.end_time) return [];
   return await db.prepare(`
     SELECT id, faculty_name, event_name FROM bookings
@@ -1100,13 +1130,12 @@ const getCompetingOpenBookingRequests = async (booking: any, excludeId?: string 
   `).all(
     booking.room_id,
     booking.date,
-    ...(excludeId ? [excludeId] : []),
+    ...excludeId ? [excludeId] : [],
     booking.start_time,
     booking.end_time
-  ) as any[];
+  );
 };
-
-const notifyBookingAuthorities = async (booking: any, title: string, message: string) => {
+var notifyBookingAuthorities = async (booking, title, message) => {
   const departmentName = await getBookingDepartmentName(booking);
   if (departmentName) {
     await createNotification("HOD", null, title, message, departmentName);
@@ -1114,10 +1143,8 @@ const notifyBookingAuthorities = async (booking: any, title: string, message: st
   await createNotification("Dean (P&M)", null, title, message);
   await createNotification("Deputy Dean (P&M)", null, title, message);
 };
-
 await backfillNotificationsIfEmpty();
-
-const createCrudRoutes = (tableName: string, idField: string = "id") => {
+var createCrudRoutes = (tableName, idField = "id") => {
   app.get(`/api/${tableName}`, authenticate, async (req, res) => {
     try {
       if (tableName === "bookings") {
@@ -1127,25 +1154,23 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           LEFT JOIN rooms r ON bk.room_id = r.id
           LEFT JOIN departments d ON bk.department_id = d.id
         `).all();
-        const user = (req as any).user;
+        const user = req.user;
         if (isDecisionRole(user.role)) return res.json(bookings);
         if (user.role === "HOD") {
-          return res.json(bookings.filter((booking: any) =>
-            booking.faculty_name === user.name || (!!user.department && booking.department_name === user.department)
+          return res.json(bookings.filter(
+            (booking) => booking.faculty_name === user.name || !!user.department && booking.department_name === user.department
           ));
         }
-        return res.json(bookings.filter((booking: any) => booking.faculty_name === user.name));
+        return res.json(bookings.filter((booking) => booking.faculty_name === user.name));
       }
-
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       res.json(items);
-    } catch (err: any) {
+    } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
-
   app.post(`/api/${tableName}`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
+    if (tableName === "users" && req.user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
     }
     if (tableName === "users" && !req.body.password) {
@@ -1166,25 +1191,21 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     const fields = Object.keys(req.body);
     const placeholders = fields.map(() => "?").join(", ");
     const values = Object.values(req.body);
-
     if (tableName === "users" && req.body.password) {
       const passIdx = fields.indexOf("password");
       values[passIdx] = bcrypt.hashSync(req.body.password, 10);
     }
-
     try {
       const duplicateError = await checkDuplicateRecord(tableName, req.body);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
       }
-
       if (tableName === "rooms") {
         const hierarchyError = await validateRoomHierarchy(req.body);
         if (hierarchyError) return res.status(400).json({ error: hierarchyError });
       }
-
       if (tableName === "department_allocations") {
-        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id) as any;
+        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(req.body.room_id);
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         const bookableError = await getBookableRoomError(req.body.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
@@ -1195,12 +1216,10 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         const roomTypeIndex = fields.indexOf("room_type");
         if (roomTypeIndex >= 0) values[roomTypeIndex] = req.body.room_type;
       }
-
       if (tableName === "schedules") {
         const bookableError = await getBookableRoomError(req.body.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
       }
-
       if (tableName === "bookings") {
         if (!req.body.room_id || !req.body.date || !req.body.start_time || !req.body.end_time) {
           return res.status(400).json({ error: "Room, date, start time, and end time are required." });
@@ -1210,7 +1229,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         if (!req.body.department_id) {
           return res.status(400).json({ error: "Department is required so the request can go to the respective HOD." });
         }
-        const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(req.body.department_id) as any;
+        const department = await db.prepare("SELECT name FROM departments WHERE id = ?").get(req.body.department_id);
         if (!department) {
           return res.status(400).json({ error: "Please select a valid department." });
         }
@@ -1219,27 +1238,23 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           const statusIndex = fields.indexOf("status");
           if (statusIndex >= 0) values[statusIndex] = req.body.status;
         }
-        if (req.body.status === "Approved" && !["Administrator", "Dean (P&M)"].includes((req as any).user.role)) {
+        if (req.body.status === "Approved" && !["Administrator", "Dean (P&M)"].includes(req.user.role)) {
           req.body.status = "Pending";
           const statusIndex = fields.indexOf("status");
           if (statusIndex >= 0) values[statusIndex] = req.body.status;
         }
-
         if (isPastDateTime(req.body.date, req.body.start_time)) {
           return res.status(400).json({ error: "Past booking times are not allowed." });
         }
-
         const duplicateOpenRequest = await getDuplicateOpenBookingRequest(req.body);
         if (duplicateOpenRequest) {
           return res.status(400).json({ error: "You already have an active request for this room and time slot." });
         }
-
         const conflictingBooking = await getApprovedBookingConflict(req.body);
         if (conflictingBooking) {
           return res.status(400).json({ error: "This room already has an approved booking for the selected time slot." });
         }
       }
-
       const info = await db.prepare(`INSERT INTO ${tableName} (${fields.join(", ")}) VALUES (${placeholders})`).run(...values);
       if (tableName === "bookings") {
         const message = `${req.body.faculty_name} requested ${req.body.event_name || "a room"} on ${req.body.date} from ${req.body.start_time} to ${req.body.end_time}.`;
@@ -1260,13 +1275,12 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
       }
       res.json({ id: info.lastInsertRowid, ...req.body });
-    } catch (err: any) {
+    } catch (err) {
       res.status(400).json({ error: err.message });
     }
   });
-
   app.put(`/api/${tableName}/:id`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
+    if (tableName === "users" && req.user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can manage users and passwords." });
     }
     if (tableName === "users" && !req.body.password) {
@@ -1282,24 +1296,21 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       req.body = normalizeRoomPayload(req.body);
     }
     let fields = Object.keys(req.body);
-    let setClause = fields.map(f => `${f} = ?`).join(", ");
+    let setClause = fields.map((f) => `${f} = ?`).join(", ");
     let values = [...Object.values(req.body), req.params.id];
-
     try {
-      const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id);
       const duplicateError = await checkDuplicateRecord(tableName, { ...existingItem, ...req.body }, req.params.id);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
       }
-
       if (tableName === "rooms") {
         const hierarchyError = await validateRoomHierarchy({ ...existingItem, ...req.body }, req.params.id);
         if (hierarchyError) return res.status(400).json({ error: hierarchyError });
       }
-
       if (tableName === "department_allocations") {
         const nextAllocation = { ...existingItem, ...req.body };
-        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id) as any;
+        const room = await db.prepare("SELECT room_number, capacity, room_type, is_bookable FROM rooms WHERE id = ?").get(nextAllocation.room_id);
         if (!room) return res.status(400).json({ error: "Please select a valid room." });
         const bookableError = await getBookableRoomError(nextAllocation.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
@@ -1308,23 +1319,20 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
         req.body.room_type = room.room_type;
       }
-
       if (tableName === "schedules") {
         const nextSchedule = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextSchedule.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
       }
-
       if (tableName === "bookings") {
         const nextBooking = { ...existingItem, ...req.body };
         const bookableError = await getBookableRoomError(nextBooking.room_id);
         if (bookableError) return res.status(400).json({ error: bookableError });
         const requestedStatus = req.body.status;
-        const role = (req as any).user.role;
-        const isRequester = existingItem.faculty_name === (req as any).user.name;
+        const role = req.user.role;
+        const isRequester = existingItem.faculty_name === req.user.name;
         const departmentName = await getBookingDepartmentName(nextBooking);
-        const isDepartmentHod = role === "HOD" && !!departmentName && departmentName === (req as any).user.department;
-
+        const isDepartmentHod = role === "HOD" && !!departmentName && departmentName === req.user.department;
         if (requestedStatus === "HOD Recommended") {
           if (!isDepartmentHod) {
             return res.status(403).json({ error: "Only the respective department HOD can recommend this room request." });
@@ -1348,22 +1356,20 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           return res.status(400).json({ error: "Only rejected or postponed requests can be reopened." });
         }
         if (requestedStatus === "HOD Recommended") {
-          req.body.recommended_by = (req as any).user.name;
+          req.body.recommended_by = req.user.name;
         }
         if (["Approved", "Rejected", "Postponed"].includes(requestedStatus)) {
-          req.body.decided_by = (req as any).user.name;
+          req.body.decided_by = req.user.name;
         }
         if (nextBooking.room_id && nextBooking.date && nextBooking.start_time && nextBooking.end_time && isPastDateTime(nextBooking.date, nextBooking.start_time)) {
           return res.status(400).json({ error: "Past booking times are not allowed." });
         }
-
         if (openBookingStatuses.includes(nextBooking.status)) {
           const duplicateOpenRequest = await getDuplicateOpenBookingRequest(nextBooking, req.params.id);
           if (duplicateOpenRequest) {
             return res.status(400).json({ error: "This requester already has an active request for this room and time slot." });
           }
         }
-
         if (nextBooking.status === "Approved" && nextBooking.room_id && nextBooking.date && nextBooking.start_time && nextBooking.end_time) {
           const conflictingBooking = await getApprovedBookingConflict(nextBooking, req.params.id);
           if (conflictingBooking) {
@@ -1371,9 +1377,8 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           }
         }
       }
-
       fields = Object.keys(req.body);
-      setClause = fields.map(f => `${f} = ?`).join(", ");
+      setClause = fields.map((f) => `${f} = ?`).join(", ");
       values = [...Object.values(req.body), req.params.id];
       if (tableName === "users" && req.body.password) {
         const passIdx = fields.indexOf("password");
@@ -1382,7 +1387,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       await db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE ${idField} = ?`).run(...values);
       if (tableName === "bookings" && req.body.status) {
         const title = req.body.status === "HOD Recommended" ? "Request recommended" : `Request ${req.body.status}`;
-        const actor = (req as any).user.name;
+        const actor = req.user.name;
         const message = `${actor} updated ${existingItem.event_name || "a room request"} to ${req.body.status}.`;
         await createNotification(null, existingItem.faculty_name, title, message);
         if (req.body.status === "HOD Recommended") {
@@ -1399,44 +1404,41 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         }
       }
       res.json({ success: true });
-    } catch (err: any) {
+    } catch (err) {
       res.status(400).json({ error: err.message });
     }
   });
-
   app.delete(`/api/${tableName}/reset`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
+    if (tableName === "users" && req.user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
       await db.prepare(`DELETE FROM ${tableName}`).run();
       res.json({ success: true });
-    } catch (err: any) {
+    } catch (err) {
       res.status(400).json({ error: err.message });
     }
   });
-
   app.delete(`/api/${tableName}/:id`, authenticate, async (req, res) => {
-    if (tableName === "users" && (req as any).user?.role !== "Administrator") {
+    if (tableName === "users" && req.user?.role !== "Administrator") {
       return res.status(403).json({ error: "Only Administrator can remove users." });
     }
     try {
-      const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
+      const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id);
       await db.prepare(`DELETE FROM ${tableName} WHERE ${idField} = ?`).run(req.params.id);
       if (tableName === "bookings" && existingItem) {
-        const actor = (req as any).user.name;
+        const actor = req.user.name;
         const title = "Room request deleted";
         const message = `${actor} deleted ${existingItem.event_name || "a room request"} for ${existingItem.date || "the selected date"}.`;
         await createNotification(null, existingItem.faculty_name, title, message);
         await notifyBookingAuthorities(existingItem, title, message);
       }
       res.json({ success: true });
-    } catch (err: any) {
+    } catch (err) {
       res.status(400).json({ error: err.message });
     }
   });
 };
-
 createCrudRoutes("users");
 createCrudRoutes("campuses");
 createCrudRoutes("buildings");
@@ -1450,82 +1452,65 @@ createCrudRoutes("equipment");
 createCrudRoutes("schedules");
 createCrudRoutes("bookings");
 createCrudRoutes("maintenance");
-  app.get(`/api/rooms`, authenticate, async (req, res) => {
-    try {
-      const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
-      
-      const now = new Date();
-      const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
-      const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-      const currentDate = now.toISOString().split('T')[0];
-
-      const enrichedItems = [];
-      for (const room of items) {
-        if (room.status !== 'Available') {
-          enrichedItems.push(room);
-          continue;
-        }
-
-        const schedule = await db.prepare(`
+app.get(`/api/rooms`, authenticate, async (req, res) => {
+  try {
+    const items = await db.prepare(`SELECT * FROM rooms`).all();
+    const now = /* @__PURE__ */ new Date();
+    const dayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" });
+    const currentTime = now.getHours().toString().padStart(2, "0") + ":" + now.getMinutes().toString().padStart(2, "0");
+    const currentDate = now.toISOString().split("T")[0];
+    const enrichedItems = [];
+    for (const room of items) {
+      if (room.status !== "Available") {
+        enrichedItems.push(room);
+        continue;
+      }
+      const schedule = await db.prepare(`
           SELECT * FROM schedules 
           WHERE room = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
         `).get(room.room_number, dayOfWeek, currentTime, currentTime);
-
-        if (schedule) {
-          enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
-          continue;
-        }
-
-        const booking = await db.prepare(`
+      if (schedule) {
+        enrichedItems.push({ ...room, status: "Occupied (Scheduled)" });
+        continue;
+      }
+      const booking = await db.prepare(`
           SELECT * FROM bookings 
           WHERE room_number = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
         `).get(room.room_number, currentDate, currentTime, currentTime);
-
-        if (booking) {
-          enrichedItems.push({ ...room, status: 'Occupied (Booked)' });
-          continue;
-        }
-
-        enrichedItems.push(room);
+      if (booking) {
+        enrichedItems.push({ ...room, status: "Occupied (Booked)" });
+        continue;
       }
-
-      res.json(enrichedItems);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      enrichedItems.push(room);
     }
-  });
-
-  app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
-    try {
-      const { roomId } = req.params;
-      const { date } = req.query;
-      const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
-      
-      const schedules = await db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
-      const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
-      
-      res.json({ schedules, bookings });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-// --- DASHBOARD STATS ---
-
+    res.json(enrichedItems);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { date } = req.query;
+    const dayOfWeek = new Date(date).toLocaleDateString("en-US", { weekday: "long" });
+    const schedules = await db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
+    const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
+    res.json({ schedules, bookings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get("/api/dashboard/stats", authenticate, async (req, res) => {
   try {
-    const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get() as any;
-    const totalRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms").get() as any;
-    const maintenanceRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get() as any;
-    const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get() as any;
-    const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get() as any;
-    
-    // Calculate currently scheduled rooms
-    const now = new Date();
-    const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
-    const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    const currentDate = now.toISOString().split('T')[0];
-
+    const totalBuildings = await db.prepare("SELECT COUNT(*) as count FROM buildings").get();
+    const totalRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms").get();
+    const maintenanceRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get();
+    const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get();
+    const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get();
+    const now = /* @__PURE__ */ new Date();
+    const dayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" });
+    const currentTime = now.getHours().toString().padStart(2, "0") + ":" + now.getMinutes().toString().padStart(2, "0");
+    const currentDate = now.toISOString().split("T")[0];
     const currentlyScheduled = await db.prepare(`
       SELECT COUNT(DISTINCT room_id) as count FROM (
         SELECT room_id FROM schedules 
@@ -1534,10 +1519,8 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
         SELECT room_id FROM bookings 
         WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
       )
-    `).get(dayOfWeek, currentTime, currentTime, currentDate, currentTime, currentTime) as any;
-
+    `).get(dayOfWeek, currentTime, currentTime, currentDate, currentTime, currentTime);
     const availableNow = totalRooms.count - maintenanceRooms.count - currentlyScheduled.count;
-
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
       FROM maintenance m 
@@ -1548,110 +1531,79 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       ORDER BY m.reported_date DESC 
       LIMIT 5
     `).all();
-
     res.json({
       totalBuildings: totalBuildings.count,
-      availableNow: availableNow,
+      availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
       scheduledRooms: currentlyScheduled.count,
       recentAlerts
     });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- VACANCY CHECK ROUTE ---
-
 app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   const { date, time, duration, members } = req.query;
   if (!date || !time || !duration) {
     return res.status(400).json({ error: "Date, time, and duration are required" });
   }
-
-  const minimumCapacity = members !== undefined
-    ? parseInt(members as string, 10)
-    : null;
-  if (members !== undefined && (!Number.isInteger(minimumCapacity) || minimumCapacity < 0)) {
+  const minimumCapacity = members !== void 0 ? parseInt(members, 10) : null;
+  if (members !== void 0 && (!Number.isInteger(minimumCapacity) || minimumCapacity < 0)) {
     return res.status(400).json({ error: "Members must be a valid non-negative number." });
   }
-
-  if (isPastDateTime(date as string, time as string)) {
+  if (isPastDateTime(date, time)) {
     return res.status(400).json({ error: "Past search times are not allowed." });
   }
-
-  const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
-  const requestedStart = time as string;
-  
-  // Calculate end time
-  const [h, m] = requestedStart.split(':').map(Number);
-  const durationMinutes = Math.round((parseFloat(duration as string) || 1) * 60);
-  const endDate = new Date();
+  const dayOfWeek = new Date(date).toLocaleDateString("en-US", { weekday: "long" });
+  const requestedStart = time;
+  const [h, m] = requestedStart.split(":").map(Number);
+  const durationMinutes = Math.round((parseFloat(duration) || 1) * 60);
+  const endDate = /* @__PURE__ */ new Date();
   endDate.setHours(h, m || 0, 0, 0);
   endDate.setMinutes(endDate.getMinutes() + durationMinutes);
-  const requestedEnd = `${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}`;
-
-  const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
-  const allRooms = allRoomsRaw.filter(room =>
-    isReservableRoomRecord(room) &&
-    (minimumCapacity === null || (parseInt(room.capacity, 10) || 0) >= minimumCapacity)
+  const requestedEnd = `${endDate.getHours().toString().padStart(2, "0")}:${endDate.getMinutes().toString().padStart(2, "0")}`;
+  const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all();
+  const allRooms = allRoomsRaw.filter(
+    (room) => isReservableRoomRecord(room) && (minimumCapacity === null || (parseInt(room.capacity, 10) || 0) >= minimumCapacity)
   );
-
-  // Filter out rooms that have schedules
   const busySchedules = await db.prepare(`
     SELECT room_id FROM schedules 
     WHERE day_of_week = ? 
     AND NOT (end_time <= ? OR start_time >= ?)
-  `).all(dayOfWeek, requestedStart, requestedEnd) as any[];
-
-  // Filter out rooms that have bookings
+  `).all(dayOfWeek, requestedStart, requestedEnd);
   const busyBookings = await db.prepare(`
     SELECT room_id FROM bookings 
     WHERE date = ? 
     AND status = 'Approved'
     AND NOT (end_time <= ? OR start_time >= ?)
-  `).all(date, requestedStart, requestedEnd) as any[];
-
-  const busyRoomIds = new Set([
-    ...busySchedules.map(s => s.room_id),
-    ...busyBookings.map(b => b.room_id)
+  `).all(date, requestedStart, requestedEnd);
+  const busyRoomIds = /* @__PURE__ */ new Set([
+    ...busySchedules.map((s) => s.room_id),
+    ...busyBookings.map((b) => b.room_id)
   ]);
-
-  const vacantRooms = allRooms.filter(r => !busyRoomIds.has(r.id));
+  const vacantRooms = allRooms.filter((r) => !busyRoomIds.has(r.id));
   res.json(vacantRooms);
 });
-
-// --- USAGE REPORTS & AI SUGGESTIONS ---
-
 app.get("/api/events/search-rooms", authenticate, async (req, res) => {
   const { date, startTime, endTime, strength } = req.query;
-
   if (!date || !startTime || !endTime || !strength) {
     return res.status(400).json({ error: "Date, start time, end time, and strength are required." });
   }
-
-  if (isPastDateTime(date as string, startTime as string)) {
+  if (isPastDateTime(date, startTime)) {
     return res.status(400).json({ error: "Past event searches are not allowed." });
   }
-
-  if ((startTime as string) >= (endTime as string)) {
+  if (startTime >= endTime) {
     return res.status(400).json({ error: "End time must be later than start time." });
   }
-
-  const targetStrength = parseInt(strength as string, 10);
+  const targetStrength = parseInt(strength, 10);
   if (!Number.isInteger(targetStrength) || targetStrength <= 0) {
     return res.status(400).json({ error: "Strength must be a valid positive number." });
   }
-
-  const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
-
+  const dayOfWeek = new Date(date).toLocaleDateString("en-US", { weekday: "long" });
   try {
-    // 1. Get all reservable rooms using the same normalized rules as room management.
-    const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
+    const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all();
     const allRooms = allRoomsRaw.filter(isReservableRoomRecord);
-    
-    // 2. Get busy rooms from schedules
     const busyInSchedules = await db.prepare(`
       SELECT DISTINCT room_id FROM schedules 
       WHERE day_of_week = ? 
@@ -1660,10 +1612,8 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
         (start_time < ? AND end_time > ?) OR
         (start_time >= ? AND start_time < ?)
       )
-    `).all(dayOfWeek, endTime, startTime, startTime, endTime, startTime, endTime) as any[];
-    const busyRoomIdsSchedules = new Set(busyInSchedules.map(s => s.room_id));
-
-    // 3. Get busy rooms from bookings
+    `).all(dayOfWeek, endTime, startTime, startTime, endTime, startTime, endTime);
+    const busyRoomIdsSchedules = new Set(busyInSchedules.map((s) => s.room_id));
     const busyInBookings = await db.prepare(`
       SELECT DISTINCT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved'
@@ -1672,19 +1622,11 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
         (start_time < ? AND end_time > ?) OR
         (start_time >= ? AND start_time < ?)
       )
-    `).all(date, endTime, startTime, startTime, endTime, startTime, endTime) as any[];
-    const busyRoomIdsBookings = new Set(busyInBookings.map(b => b.room_id));
-
-    // 4. Filter vacant rooms
-    const vacantRooms = allRooms.filter(r => !busyRoomIdsSchedules.has(r.id) && !busyRoomIdsBookings.has(r.id));
-
-    // 5. Find single room options
-    const singleOptions = vacantRooms
-      .filter(r => r.capacity >= targetStrength)
-      .sort((a, b) => a.capacity - b.capacity); // Closest fit first
-
-    // 6. Find multi-room options if no single room is large enough or as alternatives
-    const multiOptions: any[] = [];
+    `).all(date, endTime, startTime, startTime, endTime, startTime, endTime);
+    const busyRoomIdsBookings = new Set(busyInBookings.map((b) => b.room_id));
+    const vacantRooms = allRooms.filter((r) => !busyRoomIdsSchedules.has(r.id) && !busyRoomIdsBookings.has(r.id));
+    const singleOptions = vacantRooms.filter((r) => r.capacity >= targetStrength).sort((a, b) => a.capacity - b.capacity);
+    const multiOptions = [];
     if (singleOptions.length === 0) {
       const sortedVacant = [...vacantRooms].sort((a, b) => b.capacity - a.capacity);
       let currentCapacity = 0;
@@ -1702,13 +1644,11 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
         });
       }
     }
-
     res.json({ singleOptions, multiOptions });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
     const rooms = await db.prepare(`
@@ -1718,61 +1658,54 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       JOIN floors f ON r.floor_id = f.id
       JOIN blocks b ON f.block_id = b.id
       JOIN buildings bld ON b.building_id = bld.id
-    `).all() as any[];
-    const schedules = await db.prepare("SELECT * FROM schedules").all() as any[];
-    const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
-    const allBookings = await db.prepare("SELECT * FROM bookings").all() as any[];
-    const maintenance = await db.prepare("SELECT * FROM maintenance").all() as any[];
-    const departments = await db.prepare("SELECT * FROM departments").all() as any[];
-    const schools = await db.prepare("SELECT * FROM schools").all() as any[];
+    `).all();
+    const schedules = await db.prepare("SELECT * FROM schedules").all();
+    const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all();
+    const allBookings = await db.prepare("SELECT * FROM bookings").all();
+    const maintenance = await db.prepare("SELECT * FROM maintenance").all();
+    const departments = await db.prepare("SELECT * FROM departments").all();
+    const schools = await db.prepare("SELECT * FROM schools").all();
     const allocations = await db.prepare(`
       SELECT room_id, department_id, school_id, id
       FROM department_allocations
       ORDER BY id DESC
-    `).all() as any[];
-
-    const calculateHours = (start: string, end: string) => {
+    `).all();
+    const calculateHours = (start, end) => {
       if (!start || !end) return 0;
-      const [h1, m1] = start.split(':').map(Number);
-      const [h2, m2] = end.split(':').map(Number);
-      return (h2 + m2 / 60) - (h1 + m1 / 60);
+      const [h1, m1] = start.split(":").map(Number);
+      const [h2, m2] = end.split(":").map(Number);
+      return h2 + m2 / 60 - (h1 + m1 / 60);
     };
-
-    const latestAllocationByRoom = new Map<number, any>();
+    const latestAllocationByRoom = /* @__PURE__ */ new Map();
     allocations.forEach((allocation) => {
       if (!latestAllocationByRoom.has(allocation.room_id)) {
         latestAllocationByRoom.set(allocation.room_id, allocation);
       }
     });
-
-    const reports = rooms.map(room => {
-      const roomSchedules = schedules.filter(s => s.room_id === room.id);
-      const roomBookings = bookings.filter(b => b.room_id === room.id);
-      const allRoomBookings = allBookings.filter(b => b.room_id === room.id);
+    const reports = rooms.map((room) => {
+      const roomSchedules = schedules.filter((s) => s.room_id === room.id);
+      const roomBookings = bookings.filter((b) => b.room_id === room.id);
+      const allRoomBookings = allBookings.filter((b) => b.room_id === room.id);
       const allocation = latestAllocationByRoom.get(room.id);
-      const inferredDepartmentCounts = new Map<number, number>();
-      [...roomSchedules, ...allRoomBookings].forEach((entry: any) => {
+      const inferredDepartmentCounts = /* @__PURE__ */ new Map();
+      [...roomSchedules, ...allRoomBookings].forEach((entry) => {
         if (!entry.department_id) return;
         inferredDepartmentCounts.set(entry.department_id, (inferredDepartmentCounts.get(entry.department_id) || 0) + 1);
       });
-      const inferredDepartmentId = Array.from(inferredDepartmentCounts.entries())
-        .sort((a, b) => b[1] - a[1])[0]?.[0];
+      const inferredDepartmentId = Array.from(inferredDepartmentCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
       const resolvedDepartmentId = allocation?.department_id || inferredDepartmentId || null;
-      const department = departments.find(dept => dept.id === resolvedDepartmentId);
+      const department = departments.find((dept) => dept.id === resolvedDepartmentId);
       const resolvedSchoolId = allocation?.school_id || department?.school_id || null;
-      const school = schools.find(item => item.id === resolvedSchoolId);
-      const maintenanceIssues = maintenance.filter(item => item.room_id === room.id && item.status !== "Completed").length;
-
+      const school = schools.find((item) => item.id === resolvedSchoolId);
+      const maintenanceIssues = maintenance.filter((item) => item.room_id === room.id && item.status !== "Completed").length;
       const scheduledHours = roomSchedules.reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
       const bookedHours = roomBookings.reduce((acc, b) => {
         const h = calculateHours(b.start_time, b.end_time);
         return acc + h;
       }, 0);
-      
       const totalUsedHours = scheduledHours + bookedHours;
-      const availableHours = 72; // Assuming 12h * 6 days
-      const utilization = (totalUsedHours / availableHours) * 100;
-
+      const availableHours = 72;
+      const utilization = totalUsedHours / availableHours * 100;
       return {
         room_id: room.id,
         room_number: room.room_number,
@@ -1799,20 +1732,19 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         totalUsedHours: Math.round(totalUsedHours * 10) / 10,
         scheduledHours: Math.round(scheduledHours * 10) / 10,
         bookedHours: Math.round(bookedHours * 10) / 10,
-        bookingStatuses: Array.from(new Set(allRoomBookings.map(booking => booking.status).filter(Boolean))),
-        bookingDates: allRoomBookings.map(booking => booking.date).filter(Boolean),
-        approvedBookingDates: roomBookings.map(booking => booking.date).filter(Boolean),
+        bookingStatuses: Array.from(new Set(allRoomBookings.map((booking) => booking.status).filter(Boolean))),
+        bookingDates: allRoomBookings.map((booking) => booking.date).filter(Boolean),
+        approvedBookingDates: roomBookings.map((booking) => booking.date).filter(Boolean),
         flags: [
           utilization < 20 ? "Underused" : null,
           utilization > 80 ? "Overused" : null,
           maintenanceIssues > 0 ? "Maintenance Risk" : null,
-          !department ? "Department Unmapped" : null,
+          !department ? "Department Unmapped" : null
         ].filter(Boolean)
       };
     });
-
-    const buildingReports = Array.from(new Set(reports.map(report => report.building))).map(building => {
-      const buildingRooms = reports.filter(report => report.building === building);
+    const buildingReports = Array.from(new Set(reports.map((report) => report.building))).map((building) => {
+      const buildingRooms = reports.filter((report) => report.building === building);
       const avgUtilization = buildingRooms.reduce((acc, report) => acc + report.utilization, 0) / (buildingRooms.length || 1);
       return {
         name: building,
@@ -1821,75 +1753,60 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         maintenanceIssues: buildingRooms.reduce((acc, report) => acc + report.maintenanceIssues, 0)
       };
     });
-
-    const bookingStatusReports = ["Pending", "HOD Recommended", "Approved", "Postponed", "Rejected"].map(status => ({
+    const bookingStatusReports = ["Pending", "HOD Recommended", "Approved", "Postponed", "Rejected"].map((status) => ({
       name: status,
-      count: allBookings.filter(booking => booking.status === status).length
+      count: allBookings.filter((booking) => booking.status === status).length
     }));
-
-    // Aggregate by Department
-    const deptReports = departments.map(dept => {
-      const deptRooms = reports.filter(r => r.department_id === dept.id);
+    const deptReports = departments.map((dept) => {
+      const deptRooms = reports.filter((r) => r.department_id === dept.id);
       const totalUtilization = deptRooms.reduce((acc, r) => acc + r.utilization, 0);
       const avgUtilization = deptRooms.length > 0 ? totalUtilization / deptRooms.length : 0;
-
       return {
         name: dept.name,
         school_id: dept.school_id,
-        school: schools.find(school => school.id === dept.school_id)?.name || "Unmapped",
+        school: schools.find((school) => school.id === dept.school_id)?.name || "Unmapped",
         avgUtilization: Math.round(avgUtilization),
         roomCount: deptRooms.length
       };
     });
-
-    // Aggregate by School
-    const schoolReports = schools.map(school => {
-      const schoolDepts = deptReports.filter(d => d.school_id === school.id);
+    const schoolReports = schools.map((school) => {
+      const schoolDepts = deptReports.filter((d) => d.school_id === school.id);
       const totalUtilization = schoolDepts.reduce((acc, d) => acc + d.avgUtilization, 0);
       const avgUtilization = schoolDepts.length > 0 ? totalUtilization / schoolDepts.length : 0;
-
       return {
         name: school.name,
         avgUtilization: Math.round(avgUtilization),
         deptCount: schoolDepts.length
       };
     });
-
     res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// --- ANALYTICS ENDPOINTS ---
-
 app.get("/api/analytics/utilization-trends", authenticate, async (req, res) => {
   try {
-    const rooms = await db.prepare("SELECT id, room_number FROM rooms").all() as any[];
-    const schedules = await db.prepare("SELECT room_id, start_time, end_time FROM schedules").all() as any[];
-    const bookings = await db.prepare("SELECT room_id, start_time, end_time FROM bookings WHERE status = 'Approved'").all() as any[];
-
-    const calculateHours = (start: string, end: string) => {
+    const rooms = await db.prepare("SELECT id, room_number FROM rooms").all();
+    const schedules = await db.prepare("SELECT room_id, start_time, end_time FROM schedules").all();
+    const bookings = await db.prepare("SELECT room_id, start_time, end_time FROM bookings WHERE status = 'Approved'").all();
+    const calculateHours = (start, end) => {
       if (!start || !end) return 0;
-      const [h1, m1] = start.split(':').map(Number);
-      const [h2, m2] = end.split(':').map(Number);
-      return (h2 + m2 / 60) - (h1 + m1 / 60);
+      const [h1, m1] = start.split(":").map(Number);
+      const [h2, m2] = end.split(":").map(Number);
+      return h2 + m2 / 60 - (h1 + m1 / 60);
     };
-
-    const data = rooms.map(room => {
-      const sHours = schedules.filter(s => s.room_id === room.id).reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
-      const bHours = bookings.filter(b => b.room_id === room.id).reduce((acc, b) => acc + calculateHours(b.start_time, b.end_time), 0);
+    const data = rooms.map((room) => {
+      const sHours = schedules.filter((s) => s.room_id === room.id).reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
+      const bHours = bookings.filter((b) => b.room_id === room.id).reduce((acc, b) => acc + calculateHours(b.start_time, b.end_time), 0);
       const total = sHours + bHours;
-      const utilization = Math.min(100, Math.round((total / 72) * 100)); // 72h week
+      const utilization = Math.min(100, Math.round(total / 72 * 100));
       return { name: room.room_number, utilization };
     });
-
     res.json(data.sort((a, b) => b.utilization - a.utilization).slice(0, 10));
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.get("/api/analytics/booking-frequency", authenticate, async (req, res) => {
   try {
     const data = await db.prepare(`
@@ -1902,20 +1819,17 @@ app.get("/api/analytics/booking-frequency", authenticate, async (req, res) => {
       GROUP BY bld.name
     `).all();
     res.json(data);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
 async function healInfrastructureHierarchy() {
   const campus = await db.prepare("SELECT * FROM campuses LIMIT 1").get();
   let defaultCampusId = campus?.id;
   if (!defaultCampusId) {
-    const info = await db.prepare("INSERT INTO campuses (campus_id, name, location, description) VALUES (?, ?, ?, ?)").run('CAMPUS-1', 'Default Campus', 'Default Location', 'Auto-healed campus');
+    const info = await db.prepare("INSERT INTO campuses (campus_id, name, location, description) VALUES (?, ?, ?, ?)").run("CAMPUS-1", "Default Campus", "Default Location", "Auto-healed campus");
     defaultCampusId = Number(info.lastInsertRowid);
   }
-
-  // Buildings
   const buildings = await db.prepare("SELECT * FROM buildings").all();
   for (const b of buildings) {
     const exists = await db.prepare("SELECT 1 FROM campuses WHERE id = ?").get(b.campus_id);
@@ -1926,11 +1840,9 @@ async function healInfrastructureHierarchy() {
   const buildingCheck = await db.prepare("SELECT * FROM buildings LIMIT 1").get();
   let defaultBuildingId = buildingCheck?.id;
   if (!defaultBuildingId) {
-    const info = await db.prepare("INSERT INTO buildings (building_id, campus_id, name, description) VALUES (?, ?, ?, ?)").run('BUILD-1', defaultCampusId, 'Default Building', 'Auto-healed building');
+    const info = await db.prepare("INSERT INTO buildings (building_id, campus_id, name, description) VALUES (?, ?, ?, ?)").run("BUILD-1", defaultCampusId, "Default Building", "Auto-healed building");
     defaultBuildingId = Number(info.lastInsertRowid);
   }
-
-  // Blocks
   const blocks = await db.prepare("SELECT * FROM blocks").all();
   for (const bl of blocks) {
     const exists = await db.prepare("SELECT 1 FROM buildings WHERE id = ?").get(bl.building_id);
@@ -1941,11 +1853,9 @@ async function healInfrastructureHierarchy() {
   const blockCheck = await db.prepare("SELECT * FROM blocks LIMIT 1").get();
   let defaultBlockId = blockCheck?.id;
   if (!defaultBlockId) {
-    const info = await db.prepare("INSERT INTO blocks (block_id, building_id, name, description) VALUES (?, ?, ?, ?)").run('BLOCK-1', defaultBuildingId, 'Default Block', 'Auto-healed block');
+    const info = await db.prepare("INSERT INTO blocks (block_id, building_id, name, description) VALUES (?, ?, ?, ?)").run("BLOCK-1", defaultBuildingId, "Default Block", "Auto-healed block");
     defaultBlockId = Number(info.lastInsertRowid);
   }
-
-  // Floors
   const floors = await db.prepare("SELECT * FROM floors").all();
   for (const f of floors) {
     const exists = await db.prepare("SELECT 1 FROM blocks WHERE id = ?").get(f.block_id);
@@ -1956,11 +1866,9 @@ async function healInfrastructureHierarchy() {
   const floorCheck = await db.prepare("SELECT * FROM floors LIMIT 1").get();
   let defaultFloorId = floorCheck?.id;
   if (!defaultFloorId) {
-    const info = await db.prepare("INSERT INTO floors (floor_id, block_id, floor_number, description) VALUES (?, ?, ?, ?)").run('FLR-1', defaultBlockId, 1, 'Auto-healed floor');
+    const info = await db.prepare("INSERT INTO floors (floor_id, block_id, floor_number, description) VALUES (?, ?, ?, ?)").run("FLR-1", defaultBlockId, 1, "Auto-healed floor");
     defaultFloorId = Number(info.lastInsertRowid);
   }
-
-  // Rooms
   const rooms = await db.prepare("SELECT * FROM rooms").all();
   for (const r of rooms) {
     const exists = await db.prepare("SELECT 1 FROM floors WHERE id = ?").get(r.floor_id);
@@ -1970,60 +1878,53 @@ async function healInfrastructureHierarchy() {
   }
   const roomCheck = await db.prepare("SELECT * FROM rooms LIMIT 1").get();
   if (!roomCheck) {
-    await db.prepare("INSERT INTO rooms (room_id, room_number, floor_id, room_type, capacity) VALUES (?, ?, ?, ?, ?)").run('ROOM-1', '101', defaultFloorId, 'Lecture', 40);
+    await db.prepare("INSERT INTO rooms (room_id, room_number, floor_id, room_type, capacity) VALUES (?, ?, ?, ?, ?)").run("ROOM-1", "101", defaultFloorId, "Lecture", 40);
   }
-
   return {
-    status: 'healed',
+    status: "healed",
     campus: defaultCampusId,
     building: defaultBuildingId,
     block: defaultBlockId,
-    floor: defaultFloorId,
+    floor: defaultFloorId
   };
 }
-
-app.get('/api/health', (_req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     database: db.dialect,
     geminiConfigured: Boolean(GEMINI_API_KEY),
-    timestamp: new Date().toISOString(),
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
   });
 });
-
-app.get('/api/health/heal', authenticate, async (req, res) => {
+app.get("/api/health/heal", authenticate, async (req, res) => {
   try {
     const healed = await healInfrastructureHierarchy();
     res.json({ success: true, healed });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-export async function startServer() {
+async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: "spa"
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, "dist")));
+    app.use(express.static(path2.join(__dirname, "dist")));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(__dirname, "dist", "index.html"));
+      res.sendFile(path2.join(__dirname, "dist", "index.html"));
     });
   }
-
-  const startPort = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-  let currentPort = isNaN(startPort) ? 3000 : startPort;
-
+  const startPort = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
+  let currentPort = isNaN(startPort) ? 3e3 : startPort;
   const launchServer = () => {
     const server = app.listen(currentPort, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${currentPort}`);
     });
-
-    server.on("error", (err: any) => {
+    server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
         console.warn(`Port ${currentPort} already in use. Trying ${currentPort + 1}...`);
         currentPort += 1;
@@ -2038,16 +1939,14 @@ export async function startServer() {
       }
     });
   };
-
   launchServer();
 }
-
-const isDirectExecution = process.argv[1]
-  ? path.resolve(process.argv[1]) === __filename
-  : false;
-
+var isDirectExecution = process.argv[1] ? path2.resolve(process.argv[1]) === __filename : false;
 if (isDirectExecution) {
   startServer();
 }
-
-export default app;
+var server_default = app;
+export {
+  server_default as default,
+  startServer
+};
