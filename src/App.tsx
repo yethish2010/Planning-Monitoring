@@ -837,6 +837,59 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       },
     ],
   },
+  'Academic Calendar': {
+    headers: ['Calendar ID', 'Department', 'Program', 'Batch', 'Academic Year', 'Year of Study', 'Semester', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
+    exampleRows: [
+      {
+        'Calendar ID': 'CAL-MTECH2-2025-26',
+        Department: 'Computer Science and Engineering',
+        Program: 'M.Tech',
+        Batch: '2025-2027',
+        'Academic Year': '2025-26',
+        'Year of Study': '2',
+        Semester: 'Even',
+        'Event Type': 'Semester Period',
+        Title: 'M.Tech II Semester - Teaching Period',
+        'Start Date': '2026-01-02',
+        'End Date': '2026-05-30',
+        Notes: 'Room allocation remains active only during this period.',
+      },
+    ],
+    instructions: [
+      `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
+      'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
+      'Completed calendars can be reused as history; do not delete them unless they were imported by mistake.',
+    ],
+  },
+  'Batch Room Allocation': {
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Year of Study', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    exampleRows: [
+      {
+        'Allocation ID': 'ALLOC-MTECH2-322',
+        'Academic Calendar': 'CAL-MTECH2-2025-26',
+        Department: 'Computer Science and Engineering',
+        Program: 'M.Tech',
+        Batch: '2025-2027',
+        'Academic Year': '2025-26',
+        'Year of Study': '2',
+        Semester: 'Even',
+        Building: 'M-Plaza',
+        Block: 'North',
+        Floor: 'Third Floor',
+        Room: '322',
+        'Room Type': 'Classroom',
+        'Required Capacity': 36,
+        'Start Date': '2026-01-02',
+        'End Date': '2026-05-30',
+        Notes: 'Room automatically releases after the calendar ends.',
+      },
+    ],
+    instructions: [
+      'Use Academic Calendar to auto-fill department, batch, semester, start date, and end date wherever possible.',
+      'The same room can be reused by another batch only when the date ranges do not overlap.',
+      'Allocations are automatically shown as Released after the end date passes.',
+    ],
+  },
   Equipment: {
     headers: ['Equipment ID', 'Equipment Name', 'Type', 'Room Number', 'Condition'],
     exampleRows: [
@@ -909,6 +962,19 @@ const formatLocalDate = (date: Date) => {
   const month = (date.getMonth() + 1).toString().padStart(2, '0');
   const day = date.getDate().toString().padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const SEMESTER_OPTIONS = ['Odd', 'Even'];
+const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
+const ACADEMIC_CALENDAR_STATUS_OPTIONS = ['Upcoming', 'Active', 'Completed'];
+const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
+const YEAR_OF_STUDY_OPTIONS = ['1', '2', '3', '4', '5'];
+
+const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
+  const today = formatLocalDate(new Date());
+  if (endDate && endDate < today) return completedLabel;
+  if (startDate && startDate > today) return futureLabel;
+  return 'Active';
 };
 
 const AppRouter = (((import.meta as any).env?.VITE_ROUTER_MODE || '').toString().toLowerCase() === 'hash'
@@ -1065,6 +1131,8 @@ function Sidebar() {
     { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator'] },
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator'] },
+    { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Infrastructure Manager'] },
+    { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Equipment Management', icon: Wrench, path: '/equipment', roles: ['Administrator', 'Infrastructure Manager', 'Maintenance Staff'] },
     { name: 'Schedule Records', icon: Calendar, path: '/scheduling', roles: ['Administrator', 'Dean (P&M)', 'Deputy Dean (P&M)'] },
@@ -1804,6 +1872,28 @@ export default function App() {
               <Layout title="Department Management">
                 <DependencyGuard dependencies={[{ table: 'schools', label: 'Schools' }]}>
                   <DepartmentManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/academic-calendars" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Academic Calendar Management">
+                <DependencyGuard dependencies={[{ table: 'departments', label: 'Departments' }]}>
+                  <AcademicCalendarManagement />
+                </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/batch-room-allocations" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Batch Room Allocation">
+                <DependencyGuard dependencies={[
+                  { table: 'academic_calendars', label: 'Academic Calendar' },
+                  { table: 'departments', label: 'Departments' },
+                  { table: 'rooms', label: 'Rooms' }
+                ]}>
+                  <BatchRoomAllocationManagement />
                 </DependencyGuard>
               </Layout>
             </ProtectedRoute>
@@ -3903,6 +3993,603 @@ function DepartmentManagement() {
   };
 
   return <GenericCRUD type="Department" fields={fields} apiPath="/api/departments" onImport={handleImport} />;
+}
+
+function AcademicCalendarManagement() {
+  const [schools, setSchools] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+
+  const refreshLookups = async () => {
+    const [schoolData, departmentData] = await Promise.all([
+      fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
+    ]);
+    setSchools(Array.isArray(schoolData) ? schoolData : []);
+    setDepartments(Array.isArray(departmentData) ? departmentData : []);
+  };
+
+  useEffect(() => {
+    refreshLookups();
+  }, []);
+
+  const schoolOptions = schools
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+    .map(school => ({ value: school.id, label: school.name }));
+
+  const sortedDepartments = departments
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
+
+  const fields = [
+    { key: 'calendar_id', label: 'Calendar ID' },
+    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id'], options: schoolOptions },
+    {
+      key: 'department_id',
+      label: 'Department',
+      type: 'select',
+      options: (formData: any) => sortedDepartments
+        .filter(department => idsMatch(department.school_id, formData.school_id))
+        .map(department => ({ value: department.id, label: department.name })),
+      render: (item: any) => departments.find(department => idsMatch(department.id, item.department_id))?.name || 'Unknown',
+    },
+    { key: 'program', label: 'Program' },
+    { key: 'batch', label: 'Batch' },
+    { key: 'academic_year', label: 'Academic Year' },
+    { key: 'year_of_study', label: 'Year of Study', type: 'select', options: YEAR_OF_STUDY_OPTIONS },
+    { key: 'semester', label: 'Semester', type: 'select', options: SEMESTER_OPTIONS },
+    { key: 'event_type', label: 'Event Type', type: 'select', options: ACADEMIC_CALENDAR_EVENT_TYPES },
+    { key: 'title', label: 'Title', fullWidth: true },
+    { key: 'start_date', label: 'Start Date', type: 'date' },
+    { key: 'end_date', label: 'End Date', type: 'date' },
+    {
+      key: 'status',
+      label: 'Status',
+      tableOnly: true,
+      render: (item: any) => getRangeLifecycleStatus(item.start_date, item.end_date, 'Completed'),
+    },
+    { key: 'notes', label: 'Notes', fullWidth: true, required: false },
+  ];
+
+  const prepareSubmitData = (data: any) => {
+    const department = departments.find(item => idsMatch(item.id, data.department_id));
+    if (!department) throw new Error('Please select a valid department.');
+    if (!data.start_date || !data.end_date) throw new Error('Start date and end date are required.');
+    if (data.start_date > data.end_date) throw new Error('Start date cannot be after end date.');
+
+    return {
+      ...data,
+      school_id: department.school_id,
+      status: getRangeLifecycleStatus(data.start_date, data.end_date, 'Completed'),
+    };
+  };
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const department = sortedDepartments.find(item =>
+        normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
+        normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department'])
+      );
+      const startDate = formatExcelDate(row['Start Date']);
+      const endDate = formatExcelDate(row['End Date']);
+
+      const payload = {
+        calendar_id: row['Calendar ID']?.toString(),
+        school_id: department?.school_id,
+        department_id: department?.id,
+        program: row['Program'],
+        batch: row['Batch'],
+        academic_year: row['Academic Year'],
+        year_of_study: row['Year of Study']?.toString(),
+        semester: normalizeSemesterValue(row['Semester'], ''),
+        event_type: row['Event Type'] || 'Semester Period',
+        title: row['Title'],
+        start_date: startDate,
+        end_date: endDate,
+        status: getRangeLifecycleStatus(startDate, endDate, 'Completed'),
+        notes: row['Notes'],
+      };
+
+      if (!payload.calendar_id || !payload.department_id || !payload.title || !payload.start_date || !payload.end_date) continue;
+      await upsertImportRecord('/api/academic_calendars', payload, [
+        ['calendar_id'],
+        ['department_id', 'program', 'batch', 'year_of_study', 'semester', 'event_type', 'title', 'start_date', 'end_date'],
+      ]);
+    }
+  };
+
+  return (
+    <GenericCRUD
+      type="Academic Calendar"
+      fields={fields}
+      apiPath="/api/academic_calendars"
+      onImport={handleImport}
+      onDataChanged={refreshLookups}
+      prepareSubmitData={prepareSubmitData}
+    />
+  );
+}
+
+function BatchRoomAllocationManagement() {
+  const [schools, setSchools] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [floors, setFloors] = useState<any[]>([]);
+  const [blocks, setBlocks] = useState<any[]>([]);
+  const [buildings, setBuildings] = useState<any[]>([]);
+  const [calendars, setCalendars] = useState<any[]>([]);
+  const [allocations, setAllocations] = useState<any[]>([]);
+  const [lookupFilters, setLookupFilters] = useState({ school_id: '', department_id: '', status: '' });
+
+  const refreshBatchAllocationLookups = async () => {
+    const [
+      schoolData,
+      departmentData,
+      roomData,
+      floorData,
+      blockData,
+      buildingData,
+      calendarData,
+      allocationData,
+    ] = await Promise.all([
+      fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/rooms', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/floors', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/blocks', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/buildings', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/academic_calendars', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/batch_room_allocations', { credentials: 'include' }).then(res => res.json()),
+    ]);
+
+    setSchools(Array.isArray(schoolData) ? schoolData : []);
+    setDepartments(Array.isArray(departmentData) ? departmentData : []);
+    setRooms(Array.isArray(roomData) ? roomData : []);
+    setFloors(Array.isArray(floorData) ? floorData : []);
+    setBlocks(Array.isArray(blockData) ? blockData : []);
+    setBuildings(Array.isArray(buildingData) ? buildingData : []);
+    setCalendars(Array.isArray(calendarData) ? calendarData : []);
+    setAllocations(Array.isArray(allocationData) ? allocationData : []);
+  };
+
+  useEffect(() => {
+    refreshBatchAllocationLookups();
+  }, []);
+
+  const getRoomPath = (room: any) => {
+    const floor = floors.find(f => idsMatch(f.id, room?.floor_id));
+    const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
+    const building = buildings.find(b => idsMatch(b.id, block?.building_id));
+    return { floor, block, building };
+  };
+
+  const buildingHasVisibleBlocks = (buildingId: unknown) => {
+    const building = buildings.find(b => b.id == buildingId);
+    if (!building) return false;
+    return blocks.some(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building));
+  };
+
+  const getBlockOptionsForBuilding = (formData: any) => {
+    const building = buildings.find(b => b.id == formData.building_id);
+    if (!building) return [];
+    return blocks
+      .filter(block => idsMatch(block.building_id, building.id) && !isImplicitBuildingBlock(block, building))
+      .map(block => ({ value: block.id, label: block.name }));
+  };
+
+  const getFloorOptionsForSelection = (formData: any) => {
+    const building = buildings.find(b => b.id == formData.building_id);
+    if (!building) return [];
+    const buildingBlocks = blocks.filter(block => idsMatch(block.building_id, building.id));
+    const directBlock = buildingBlocks.find(block => isImplicitBuildingBlock(block, building));
+    const allowedBlockIds = formData.block_id
+      ? [parseInt(formData.block_id, 10)]
+      : buildingHasVisibleBlocks(formData.building_id)
+        ? []
+        : directBlock ? [directBlock.id] : buildingBlocks.map(block => block.id);
+
+    return floors
+      .filter(floor => allowedBlockIds.some(blockId => idsMatch(blockId, floor.block_id)))
+      .sort((a, b) => a.floor_number - b.floor_number)
+      .map(floor => ({ value: floor.id, label: getFloorDisplayLabel(floor, blocks, buildings) }));
+  };
+
+  const getAvailableRoomOptions = (formData: any) => {
+    return rooms
+      .filter(room => {
+        if (!isRoomReservable(room)) return false;
+        const { floor, block, building } = getRoomPath(room);
+        if (!floor || !block || !building) return false;
+        if (formData.building_id && !idsMatch(building.id, formData.building_id)) return false;
+        if (formData.block_id && !idsMatch(block.id, formData.block_id)) return false;
+        if (formData.floor_id && !idsMatch(floor.id, formData.floor_id)) return false;
+        if (!formData.block_id && formData.building_id && buildingHasVisibleBlocks(formData.building_id)) return false;
+        return true;
+      })
+      .map(room => {
+        const { floor } = getRoomPath(room);
+        const requestedCapacity = parseInt(formData.capacity, 10) || 0;
+        const fitLabel = requestedCapacity
+          ? room.capacity >= requestedCapacity ? `Good fit, ${room.capacity} seats` : `Under capacity, ${room.capacity} seats`
+          : `${room.capacity} seats`;
+        return {
+          value: room.id,
+          label: `${getRoomDisplayLabel(room, rooms)} - ${fitLabel} - ${getFloorDisplayLabel(floor, blocks, buildings)}`,
+        };
+      });
+  };
+
+  const getRoomCapacity = (item: any) => {
+    const room = rooms.find(r => idsMatch(r.id, item.room_id));
+    return room?.capacity ?? 'Unknown';
+  };
+
+  const schoolOptions = schools
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+    .map(school => ({ value: school.id, label: school.name }));
+
+  const sortedDepartments = departments
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
+
+  const getCalendarLabel = (calendar: any) =>
+    `${calendar.title} - ${calendar.program || 'Program'} ${calendar.batch || ''}`.trim() + ` (${calendar.start_date} to ${calendar.end_date})`;
+
+  const filteredCalendarOptions = (formData: any) =>
+    calendars
+      .filter(calendar => !formData.school_id || idsMatch(calendar.school_id, formData.school_id))
+      .filter(calendar => !formData.department_id || idsMatch(calendar.department_id, formData.department_id))
+      .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || '') || (a.title || '').localeCompare(b.title || ''))
+      .map(calendar => ({ value: calendar.id, label: getCalendarLabel(calendar) }));
+
+  const lookupDepartments = sortedDepartments.filter(department =>
+    !lookupFilters.school_id || department.school_id?.toString() === lookupFilters.school_id
+  );
+
+  const lookupResults = allocations.filter(allocation => {
+    const computedStatus = getRangeLifecycleStatus(allocation.start_date, allocation.end_date, 'Released', 'Planned');
+    if (lookupFilters.school_id && allocation.school_id?.toString() !== lookupFilters.school_id) return false;
+    if (lookupFilters.department_id && allocation.department_id?.toString() !== lookupFilters.department_id) return false;
+    if (lookupFilters.status && computedStatus !== lookupFilters.status) return false;
+    return lookupFilters.school_id || lookupFilters.department_id || lookupFilters.status;
+  });
+
+  const getAllocationDetails = (allocation: any) => {
+    const school = schools.find(s => idsMatch(s.id, allocation.school_id));
+    const department = departments.find(d => idsMatch(d.id, allocation.department_id));
+    const room = rooms.find(r => idsMatch(r.id, allocation.room_id));
+    const calendar = calendars.find(c => idsMatch(c.id, allocation.academic_calendar_id));
+    const { floor, block, building } = getRoomPath(room);
+    return { school, department, room, calendar, floor, block, building };
+  };
+
+  const getRoomDeepLinkSearch = (room: any) => {
+    const params = new URLSearchParams();
+    if (room?.id !== undefined && room?.id !== null) params.set('roomId', room.id.toString());
+    params.set('room', getRoomDisplayLabel(room, rooms));
+    return `?${params.toString()}`;
+  };
+
+  const fields = [
+    { key: 'allocation_id', label: 'Allocation ID' },
+    {
+      key: 'academic_calendar_id',
+      label: 'Academic Calendar',
+      type: 'select',
+      required: false,
+      options: filteredCalendarOptions,
+      onChange: (nextData: any, value: string) => {
+        const calendar = calendars.find(item => idsMatch(item.id, value));
+        if (!calendar) return nextData;
+        return {
+          ...nextData,
+          academic_calendar_id: calendar.id,
+          school_id: calendar.school_id?.toString() || nextData.school_id,
+          department_id: calendar.department_id?.toString() || nextData.department_id,
+          program: calendar.program || nextData.program,
+          batch: calendar.batch || nextData.batch,
+          academic_year: calendar.academic_year || nextData.academic_year,
+          year_of_study: calendar.year_of_study || nextData.year_of_study,
+          semester: calendar.semester || nextData.semester,
+          start_date: calendar.start_date || nextData.start_date,
+          end_date: calendar.end_date || nextData.end_date,
+        };
+      },
+      render: (item: any) => {
+        const calendar = calendars.find(entry => idsMatch(entry.id, item.academic_calendar_id));
+        return calendar ? calendar.title : '-';
+      },
+    },
+    { key: 'school_id', label: 'School', type: 'select', resetKeys: ['department_id', 'academic_calendar_id'], options: schoolOptions },
+    {
+      key: 'department_id',
+      label: 'Department',
+      type: 'select',
+      resetKeys: ['academic_calendar_id'],
+      options: (formData: any) => sortedDepartments
+        .filter(department => idsMatch(department.school_id, formData.school_id))
+        .map(department => ({ value: department.id, label: department.name })),
+      render: (item: any) => departments.find(department => idsMatch(department.id, item.department_id))?.name || 'Unknown',
+    },
+    { key: 'program', label: 'Program' },
+    { key: 'batch', label: 'Batch' },
+    { key: 'academic_year', label: 'Academic Year' },
+    { key: 'year_of_study', label: 'Year of Study', type: 'select', options: YEAR_OF_STUDY_OPTIONS },
+    { key: 'semester', label: 'Semester', type: 'select', options: SEMESTER_OPTIONS },
+    {
+      key: 'building_id',
+      label: 'Building',
+      type: 'select',
+      resetKeys: ['block_id', 'floor_id', 'room_id'],
+      options: buildings.map(building => ({ value: building.id, label: building.name })),
+      render: (item: any) => {
+        const room = rooms.find(r => idsMatch(r.id, item.room_id));
+        return getRoomPath(room)?.building?.name || 'Unknown';
+      },
+    },
+    {
+      key: 'block_id',
+      label: 'Block',
+      type: 'select',
+      resetKeys: ['floor_id', 'room_id'],
+      show: (formData: any) => buildingHasVisibleBlocks(formData.building_id),
+      options: getBlockOptionsForBuilding,
+      render: (item: any) => {
+        const room = rooms.find(r => idsMatch(r.id, item.room_id));
+        const { block, building } = getRoomPath(room);
+        return getBlockDisplayLabel(block, building);
+      },
+    },
+    {
+      key: 'floor_id',
+      label: 'Floor',
+      type: 'select',
+      resetKeys: ['room_id'],
+      options: getFloorOptionsForSelection,
+      formOnly: true,
+    },
+    {
+      key: 'floor_id',
+      label: 'Floor',
+      tableOnly: true,
+      render: (item: any) => {
+        const room = rooms.find(r => idsMatch(r.id, item.room_id));
+        const { floor } = getRoomPath(room);
+        return floor ? getFloorName(floor.floor_number) : 'Unknown';
+      },
+    },
+    { key: 'room_id', label: 'Room', type: 'select', options: getAvailableRoomOptions, render: (item: any) => {
+      const room = rooms.find(r => idsMatch(r.id, item.room_id));
+      return room ? getRoomDisplayLabel(room, rooms) : 'Unknown';
+    } },
+    { key: 'room_capacity', label: 'Room Capacity', tableOnly: true, render: getRoomCapacity },
+    { key: 'room_type', label: 'Room Type', tableOnly: true, render: (item: any) => item.room_type || rooms.find(room => idsMatch(room.id, item.room_id))?.room_type || 'Unknown' },
+    { key: 'capacity', label: 'Required Capacity', type: 'number' },
+    { key: 'start_date', label: 'Start Date', type: 'date' },
+    { key: 'end_date', label: 'End Date', type: 'date' },
+    {
+      key: 'status',
+      label: 'Status',
+      tableOnly: true,
+      render: (item: any) => getRangeLifecycleStatus(item.start_date, item.end_date, 'Released', 'Planned'),
+    },
+    { key: 'notes', label: 'Notes', fullWidth: true, required: false },
+  ];
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const calendar = calendars.find(item =>
+        normalizeLookupValue(item.calendar_id) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Calendar ID'])) ||
+        normalizeLookupValue(item.title) === normalizeLookupValue(getImportValue(row, ['Academic Calendar', 'Title']))
+      );
+      const department = sortedDepartments.find(item =>
+        normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
+        normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department']) ||
+        idsMatch(item.id, calendar?.department_id)
+      );
+      const building = buildings.find(item => normalizeLookupValue(item.name) === normalizeLookupValue(getImportValue(row, ['Building'])));
+      const blockLabel = getImportValue(row, ['Block', 'Block / Direct Floors']);
+      const normalizedBlockLabel = normalizeLookupValue(blockLabel);
+      const normalizedRoomValue = normalizeLookupValue(getImportValue(row, ['Room', 'Room Number']));
+      const room = rooms.find(r => {
+        if (!isRoomReservable(r)) return false;
+        if (![
+          normalizeLookupValue(r.room_id),
+          normalizeLookupValue(r.room_number),
+          normalizeLookupValue(getRoomDisplayLabel(r, rooms)),
+        ].includes(normalizedRoomValue)) return false;
+        const { block, building: roomBuilding } = getRoomPath(r);
+        if (building && !idsMatch(roomBuilding?.id, building.id)) return false;
+        if (normalizedBlockLabel) {
+          const wantsDirectBlock = normalizedBlockLabel === 'direct floors' || normalizedBlockLabel === 'direct floors (no block)';
+          if (wantsDirectBlock && !isImplicitBuildingBlock(block, roomBuilding)) return false;
+          if (!wantsDirectBlock && normalizeLookupValue(block?.name) !== normalizedBlockLabel) return false;
+        }
+        return true;
+      });
+
+      const startDate = formatExcelDate(getImportValue(row, ['Start Date'])) || calendar?.start_date;
+      const endDate = formatExcelDate(getImportValue(row, ['End Date'])) || calendar?.end_date;
+      const payload = {
+        allocation_id: row['Allocation ID']?.toString(),
+        academic_calendar_id: calendar?.id || null,
+        school_id: department?.school_id,
+        department_id: department?.id,
+        room_id: room?.id,
+        program: row['Program'] || calendar?.program,
+        batch: row['Batch'] || calendar?.batch,
+        academic_year: row['Academic Year'] || calendar?.academic_year,
+        year_of_study: getImportValue(row, ['Year of Study'])?.toString() || calendar?.year_of_study,
+        semester: normalizeSemesterValue(getImportValue(row, ['Semester']), '') || calendar?.semester,
+        room_type: row['Room Type'] || room?.room_type,
+        capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
+        start_date: startDate,
+        end_date: endDate,
+        status: getRangeLifecycleStatus(startDate, endDate, 'Released', 'Planned'),
+        notes: row['Notes'] || null,
+      };
+
+      if (!payload.allocation_id || !payload.department_id || !payload.room_id || !payload.start_date || !payload.end_date || payload.capacity <= 0) continue;
+      await upsertImportRecord('/api/batch_room_allocations', payload, [
+        ['allocation_id'],
+        ['room_id', 'department_id', 'program', 'batch', 'year_of_study', 'semester', 'start_date', 'end_date'],
+      ]);
+    }
+  };
+
+  const prepareFormData = (item: any) => {
+    const room = rooms.find(r => idsMatch(r.id, item.room_id));
+    const { floor, block, building } = getRoomPath(room);
+    return {
+      ...item,
+      building_id: building?.id || '',
+      block_id: block && !isImplicitBuildingBlock(block, building) ? block.id : '',
+      floor_id: floor?.id || '',
+    };
+  };
+
+  const prepareSubmitData = (data: any) => {
+    const payload = { ...data };
+    const room = rooms.find(r => idsMatch(r.id, payload.room_id));
+    const department = departments.find(item => idsMatch(item.id, payload.department_id));
+    const calendar = calendars.find(item => idsMatch(item.id, payload.academic_calendar_id));
+    const requiredCapacity = parseInt(payload.capacity, 10) || 0;
+
+    if (!department) throw new Error('Please select a valid department.');
+    if (!room) throw new Error('Please select a valid room.');
+    if (!payload.start_date || !payload.end_date) throw new Error('Start date and end date are required.');
+    if (payload.start_date > payload.end_date) throw new Error('Start date cannot be after end date.');
+    if (requiredCapacity <= 0) throw new Error('Required capacity must be greater than zero.');
+    if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
+
+    payload.school_id = department.school_id;
+    payload.room_type = room.room_type;
+    payload.status = getRangeLifecycleStatus(payload.start_date, payload.end_date, 'Released', 'Planned');
+    if (calendar) {
+      payload.academic_calendar_id = calendar.id;
+    } else {
+      payload.academic_calendar_id = null;
+    }
+
+    delete payload.building_id;
+    delete payload.block_id;
+    delete payload.floor_id;
+    delete payload.room_capacity;
+    return payload;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
+          <div>
+            <h3 className="text-lg font-bold text-slate-800">Find Batch Room Allocations</h3>
+            <p className="text-sm text-slate-500">Track active, upcoming, and released room allocations by batch, year, and semester.</p>
+          </div>
+          <button
+            onClick={() => setLookupFilters({ school_id: '', department_id: '', status: '' })}
+            className="px-4 py-2 bg-slate-50 text-slate-600 border border-slate-200 rounded-lg font-bold hover:bg-slate-100"
+          >
+            Clear
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">School</label>
+            <select
+              value={lookupFilters.school_id}
+              onChange={e => setLookupFilters({ school_id: e.target.value, department_id: '', status: lookupFilters.status })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">Select School</option>
+              {schoolOptions.map(school => <option key={school.value} value={school.value}>{school.label}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Department</label>
+            <select
+              value={lookupFilters.department_id}
+              onChange={e => setLookupFilters({ ...lookupFilters, department_id: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">All Departments</option>
+              {lookupDepartments.map(department => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Status</label>
+            <select
+              value={lookupFilters.status}
+              onChange={e => setLookupFilters({ ...lookupFilters, status: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">All Statuses</option>
+              {ALLOCATION_STATUS_OPTIONS.map(status => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto border border-slate-100 rounded-xl">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-100">
+                {['Department', 'Program', 'Batch', 'Year', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
+                  <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {lookupResults.map(allocation => {
+                const { department, room, floor, block, building } = getAllocationDetails(allocation);
+                const status = getRangeLifecycleStatus(allocation.start_date, allocation.end_date, 'Released', 'Planned');
+                return (
+                  <tr key={allocation.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-sm font-medium text-slate-700">{department?.name || 'Unknown'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.program || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.batch || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.year_of_study || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.semester || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
+                    <td className="px-4 py-3 text-sm font-bold text-slate-800">{room ? getRoomDisplayLabel(room, rooms) : 'Unknown'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.start_date}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.end_date}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{status}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        <Link to={`/timetable${getRoomDeepLinkSearch(room)}`} className="px-2 py-1 bg-blue-50 text-blue-700 rounded text-xs font-bold">Timetable</Link>
+                        <Link to={`/bookings${getRoomDeepLinkSearch(room)}`} className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-bold">Bookings</Link>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {lookupResults.length === 0 && (
+                <tr>
+                  <td colSpan={13} className="px-4 py-8 text-center text-sm text-slate-400 italic">
+                    Select a school, department, or status to view batch room allocations.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <GenericCRUD
+        type="Batch Room Allocation"
+        fields={fields}
+        apiPath="/api/batch_room_allocations"
+        onImport={handleImport}
+        onDataChanged={refreshBatchAllocationLookups}
+        prepareFormData={prepareFormData}
+        prepareSubmitData={prepareSubmitData}
+      />
+    </div>
+  );
 }
 
 function DepartmentAllocationManagement() {

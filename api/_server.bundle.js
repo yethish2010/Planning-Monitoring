@@ -307,6 +307,50 @@ var getPrimarySchemaSql = (dialect) => {
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
 
+    CREATE TABLE IF NOT EXISTS academic_calendars (
+      id ${idDefinition},
+      calendar_id TEXT UNIQUE NOT NULL,
+      school_id INTEGER NOT NULL,
+      department_id INTEGER NOT NULL,
+      program TEXT,
+      batch TEXT,
+      academic_year TEXT,
+      year_of_study TEXT,
+      semester TEXT,
+      event_type TEXT,
+      title TEXT NOT NULL,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      status TEXT DEFAULT 'Upcoming',
+      notes TEXT,
+      FOREIGN KEY(school_id) REFERENCES schools(id),
+      FOREIGN KEY(department_id) REFERENCES departments(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS batch_room_allocations (
+      id ${idDefinition},
+      allocation_id TEXT UNIQUE NOT NULL,
+      academic_calendar_id INTEGER,
+      school_id INTEGER NOT NULL,
+      department_id INTEGER NOT NULL,
+      room_id INTEGER NOT NULL,
+      program TEXT,
+      batch TEXT,
+      academic_year TEXT,
+      year_of_study TEXT,
+      semester TEXT,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      room_type TEXT,
+      capacity INTEGER,
+      status TEXT DEFAULT 'Planned',
+      notes TEXT,
+      FOREIGN KEY(academic_calendar_id) REFERENCES academic_calendars(id),
+      FOREIGN KEY(school_id) REFERENCES schools(id),
+      FOREIGN KEY(department_id) REFERENCES departments(id),
+      FOREIGN KEY(room_id) REFERENCES rooms(id)
+    );
+
     CREATE TABLE IF NOT EXISTS equipment (
       id ${idDefinition},
       equipment_id TEXT UNIQUE NOT NULL,
@@ -704,6 +748,138 @@ var getBookableRoomError = async (roomId) => {
   }
   return null;
 };
+var getCurrentIndiaDate = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(/* @__PURE__ */ new Date());
+var normalizeIsoDate = (value) => {
+  const trimmed = value?.toString().trim();
+  if (!trimmed) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().slice(0, 10);
+};
+var deriveAcademicCalendarStatus = (startDate, endDate) => {
+  const today = getCurrentIndiaDate();
+  if (endDate && endDate < today) return "Completed";
+  if (startDate && startDate > today) return "Upcoming";
+  return "Active";
+};
+var deriveBatchAllocationStatus = (startDate, endDate, requestedStatus) => {
+  const normalizedRequested = requestedStatus?.toString().trim().toLowerCase() || "";
+  if (normalizedRequested === "released") return "Released";
+  const today = getCurrentIndiaDate();
+  if (endDate && endDate < today) return "Released";
+  if (startDate && startDate > today) return "Planned";
+  return "Active";
+};
+var normalizeAcademicCalendarPayload = async (payload) => {
+  const nextPayload = { ...payload };
+  const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
+  const department = departmentId ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) : null;
+  if (!department) {
+    throw new Error("Please select a valid department.");
+  }
+  const startDate = normalizeIsoDate(nextPayload.start_date);
+  const endDate = normalizeIsoDate(nextPayload.end_date);
+  if (!startDate || !endDate) {
+    throw new Error("Start date and end date are required.");
+  }
+  if (startDate > endDate) {
+    throw new Error("Academic calendar start date cannot be after the end date.");
+  }
+  nextPayload.department_id = department.id;
+  nextPayload.school_id = department.school_id;
+  nextPayload.program = nextPayload.program?.toString().trim() || null;
+  nextPayload.batch = nextPayload.batch?.toString().trim() || null;
+  nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
+  nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
+  nextPayload.semester = nextPayload.semester?.toString().trim() || null;
+  nextPayload.event_type = nextPayload.event_type?.toString().trim() || "Semester Period";
+  nextPayload.title = nextPayload.title?.toString().trim() || `${nextPayload.program || "Academic"} ${nextPayload.semester || "Period"}`;
+  nextPayload.start_date = startDate;
+  nextPayload.end_date = endDate;
+  nextPayload.status = deriveAcademicCalendarStatus(startDate, endDate);
+  nextPayload.notes = nextPayload.notes?.toString().trim() || null;
+  return nextPayload;
+};
+var normalizeBatchRoomAllocationPayload = async (payload) => {
+  const nextPayload = { ...payload };
+  const calendarId = nextPayload.academic_calendar_id ? Number(nextPayload.academic_calendar_id) : null;
+  const linkedCalendar = calendarId ? await db.prepare(`
+      SELECT id, school_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date
+      FROM academic_calendars
+      WHERE id = ?
+    `).get(calendarId) : null;
+  if (calendarId && !linkedCalendar) {
+    throw new Error("Please select a valid academic calendar.");
+  }
+  const departmentId = Number(nextPayload.department_id || linkedCalendar?.department_id || 0) || null;
+  const department = departmentId ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) : null;
+  if (!department) {
+    throw new Error("Please select a valid department.");
+  }
+  const roomId = nextPayload.room_id ? Number(nextPayload.room_id) : null;
+  const room = roomId ? await db.prepare("SELECT id, room_number, room_type, capacity FROM rooms WHERE id = ?").get(roomId) : null;
+  if (!room) {
+    throw new Error("Please select a valid room.");
+  }
+  const startDate = normalizeIsoDate(nextPayload.start_date || linkedCalendar?.start_date);
+  const endDate = normalizeIsoDate(nextPayload.end_date || linkedCalendar?.end_date);
+  if (!startDate || !endDate) {
+    throw new Error("Allocation start date and end date are required.");
+  }
+  if (startDate > endDate) {
+    throw new Error("Allocation start date cannot be after the end date.");
+  }
+  nextPayload.academic_calendar_id = linkedCalendar?.id || null;
+  nextPayload.department_id = department.id;
+  nextPayload.school_id = department.school_id;
+  nextPayload.room_id = room.id;
+  nextPayload.program = nextPayload.program?.toString().trim() || linkedCalendar?.program || null;
+  nextPayload.batch = nextPayload.batch?.toString().trim() || linkedCalendar?.batch || null;
+  nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || linkedCalendar?.academic_year || null;
+  nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || linkedCalendar?.year_of_study || null;
+  nextPayload.semester = nextPayload.semester?.toString().trim() || linkedCalendar?.semester || null;
+  nextPayload.start_date = startDate;
+  nextPayload.end_date = endDate;
+  nextPayload.room_type = room.room_type;
+  nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
+  nextPayload.status = deriveBatchAllocationStatus(startDate, endDate, nextPayload.status);
+  nextPayload.notes = nextPayload.notes?.toString().trim() || null;
+  if (nextPayload.capacity <= 0) {
+    throw new Error("Required capacity must be greater than zero.");
+  }
+  if (nextPayload.capacity > room.capacity) {
+    throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextPayload.capacity}.`);
+  }
+  return nextPayload;
+};
+var getBatchAllocationOverlapError = async (allocation, excludeId) => {
+  if (!allocation?.room_id || !allocation?.start_date || !allocation?.end_date) return null;
+  const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(allocation.room_id);
+  const existingAllocations = await db.prepare(`
+    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
+    FROM batch_room_allocations
+    WHERE room_id = ?
+    ${excludeId ? "AND id != ?" : ""}
+  `).all(allocation.room_id, ...excludeId ? [excludeId] : []);
+  const conflictingAllocation = existingAllocations.find((existing) => {
+    if ((existing.status || "").toString().trim().toLowerCase() === "released") return false;
+    const existingStart = normalizeIsoDate(existing.start_date);
+    const existingEnd = normalizeIsoDate(existing.end_date);
+    return !(existingEnd < allocation.start_date || existingStart > allocation.end_date);
+  });
+  if (!conflictingAllocation) return null;
+  return `Room ${room?.room_number || allocation.room_id} already has a batch allocation for an overlapping period. Release or change the existing allocation first.`;
+};
+var syncBatchAllocationStatuses = async () => {
+  const allocations = await db.prepare("SELECT id, start_date, end_date, status FROM batch_room_allocations").all();
+  for (const allocation of allocations) {
+    const nextStatus = deriveBatchAllocationStatus(normalizeIsoDate(allocation.start_date), normalizeIsoDate(allocation.end_date), allocation.status);
+    if (nextStatus !== allocation.status) {
+      await db.prepare("UPDATE batch_room_allocations SET status = ? WHERE id = ?").run(nextStatus, allocation.id);
+    }
+  }
+};
 var ensureNotificationsTable = async () => {
   const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
   const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
@@ -1049,6 +1225,14 @@ var duplicateRules = {
   department_allocations: [
     { fields: ["room_id", "department_id", "semester"], label: "Room allocation for this department and semester" }
   ],
+  academic_calendars: [
+    { fields: ["calendar_id"], label: "Calendar ID" },
+    { fields: ["department_id", "program", "batch", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" }
+  ],
+  batch_room_allocations: [
+    { fields: ["allocation_id"], label: "Allocation ID" },
+    { fields: ["room_id", "department_id", "program", "batch", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" }
+  ],
   equipment: [
     { fields: ["equipment_id"], label: "Equipment ID" },
     { fields: ["room_id", "name"], label: "Equipment name in this room" }
@@ -1156,6 +1340,7 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
   return null;
 };
 await cleanupDuplicateSchedules();
+await syncBatchAllocationStatuses();
 var isPastDateTime = (date, time) => {
   const value = /* @__PURE__ */ new Date(`${date}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
@@ -1250,6 +1435,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
         }
         return res.json(bookings.filter((booking) => booking.faculty_name === user.name));
       }
+      if (tableName === "batch_room_allocations") {
+        await syncBatchAllocationStatuses();
+      }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {
         return res.json(deduplicateSchedules(items).kept);
@@ -1275,17 +1463,23 @@ var createCrudRoutes = (tableName, idField = "id") => {
         req.body.status = "Pending";
       }
     }
-    if (tableName === "rooms") {
-      req.body = normalizeRoomPayload(req.body);
-    }
-    const fields = Object.keys(req.body);
-    const placeholders = fields.map(() => "?").join(", ");
-    const values = Object.values(req.body);
-    if (tableName === "users" && req.body.password) {
-      const passIdx = fields.indexOf("password");
-      values[passIdx] = bcrypt.hashSync(req.body.password, 10);
-    }
     try {
+      if (tableName === "academic_calendars") {
+        req.body = await normalizeAcademicCalendarPayload(req.body);
+      }
+      if (tableName === "batch_room_allocations") {
+        req.body = await normalizeBatchRoomAllocationPayload(req.body);
+      }
+      if (tableName === "rooms") {
+        req.body = normalizeRoomPayload(req.body);
+      }
+      const fields = Object.keys(req.body);
+      const placeholders = fields.map(() => "?").join(", ");
+      const values = Object.values(req.body);
+      if (tableName === "users" && req.body.password) {
+        const passIdx = fields.indexOf("password");
+        values[passIdx] = bcrypt.hashSync(req.body.password, 10);
+      }
       const duplicateError = await checkDuplicateRecord(tableName, req.body);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
@@ -1305,6 +1499,12 @@ var createCrudRoutes = (tableName, idField = "id") => {
         req.body.room_type = room.room_type;
         const roomTypeIndex = fields.indexOf("room_type");
         if (roomTypeIndex >= 0) values[roomTypeIndex] = req.body.room_type;
+      }
+      if (tableName === "batch_room_allocations") {
+        const bookableError = await getBookableRoomError(req.body.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
+        const overlapError = await getBatchAllocationOverlapError(req.body);
+        if (overlapError) return res.status(400).json({ error: overlapError });
       }
       if (tableName === "schedules") {
         const bookableError = await getBookableRoomError(req.body.room_id);
@@ -1385,11 +1585,20 @@ var createCrudRoutes = (tableName, idField = "id") => {
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
     }
-    let fields = Object.keys(req.body);
-    let setClause = fields.map((f) => `${f} = ?`).join(", ");
-    let values = [...Object.values(req.body), req.params.id];
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id);
+      if (!existingItem) {
+        return res.status(404).json({ error: `${tableName} record not found.` });
+      }
+      if (tableName === "academic_calendars") {
+        req.body = await normalizeAcademicCalendarPayload({ ...existingItem, ...req.body });
+      }
+      if (tableName === "batch_room_allocations") {
+        req.body = await normalizeBatchRoomAllocationPayload({ ...existingItem, ...req.body });
+      }
+      let fields = Object.keys(req.body);
+      let setClause = fields.map((f) => `${f} = ?`).join(", ");
+      let values = [...Object.values(req.body), req.params.id];
       const duplicateError = await checkDuplicateRecord(tableName, { ...existingItem, ...req.body }, req.params.id);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
@@ -1408,6 +1617,13 @@ var createCrudRoutes = (tableName, idField = "id") => {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextAllocation.capacity}.` });
         }
         req.body.room_type = room.room_type;
+      }
+      if (tableName === "batch_room_allocations") {
+        const nextAllocation = { ...existingItem, ...req.body };
+        const bookableError = await getBookableRoomError(nextAllocation.room_id);
+        if (bookableError) return res.status(400).json({ error: bookableError });
+        const overlapError = await getBatchAllocationOverlapError(nextAllocation, req.params.id);
+        if (overlapError) return res.status(400).json({ error: overlapError });
       }
       if (tableName === "schedules") {
         const nextSchedule = { ...existingItem, ...req.body };
@@ -1538,6 +1754,8 @@ createCrudRoutes("rooms");
 createCrudRoutes("schools");
 createCrudRoutes("departments");
 createCrudRoutes("department_allocations");
+createCrudRoutes("academic_calendars");
+createCrudRoutes("batch_room_allocations");
 createCrudRoutes("equipment");
 createCrudRoutes("schedules");
 createCrudRoutes("bookings");
