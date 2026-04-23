@@ -167,6 +167,194 @@ const normalizeSemesterValue = (value: unknown, fallback = 'Odd') => {
   return fallback;
 };
 
+const PROGRAM_OPTIONS = [
+  'B.Tech',
+  'M.Tech',
+  'BCA',
+  'MCA',
+  'BBA',
+  'MBA',
+  'B.Com',
+  'M.Com',
+  'B.Sc',
+  'M.Sc',
+  'B.A',
+  'M.A',
+  'B.Pharm',
+  'D.Pharm',
+  'M.Pharm',
+  'Pharm.D',
+  'B.Arch',
+  'M.Arch',
+  'B.Des',
+  'M.Des',
+  'B.Ed',
+  'M.Ed',
+  'Diploma',
+  'Polytechnic',
+  'LLB',
+  'LLM',
+  'PhD',
+  'PG Diploma',
+  'Certificate',
+];
+
+const PROGRAM_DURATION_YEARS: Record<string, number> = {
+  'B.Tech': 4,
+  'M.Tech': 2,
+  'BCA': 3,
+  'MCA': 2,
+  'BBA': 3,
+  'MBA': 2,
+  'B.Com': 3,
+  'M.Com': 2,
+  'B.Sc': 3,
+  'M.Sc': 2,
+  'B.A': 3,
+  'M.A': 2,
+  'B.Pharm': 4,
+  'D.Pharm': 2,
+  'M.Pharm': 2,
+  'Pharm.D': 6,
+  'B.Arch': 5,
+  'M.Arch': 2,
+  'B.Des': 4,
+  'M.Des': 2,
+  'B.Ed': 2,
+  'M.Ed': 2,
+  'Diploma': 3,
+  'Polytechnic': 3,
+  'LLB': 3,
+  'LLM': 2,
+  'PhD': 5,
+  'PG Diploma': 1,
+  'Certificate': 1,
+};
+
+const normalizeProgramValue = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return '';
+
+  const aliases: Record<string, string> = {
+    btech: 'B.Tech',
+    'b.tech': 'B.Tech',
+    be: 'B.Tech',
+    mtech: 'M.Tech',
+    'm.tech': 'M.Tech',
+    me: 'M.Tech',
+    bca: 'BCA',
+    mca: 'MCA',
+    bba: 'BBA',
+    mba: 'MBA',
+    bcom: 'B.Com',
+    'b.com': 'B.Com',
+    mcom: 'M.Com',
+    'm.com': 'M.Com',
+    bsc: 'B.Sc',
+    'b.sc': 'B.Sc',
+    msc: 'M.Sc',
+    'm.sc': 'M.Sc',
+    ba: 'B.A',
+    'b.a': 'B.A',
+    ma: 'M.A',
+    'm.a': 'M.A',
+    bpharm: 'B.Pharm',
+    'b.pharm': 'B.Pharm',
+    dpharm: 'D.Pharm',
+    'd.pharm': 'D.Pharm',
+    mpharm: 'M.Pharm',
+    'm.pharm': 'M.Pharm',
+    pharmd: 'Pharm.D',
+    'pharm.d': 'Pharm.D',
+    barch: 'B.Arch',
+    'b.arch': 'B.Arch',
+    march: 'M.Arch',
+    'm.arch': 'M.Arch',
+    bdes: 'B.Des',
+    'b.des': 'B.Des',
+    mdes: 'M.Des',
+    'm.des': 'M.Des',
+    bed: 'B.Ed',
+    'b.ed': 'B.Ed',
+    med: 'M.Ed',
+    'm.ed': 'M.Ed',
+    diploma: 'Diploma',
+    polytechnic: 'Polytechnic',
+    llb: 'LLB',
+    llm: 'LLM',
+    phd: 'PhD',
+    'pg diploma': 'PG Diploma',
+    certificate: 'Certificate',
+  };
+
+  const exactMatch = PROGRAM_OPTIONS.find(option => normalizeLookupValue(option) === normalized);
+  if (exactMatch) return exactMatch;
+  return aliases[normalized] || value?.toString().trim() || '';
+};
+
+const normalizeYearOfStudyValue = (value: unknown, fallback = '') => {
+  const normalized = value?.toString().trim() || '';
+  if (!normalized) return fallback;
+  const matchedNumber = normalized.match(/(\d+)/);
+  return matchedNumber?.[1] || fallback;
+};
+
+const formatOrdinal = (value: number) => {
+  if (Number.isNaN(value)) return '';
+  const mod100 = value % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
+  const mod10 = value % 10;
+  if (mod10 === 1) return `${value}st`;
+  if (mod10 === 2) return `${value}nd`;
+  if (mod10 === 3) return `${value}rd`;
+  return `${value}th`;
+};
+
+const getProgramDurationYears = (program: unknown) =>
+  PROGRAM_DURATION_YEARS[normalizeProgramValue(program)] || 4;
+
+const getSemesterNumberForSelection = (yearOfStudy: unknown, semester: unknown) => {
+  const yearNumber = Number(normalizeYearOfStudyValue(yearOfStudy));
+  if (!yearNumber) return null;
+  const normalizedSemester = normalizeSemesterValue(semester, '');
+  if (normalizedSemester === 'Odd') return yearNumber * 2 - 1;
+  if (normalizedSemester === 'Even') return yearNumber * 2;
+  return null;
+};
+
+const getYearOfStudyOptions = (program: unknown, semester: unknown) => {
+  const totalYears = getProgramDurationYears(program);
+  const normalizedSemester = normalizeSemesterValue(semester, '');
+
+  return Array.from({ length: totalYears }, (_, index) => {
+    const yearNumber = index + 1;
+    const semesterNumber = getSemesterNumberForSelection(yearNumber, normalizedSemester);
+    return {
+      value: yearNumber.toString(),
+      label: semesterNumber
+        ? `${formatOrdinal(yearNumber)} Year - ${formatOrdinal(semesterNumber)} Semester`
+        : `${formatOrdinal(yearNumber)} Year`,
+    };
+  });
+};
+
+const getStudyPeriodDisplay = (yearOfStudy: unknown, semester: unknown, program?: unknown) => {
+  const normalizedYear = normalizeYearOfStudyValue(yearOfStudy, '');
+  if (!normalizedYear) return '-';
+  const semesterNumber = getSemesterNumberForSelection(normalizedYear, semester);
+  const programDuration = getProgramDurationYears(program);
+
+  if (!semesterNumber) {
+    return `${formatOrdinal(Number(normalizedYear))} Year`;
+  }
+
+  const yearLabel = Number(normalizedYear) <= programDuration
+    ? `${formatOrdinal(Number(normalizedYear))} Year`
+    : `Year ${normalizedYear}`;
+
+  return `${yearLabel} - ${formatOrdinal(semesterNumber)} Semester`;
+};
+
 const ROOM_TYPE_OPTIONS = [
   'Admin Office',
   'Auditorium',
@@ -599,9 +787,7 @@ const findCampusForImport = (campuses: any[], row: any) => {
 
 const SEMESTER_OPTIONS = ['Odd', 'Even'];
 const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
-const ACADEMIC_CALENDAR_STATUS_OPTIONS = ['Upcoming', 'Active', 'Completed'];
 const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
-const YEAR_OF_STUDY_OPTIONS = ['1', '2', '3', '4', '5'];
 
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[]; instructions?: string[] }> = {
   User: {
@@ -844,7 +1030,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Academic Calendar': {
-    headers: ['Calendar ID', 'Department', 'Program', 'Batch', 'Academic Year', 'Year of Study', 'Semester', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Calendar ID', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year of Study', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Calendar ID': 'CAL-MTECH2-2025-26',
@@ -868,7 +1054,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Year of Study', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year of Study', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
@@ -4033,11 +4219,17 @@ function AcademicCalendarManagement() {
         .map(department => ({ value: department.id, label: department.name })),
       render: (item: any) => departments.find(department => idsMatch(department.id, item.department_id))?.name || 'Unknown',
     },
-    { key: 'program', label: 'Program' },
+    { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
     { key: 'academic_year', label: 'Academic Year' },
-    { key: 'year_of_study', label: 'Year of Study', type: 'select', options: YEAR_OF_STUDY_OPTIONS },
-    { key: 'semester', label: 'Semester', type: 'select', options: SEMESTER_OPTIONS },
+    { key: 'semester', label: 'Semester', type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
+    {
+      key: 'year_of_study',
+      label: 'Year / Semester',
+      type: 'select',
+      options: (formData: any) => getYearOfStudyOptions(formData.program, formData.semester),
+      render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program),
+    },
     { key: 'event_type', label: 'Event Type', type: 'select', options: ACADEMIC_CALENDAR_EVENT_TYPES },
     { key: 'title', label: 'Title', fullWidth: true },
     { key: 'start_date', label: 'Start Date', type: 'date' },
@@ -4060,6 +4252,8 @@ function AcademicCalendarManagement() {
     return {
       ...data,
       school_id: department.school_id,
+      program: normalizeProgramValue(data.program),
+      year_of_study: normalizeYearOfStudyValue(data.year_of_study),
       status: getRangeLifecycleStatus(data.start_date, data.end_date, 'Completed'),
     };
   };
@@ -4077,10 +4271,10 @@ function AcademicCalendarManagement() {
         calendar_id: row['Calendar ID']?.toString(),
         school_id: department?.school_id,
         department_id: department?.id,
-        program: row['Program'],
+        program: normalizeProgramValue(row['Program']),
         batch: row['Batch'],
         academic_year: row['Academic Year'],
-        year_of_study: row['Year of Study']?.toString(),
+        year_of_study: normalizeYearOfStudyValue(row['Year of Study']),
         semester: normalizeSemesterValue(row['Semester'], ''),
         event_type: row['Event Type'] || 'Semester Period',
         title: row['Title'],
@@ -4233,8 +4427,11 @@ function BatchRoomAllocationManagement() {
     .slice()
     .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
 
-  const getCalendarLabel = (calendar: any) =>
-    `${calendar.title} - ${calendar.program || 'Program'} ${calendar.batch || ''}`.trim() + ` (${calendar.start_date} to ${calendar.end_date})`;
+  const getCalendarLabel = (calendar: any) => {
+    const studyPeriod = getStudyPeriodDisplay(calendar.year_of_study, calendar.semester, calendar.program);
+    const programLabel = [calendar.program || 'Program', calendar.batch || '', studyPeriod !== '-' ? studyPeriod : ''].filter(Boolean).join(' - ');
+    return `${calendar.title} - ${programLabel}`.trim() + ` (${calendar.start_date} to ${calendar.end_date})`;
+  };
 
   const filteredCalendarOptions = (formData: any) =>
     calendars
@@ -4290,8 +4487,8 @@ function BatchRoomAllocationManagement() {
           program: calendar.program || nextData.program,
           batch: calendar.batch || nextData.batch,
           academic_year: calendar.academic_year || nextData.academic_year,
-          year_of_study: calendar.year_of_study || nextData.year_of_study,
           semester: calendar.semester || nextData.semester,
+          year_of_study: calendar.year_of_study || nextData.year_of_study,
           start_date: calendar.start_date || nextData.start_date,
           end_date: calendar.end_date || nextData.end_date,
         };
@@ -4312,11 +4509,17 @@ function BatchRoomAllocationManagement() {
         .map(department => ({ value: department.id, label: department.name })),
       render: (item: any) => departments.find(department => idsMatch(department.id, item.department_id))?.name || 'Unknown',
     },
-    { key: 'program', label: 'Program' },
+    { key: 'program', label: 'Program', type: 'select', options: PROGRAM_OPTIONS },
     { key: 'batch', label: 'Batch' },
     { key: 'academic_year', label: 'Academic Year' },
-    { key: 'year_of_study', label: 'Year of Study', type: 'select', options: YEAR_OF_STUDY_OPTIONS },
-    { key: 'semester', label: 'Semester', type: 'select', options: SEMESTER_OPTIONS },
+    { key: 'semester', label: 'Semester', type: 'select', resetKeys: ['year_of_study'], options: SEMESTER_OPTIONS },
+    {
+      key: 'year_of_study',
+      label: 'Year / Semester',
+      type: 'select',
+      options: (formData: any) => getYearOfStudyOptions(formData.program, formData.semester),
+      render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program),
+    },
     {
       key: 'building_id',
       label: 'Building',
@@ -4417,10 +4620,10 @@ function BatchRoomAllocationManagement() {
         school_id: department?.school_id,
         department_id: department?.id,
         room_id: room?.id,
-        program: row['Program'] || calendar?.program,
+        program: normalizeProgramValue(row['Program']) || calendar?.program,
         batch: row['Batch'] || calendar?.batch,
         academic_year: row['Academic Year'] || calendar?.academic_year,
-        year_of_study: getImportValue(row, ['Year of Study'])?.toString() || calendar?.year_of_study,
+        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year of Study'])) || calendar?.year_of_study,
         semester: normalizeSemesterValue(getImportValue(row, ['Semester']), '') || calendar?.semester,
         room_type: row['Room Type'] || room?.room_type,
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
@@ -4464,6 +4667,8 @@ function BatchRoomAllocationManagement() {
     if (requiredCapacity > room.capacity) throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${requiredCapacity}.`);
 
     payload.school_id = department.school_id;
+    payload.program = normalizeProgramValue(payload.program);
+    payload.year_of_study = normalizeYearOfStudyValue(payload.year_of_study);
     payload.room_type = room.room_type;
     payload.status = getRangeLifecycleStatus(payload.start_date, payload.end_date, 'Released', 'Planned');
     if (calendar) {
@@ -4535,7 +4740,7 @@ function BatchRoomAllocationManagement() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
-                {['Department', 'Program', 'Batch', 'Year', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
+                {['Department', 'Program', 'Batch', 'Year / Semester', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
                   <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
                 ))}
               </tr>
@@ -4549,7 +4754,7 @@ function BatchRoomAllocationManagement() {
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">{department?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.program || '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.batch || '-'}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.year_of_study || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{getStudyPeriodDisplay(allocation.year_of_study, allocation.semester, allocation.program)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.semester || '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
