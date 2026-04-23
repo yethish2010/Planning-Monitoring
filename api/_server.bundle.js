@@ -1065,6 +1065,63 @@ var duplicateRules = {
   ]
 };
 var normalizeDuplicateValue = (value) => typeof value === "string" ? value.trim().toLowerCase() : value;
+var getScheduleIdentityVariants = (schedule) => {
+  const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
+  const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
+  const end = normalizeDuplicateValue(schedule?.end_time)?.toString() || "";
+  const variants = [];
+  if (schedule?.room_id !== void 0 && schedule?.room_id !== null && schedule.room_id !== "") {
+    variants.push(`room|${schedule.room_id.toString()}|${day}|${start}|${end}`);
+  }
+  const normalizedRoomLabel = normalizeDuplicateValue(schedule?.room_label)?.toString() || "";
+  if (normalizedRoomLabel) {
+    variants.push(`label|${normalizedRoomLabel}|${day}|${start}|${end}`);
+  }
+  if (variants.length === 0) {
+    const scheduleId = normalizeDuplicateValue(schedule?.schedule_id)?.toString() || "";
+    if (scheduleId) variants.push(`schedule|${scheduleId}`);
+  }
+  return variants;
+};
+var schedulesConflict = (left, right) => {
+  const leftVariants = getScheduleIdentityVariants(left);
+  const rightVariants = new Set(getScheduleIdentityVariants(right));
+  return leftVariants.some((variant) => rightVariants.has(variant));
+};
+var deduplicateSchedules = (rows) => {
+  const seen = /* @__PURE__ */ new Set();
+  const kept = [];
+  const duplicates = [];
+  const prioritizedRows = [...rows].sort((a, b) => {
+    const score = (row) => (row?.room_id ? 4 : 0) + (row?.room_label ? 2 : 0) + (row?.course_name ? 1 : 0) + (row?.faculty ? 1 : 0);
+    const scoreDiff = score(b) - score(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    return Number(a?.id || 0) - Number(b?.id || 0);
+  });
+  for (const row of prioritizedRows) {
+    const variants = getScheduleIdentityVariants(row);
+    const hasConflict = variants.some((variant) => seen.has(variant));
+    if (hasConflict) {
+      duplicates.push(row);
+      continue;
+    }
+    variants.forEach((variant) => seen.add(variant));
+    kept.push(row);
+  }
+  kept.sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+  duplicates.sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
+  return { kept, duplicates };
+};
+var cleanupDuplicateSchedules = async () => {
+  const scheduleRows = await db.prepare("SELECT * FROM schedules").all();
+  const { duplicates } = deduplicateSchedules(scheduleRows);
+  for (const duplicate of duplicates) {
+    await db.prepare("DELETE FROM schedules WHERE id = ?").run(duplicate.id);
+  }
+  if (duplicates.length > 0) {
+    console.log(`Removed ${duplicates.length} duplicate schedule record(s).`);
+  }
+};
 var checkDuplicateRecord = async (tableName, data, excludeId) => {
   const rules = duplicateRules[tableName] || [];
   for (const rule of rules) {
@@ -1077,8 +1134,28 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
       return `${rule.label} already exists. Duplicate records are not allowed.`;
     }
   }
+  if (tableName === "schedules" && data?.day_of_week && data?.start_time && data?.end_time) {
+    const candidates = await db.prepare(`
+      SELECT id, schedule_id, room_id, room_label, day_of_week, start_time, end_time
+      FROM schedules
+      WHERE LOWER(TRIM(day_of_week)) = ?
+      AND LOWER(TRIM(start_time)) = ?
+      AND LOWER(TRIM(end_time)) = ?
+      ${excludeId ? "AND id != ?" : ""}
+    `).all(
+      normalizeDuplicateValue(data.day_of_week),
+      normalizeDuplicateValue(data.start_time),
+      normalizeDuplicateValue(data.end_time),
+      ...excludeId ? [excludeId] : []
+    );
+    const conflictingSchedule = candidates.find((candidate) => schedulesConflict(candidate, data));
+    if (conflictingSchedule) {
+      return "Schedule slot for this room already exists. Duplicate records are not allowed.";
+    }
+  }
   return null;
 };
+await cleanupDuplicateSchedules();
 var isPastDateTime = (date, time) => {
   const value = /* @__PURE__ */ new Date(`${date}T${time}`);
   return Number.isNaN(value.getTime()) || value.getTime() < Date.now();
@@ -1174,6 +1251,9 @@ var createCrudRoutes = (tableName, idField = "id") => {
         return res.json(bookings.filter((booking) => booking.faculty_name === user.name));
       }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
+      if (tableName === "schedules") {
+        return res.json(deduplicateSchedules(items).kept);
+      }
       res.json(items);
     } catch (err) {
       res.status(500).json({ error: err.message });

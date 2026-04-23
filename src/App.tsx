@@ -4697,7 +4697,7 @@ function SchedulingManagement() {
         source_file: row['Source File'] || null,
       };
 
-      await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'day_of_week', 'start_time', 'end_time']]);
+      await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'day_of_week', 'start_time', 'end_time']]);
       importedCount += 1;
       if (room) linkedCount += 1;
       else unmatchedRoomCount += 1;
@@ -4766,23 +4766,24 @@ function SchedulingManagement() {
             course_name: schedule.course_name,
             faculty: schedule.faculty || 'TBA',
             room_id: room.id,
+            room_label: schedule.room || null,
             day_of_week: schedule.day_of_week,
             start_time: schedule.start_time,
             end_time: schedule.end_time,
             student_count: schedule.student_count ?? null,
+            semester: normalizeSemesterValue(schedule.semester),
+            import_status: 'Linked',
+            review_note: null,
+            source_file: file.name,
           };
 
-          const res = await fetch('/api/schedules', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            credentials: 'include'
-          });
-
-          if (res.ok) {
-            importedCount += 1;
-            await ensureAllocationFromSchedule(room, dept, schedule.semester);
-          }
+          await upsertImportRecord('/api/schedules', payload, [
+            ['schedule_id'],
+            ['room_id', 'day_of_week', 'start_time', 'end_time'],
+            ['room_label', 'day_of_week', 'start_time', 'end_time'],
+          ]);
+          importedCount += 1;
+          await ensureAllocationFromSchedule(room, dept, schedule.semester);
         }
         setRefreshKey(prev => prev + 1);
         await refreshSchedulingLookups();
