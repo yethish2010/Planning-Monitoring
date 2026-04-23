@@ -1030,16 +1030,17 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Academic Calendar': {
-    headers: ['Calendar ID', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year of Study', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Calendar ID': 'CAL-MTECH2-2025-26',
+        School: 'School of Computing',
         Department: 'Computer Science and Engineering',
         Program: 'M.Tech',
         Batch: '2025-2027',
         'Academic Year': '2025-26',
-        'Year of Study': '2',
         Semester: 'Even',
+        'Year / Semester': '2nd Year - 4th Semester',
         'Event Type': 'Semester Period',
         Title: 'M.Tech II Semester - Teaching Period',
         'Start Date': '2026-01-02',
@@ -1049,12 +1050,15 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
+      `Allowed Program values include: ${PROGRAM_OPTIONS.join(', ')}.`,
+      'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester -> Year / Semester.',
+      'For Year / Semester, use values like 1st Year - 1st Semester, 1st Year - 2nd Semester, 2nd Year - 3rd Semester, 2nd Year - 4th Semester, and so on.',
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
       'Completed calendars can be reused as history; do not delete them unless they were imported by mistake.',
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year of Study', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
@@ -1063,8 +1067,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Program: 'M.Tech',
         Batch: '2025-2027',
         'Academic Year': '2025-26',
-        'Year of Study': '2',
         Semester: 'Even',
+        'Year / Semester': '2nd Year - 4th Semester',
         Building: 'M-Plaza',
         Block: 'North',
         Floor: 'Third Floor',
@@ -4260,21 +4264,28 @@ function AcademicCalendarManagement() {
 
   const handleImport = async (data: any[]) => {
     for (const row of data) {
+      const school = schools.find(item =>
+        normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
+        normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
+      );
       const department = sortedDepartments.find(item =>
-        normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
-        normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department'])
+        (
+          normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
+          normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department'])
+        ) &&
+        (!school || idsMatch(item.school_id, school.id))
       );
       const startDate = formatExcelDate(row['Start Date']);
       const endDate = formatExcelDate(row['End Date']);
 
       const payload = {
         calendar_id: row['Calendar ID']?.toString(),
-        school_id: department?.school_id,
+        school_id: school?.id || department?.school_id,
         department_id: department?.id,
         program: normalizeProgramValue(row['Program']),
         batch: row['Batch'],
         academic_year: row['Academic Year'],
-        year_of_study: normalizeYearOfStudyValue(row['Year of Study']),
+        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])),
         semester: normalizeSemesterValue(row['Semester'], ''),
         event_type: row['Event Type'] || 'Semester Period',
         title: row['Title'],
@@ -4623,7 +4634,7 @@ function BatchRoomAllocationManagement() {
         program: normalizeProgramValue(row['Program']) || calendar?.program,
         batch: row['Batch'] || calendar?.batch,
         academic_year: row['Academic Year'] || calendar?.academic_year,
-        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year of Study'])) || calendar?.year_of_study,
+        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
         semester: normalizeSemesterValue(getImportValue(row, ['Semester']), '') || calendar?.semester,
         room_type: row['Room Type'] || room?.room_type,
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
