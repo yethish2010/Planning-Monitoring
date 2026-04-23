@@ -2162,6 +2162,7 @@ function GenericCRUD({
   onDataChanged,
   dataFilter,
   filterControls,
+  initialSearchTerm,
 }: {
   type: string,
   fields: any[],
@@ -2173,6 +2174,7 @@ function GenericCRUD({
   onDataChanged?: () => Promise<void> | void,
   dataFilter?: (item: any) => boolean,
   filterControls?: React.ReactNode,
+  initialSearchTerm?: string,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -2182,6 +2184,10 @@ function GenericCRUD({
   const [visiblePasswordFields, setVisiblePasswordFields] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setSearchTerm(initialSearchTerm || '');
+  }, [initialSearchTerm]);
 
   const fetchData = async () => {
     try {
@@ -4293,10 +4299,23 @@ function DepartmentAllocationManagement() {
 }
 
 function EquipmentManagement() {
+  const location = useLocation();
   const [rooms, setRooms] = useState<any[]>([]);
+  const [roomSearchTerm, setRoomSearchTerm] = useState('');
+
   useEffect(() => {
-    fetch('/api/rooms').then(res => res.json()).then(setRooms);
-  }, []);
+    fetch('/api/rooms').then(res => res.json()).then((roomData) => {
+      const safeRooms = Array.isArray(roomData) ? roomData : [];
+      setRooms(safeRooms);
+      const params = new URLSearchParams(location.search);
+      const roomId = params.get('roomId');
+      const roomLabel = params.get('room');
+      const linkedRoom = roomId
+        ? safeRooms.find(room => idsMatch(room.id, roomId))
+        : findRoomByImportLabel(safeRooms, roomLabel);
+      setRoomSearchTerm(linkedRoom ? getRoomDisplayLabel(linkedRoom, safeRooms) : roomLabel || '');
+    });
+  }, [location.search]);
 
   const fields = [
     { key: 'equipment_id', label: 'Equipment ID' },
@@ -4322,7 +4341,7 @@ function EquipmentManagement() {
     }
   };
 
-  return <GenericCRUD type="Equipment" fields={fields} apiPath="/api/equipment" onImport={handleImport} />;
+  return <GenericCRUD type="Equipment" fields={fields} apiPath="/api/equipment" onImport={handleImport} initialSearchTerm={roomSearchTerm} />;
 }
 
 function SchedulingManagement() {
@@ -4867,6 +4886,7 @@ function SchedulingManagement() {
 
 function BookingManagement() {
   const { user } = useAuth();
+  const location = useLocation();
   const getToday = () => {
     const now = new Date();
     const year = now.getFullYear();
@@ -4946,14 +4966,42 @@ function BookingManagement() {
       fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/equipment', { credentials: 'include' }).then(res => res.json())
     ]).then(([roomData, floorData, blockData, buildingData, departmentData, equipmentData]) => {
-      setRooms(roomData);
-      setFloors(floorData);
-      setBlocks(blockData);
-      setBuildings(buildingData);
-      setDepartments(departmentData);
-      setEquipment(equipmentData);
+      const safeRooms = Array.isArray(roomData) ? roomData : [];
+      const safeFloors = Array.isArray(floorData) ? floorData : [];
+      const safeBlocks = Array.isArray(blockData) ? blockData : [];
+      const safeBuildings = Array.isArray(buildingData) ? buildingData : [];
+      setRooms(safeRooms);
+      setFloors(safeFloors);
+      setBlocks(safeBlocks);
+      setBuildings(safeBuildings);
+      setDepartments(Array.isArray(departmentData) ? departmentData : []);
+      setEquipment(Array.isArray(equipmentData) ? equipmentData : []);
+
+      const params = new URLSearchParams(location.search);
+      const requestedRoomId = params.get('roomId');
+      const requestedRoomLabel = params.get('room');
+      const requestedRoom = requestedRoomId
+        ? safeRooms.find(room => idsMatch(room.id, requestedRoomId))
+        : findRoomByImportLabel(safeRooms, requestedRoomLabel);
+      if (requestedRoom) {
+        const floor = safeFloors.find(item => idsMatch(item.id, requestedRoom.floor_id));
+        const block = safeBlocks.find(item => idsMatch(item.id, floor?.block_id));
+        const building = safeBuildings.find(item => idsMatch(item.id, block?.building_id));
+        const memberHint = parseInt(requestedRoom.capacity, 10);
+        setBookingSearch(getRoomDisplayLabel(requestedRoom, safeRooms));
+        setSearchCriteria(prev => ({
+          ...prev,
+          buildingId: building?.id?.toString() || prev.buildingId,
+          blockId: block && building && isImplicitBuildingBlock(block, building) ? '__direct__' : block?.id?.toString() || prev.blockId,
+          floorId: floor?.id?.toString() || prev.floorId,
+          roomType: requestedRoom.room_type || prev.roomType,
+          members: Number.isFinite(memberHint) && memberHint > 0 ? String(Math.min(memberHint, parseInt(prev.members, 10) || memberHint)) : prev.members,
+        }));
+      } else if (requestedRoomLabel) {
+        setBookingSearch(requestedRoomLabel);
+      }
     }).catch(console.error);
-  }, []);
+  }, [location.search]);
 
   const canDirectDecideBookings = ['Administrator', 'Dean (P&M)'].includes(user?.role);
   const canDeputyDecideBookings = user?.role === 'Deputy Dean (P&M)';
@@ -5914,10 +5962,23 @@ function BookingManagement() {
 }
 
 function MaintenanceManagement() {
+  const location = useLocation();
   const [rooms, setRooms] = useState<any[]>([]);
+  const [roomSearchTerm, setRoomSearchTerm] = useState('');
+
   useEffect(() => {
-    fetch('/api/rooms').then(res => res.json()).then(setRooms);
-  }, []);
+    fetch('/api/rooms').then(res => res.json()).then((roomData) => {
+      const safeRooms = Array.isArray(roomData) ? roomData : [];
+      setRooms(safeRooms);
+      const params = new URLSearchParams(location.search);
+      const roomId = params.get('roomId');
+      const roomLabel = params.get('room');
+      const linkedRoom = roomId
+        ? safeRooms.find(room => idsMatch(room.id, roomId))
+        : findRoomByImportLabel(safeRooms, roomLabel);
+      setRoomSearchTerm(linkedRoom ? getRoomDisplayLabel(linkedRoom, safeRooms) : roomLabel || '');
+    });
+  }, [location.search]);
 
   const fields = [
     { key: 'maintenance_id', label: 'Maintenance ID' },
@@ -5941,7 +6002,7 @@ function MaintenanceManagement() {
     }
   };
 
-  return <GenericCRUD type="Maintenance" fields={fields} apiPath="/api/maintenance" onImport={handleImport} />;
+  return <GenericCRUD type="Maintenance" fields={fields} apiPath="/api/maintenance" onImport={handleImport} initialSearchTerm={roomSearchTerm} />;
 }
 
 function AIAllocation() {
@@ -7489,6 +7550,7 @@ function ReportGeneration() {
 }
 
 function TimetableBuilder() {
+  const location = useLocation();
   const [schedules, setSchedules] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
@@ -7544,9 +7606,16 @@ function TimetableBuilder() {
       setSchedules(sData);
       setRooms(rData);
       setDepartments(dData);
+      const params = new URLSearchParams(location.search);
+      const requestedRoomId = params.get('roomId');
+      const requestedRoomLabel = params.get('room');
+      const requestedRoom = requestedRoomId
+        ? rData.find((room: any) => idsMatch(room.id, requestedRoomId))
+        : findRoomByImportLabel(rData, requestedRoomLabel);
       const firstBookableRoom = rData.find(isRoomReservable);
-      if (firstBookableRoom && !selectedRoom) {
-        setSelectedRoom(firstBookableRoom.id?.toString());
+      const activeRoom = requestedRoom || (selectedRoom ? rData.find((room: any) => idsMatch(room.id, selectedRoom)) : null) || firstBookableRoom;
+      if (activeRoom) {
+        setSelectedRoom(activeRoom.id?.toString());
       }
     } catch (err) {
       console.error(err);
@@ -7557,7 +7626,7 @@ function TimetableBuilder() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [location.search]);
 
   const handleDelete = async (id: number) => {
     if (confirm('Remove this class from the timetable?')) {
@@ -7572,6 +7641,9 @@ function TimetableBuilder() {
   };
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const timetableRoomOptions = rooms
+    .filter(room => isRoomReservable(room) || idsMatch(room.id, selectedRoom))
+    .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
 
   const getSchedulesForDay = (day: string) => {
     const activeRoom = rooms.find(r => r.id?.toString() === selectedRoom);
@@ -7611,7 +7683,7 @@ function TimetableBuilder() {
             onChange={(e) => setSelectedRoom(e.target.value)}
             className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
           >
-            {rooms.filter(isRoomReservable).map(r => (
+            {timetableRoomOptions.map(r => (
               <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
             ))}
           </select>
@@ -7973,6 +8045,12 @@ function DigitalTwin() {
       : selectedBuildingVisibleBlocks;
   const shouldShowBlockLevel = selectedBuildingBlockOptions.length > 0;
   const activeBlock = selectedBlock || (!shouldShowBlockLevel ? selectedBuildingDirectBlock : null);
+  const getRoomDeepLinkSearch = (room: any) => {
+    const params = new URLSearchParams();
+    if (room?.id !== undefined && room?.id !== null) params.set('roomId', room.id.toString());
+    params.set('room', getRoomDisplayLabel(room, rooms));
+    return `?${params.toString()}`;
+  };
 
   return (
     <div className="space-y-8">
@@ -8337,10 +8415,10 @@ function DigitalTwin() {
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-4">
-                  <Link to={`/timetable?room=${r.room_number}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Timetable</Link>
-                  <Link to={`/bookings?room=${r.room_number}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Bookings</Link>
-                  <Link to={`/equipment?room=${r.room_number}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Equipment</Link>
-                  <Link to={`/maintenance?room=${r.room_number}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Maintenance</Link>
+                  <Link to={`/timetable${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Timetable</Link>
+                  <Link to={`/bookings${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Bookings</Link>
+                  <Link to={`/equipment${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Equipment</Link>
+                  <Link to={`/maintenance${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Maintenance</Link>
                 </div>
               </div>
             );})}
