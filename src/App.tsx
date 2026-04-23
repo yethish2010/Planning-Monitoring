@@ -597,6 +597,12 @@ const findCampusForImport = (campuses: any[], row: any) => {
   return campuses.length === 1 ? campuses[0] : undefined;
 };
 
+const SEMESTER_OPTIONS = ['Odd', 'Even'];
+const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
+const ACADEMIC_CALENDAR_STATUS_OPTIONS = ['Upcoming', 'Active', 'Completed'];
+const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
+const YEAR_OF_STUDY_OPTIONS = ['1', '2', '3', '4', '5'];
+
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[]; instructions?: string[] }> = {
   User: {
     headers: ['Full Name', 'Employee ID', 'Role', 'Email Address', 'Department', 'Password'],
@@ -963,12 +969,6 @@ const formatLocalDate = (date: Date) => {
   const day = date.getDate().toString().padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
-
-const SEMESTER_OPTIONS = ['Odd', 'Even'];
-const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
-const ACADEMIC_CALENDAR_STATUS_OPTIONS = ['Upcoming', 'Active', 'Completed'];
-const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
-const YEAR_OF_STUDY_OPTIONS = ['1', '2', '3', '4', '5'];
 
 const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
   const today = formatLocalDate(new Date());
