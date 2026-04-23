@@ -503,6 +503,29 @@ const findMatchingImportRecord = (records: any[], payload: any, uniqueFieldGroup
   return null;
 };
 
+const getScheduleRenderSignature = (schedule: any) => [
+  normalizeImportMatchValue(schedule?.room_id),
+  normalizeImportMatchValue(schedule?.room_label),
+  normalizeImportMatchValue(schedule?.day_of_week),
+  normalizeImportMatchValue(schedule?.start_time),
+  normalizeImportMatchValue(schedule?.end_time),
+  normalizeImportMatchValue(schedule?.course_code),
+  normalizeImportMatchValue(schedule?.course_name),
+  normalizeImportMatchValue(schedule?.faculty),
+  normalizeImportMatchValue(schedule?.department_id),
+].join('|');
+
+const deduplicateScheduleRows = (rows: any[]) => {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const signature = getScheduleRenderSignature(row);
+    if (!signature.replace(/\|/g, '')) return true;
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+};
+
 const apiJson = async (url: string, options?: RequestInit) => {
   const res = await fetch(url, {
     credentials: 'include',
@@ -7604,7 +7627,7 @@ function TimetableBuilder() {
       const sData = await sRes.json();
       const rData = await rRes.json();
       const dData = await dRes.json();
-      setSchedules(sData);
+      setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
       setDepartments(dData);
       const params = new URLSearchParams(location.search);
@@ -7649,12 +7672,13 @@ function TimetableBuilder() {
   const getSchedulesForDay = (day: string) => {
     const activeRoom = rooms.find(r => r.id?.toString() === selectedRoom);
 
-    return schedules
+    return deduplicateScheduleRows(schedules
       .filter(s => {
         if (s.day_of_week !== day) return false;
         if (activeRoom && s.room_id != null) return idsMatch(s.room_id, activeRoom.id);
         return activeRoom ? false : s.room === selectedRoom;
       })
+    )
       .map(s => ({
         ...s,
         department_name: departments.find(d => idsMatch(d.id, s.department_id))?.name ?? s.department,
