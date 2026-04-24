@@ -8864,15 +8864,14 @@ function TimetableBuilder() {
 
 // --- DIGITAL TWIN MODULE ---
 
-function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmapMode }: any) {
+function Building3D({ building, metrics, onClick, isSelected, heatmapMode }: any) {
   const meshRef = useRef<THREE.Mesh>(null);
+  const buildingHeight = Math.max((metrics?.floorCount || 1) * 0.5, 1);
   
   // Calculate building color based on heatmap or status
   const getBuildingColor = () => {
     if (heatmapMode) {
-      const buildingRooms = rooms.filter((r: any) => r.building === building.name);
-      const occupiedCount = buildingRooms.filter((r: any) => r.status === 'Occupied' || r.status === 'Scheduled').length;
-      const ratio = buildingRooms.length > 0 ? occupiedCount / buildingRooms.length : 0;
+      const ratio = metrics?.utilizationRatio || 0;
       if (ratio > 0.7) return '#ef4444'; // Red - High
       if (ratio > 0.3) return '#f59e0b'; // Yellow - Medium
       return '#10b981'; // Green - Low
@@ -8880,10 +8879,7 @@ function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmap
     return isSelected ? '#10b981' : '#334155';
   };
 
-  const hasAlert = maintenance.some((m: any) => {
-    const room = rooms.find((r: any) => r.room_number === m.room_number);
-    return room && room.building === building.name && m.status !== 'Completed';
-  });
+  const hasAlert = !!metrics?.hasAlert;
 
   return (
     <group position={building.position || [0, 0, 0]}>
@@ -8893,7 +8889,7 @@ function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmap
         onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { document.body.style.cursor = 'default'; }}
       >
-        <boxGeometry args={[2, building.floors_count * 0.5, 2]} />
+        <boxGeometry args={[2, buildingHeight, 2]} />
         <meshStandardMaterial 
           color={getBuildingColor()} 
           metalness={0.5} 
@@ -8905,7 +8901,7 @@ function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmap
       
       {hasAlert && (
         <Float speed={5} rotationIntensity={0.5} floatIntensity={0.5}>
-          <mesh position={[0, (building.floors_count * 0.5) / 2 + 0.5, 0]}>
+          <mesh position={[0, buildingHeight / 2 + 0.5, 0]}>
             <sphereGeometry args={[0.2, 16, 16]} />
             <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={2} />
           </mesh>
@@ -8913,7 +8909,7 @@ function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmap
       )}
 
       <Text
-        position={[0, (building.floors_count * 0.5) / 2 + 0.8, 0]}
+        position={[0, buildingHeight / 2 + 0.8, 0]}
         fontSize={0.3}
         color="white"
         anchorX="center"
@@ -8921,6 +8917,18 @@ function Building3D({ building, rooms, maintenance, onClick, isSelected, heatmap
       >
         {building.name}
       </Text>
+
+      {heatmapMode && (
+        <Text
+          position={[0, -buildingHeight / 2 - 0.35, 0]}
+          fontSize={0.18}
+          color="#cbd5e1"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {`${metrics?.utilizationPercent || 0}% used`}
+        </Text>
+      )}
     </group>
   );
 }
@@ -9172,6 +9180,35 @@ function DigitalTwin() {
     return Math.round((activeRooms / buildingRooms.length) * 100);
   };
 
+  const getBuilding3DMetrics = (building: any) => {
+    const buildingBlocks = getBlocksForBuilding(building.id);
+    const buildingFloors = floors.filter(floor => buildingBlocks.some(block => idsMatch(block.id, floor.block_id)));
+    const buildingRooms = getRoomsForBuilding(building);
+    const visibleRooms = buildingRooms.filter(roomMatchesFilters);
+    const activeRooms = visibleRooms.filter(room => ['Booked', 'Scheduled', 'Maintenance'].includes(getRoomLiveStatus(room))).length;
+    const maintenanceCount = visibleRooms.filter(room => getRoomMaintenance(room).length > 0 || room.status === 'Maintenance').length;
+    const roomCount = visibleRooms.length || buildingRooms.length;
+    const utilizationRatio = roomCount > 0 ? activeRooms / roomCount : 0;
+
+    return {
+      floorCount: Math.max(buildingFloors.length, Number(building.planned_floor_count) || 0, 1),
+      roomCount,
+      activeRooms,
+      maintenanceCount,
+      utilizationRatio,
+      utilizationPercent: Math.round(utilizationRatio * 100),
+      hasAlert: maintenanceCount > 0,
+    };
+  };
+
+  const getHeatmapCardClass = (building: any) => {
+    if (!heatmapMode) return '';
+    const ratio = getBuilding3DMetrics(building).utilizationRatio;
+    if (ratio > 0.7) return 'border-rose-500/70 bg-rose-500/10';
+    if (ratio > 0.3) return 'border-amber-500/70 bg-amber-500/10';
+    return 'border-emerald-500/70 bg-emerald-500/10';
+  };
+
   const selectedBuildingVisibleBlocks = selectedBuilding ? getVisibleBlocksForBuilding(selectedBuilding) : [];
   const selectedBuildingDirectBlock = selectedBuilding ? getDirectBlockForBuilding(selectedBuilding) : null;
   const selectedBuildingBlockOptions =
@@ -9315,6 +9352,24 @@ function DigitalTwin() {
         </div>
       </div>
 
+      {heatmapMode && !selectedBuilding && (
+        <div className="flex flex-wrap items-center gap-3 px-1">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Heatmap</span>
+          <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+            Low
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+            Medium
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-full bg-rose-50 px-3 py-1 text-xs font-bold text-rose-700">
+            <span className="h-2.5 w-2.5 rounded-full bg-rose-500" />
+            High
+          </span>
+        </div>
+      )}
+
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-4 gap-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -9375,9 +9430,8 @@ function DigitalTwin() {
                   <Building3D 
                     key={b.id} 
                     building={{...b, position: [((i % 3) - 1) * 8, 0, (Math.floor(i / 3) - 1) * 8]}} 
-                    rooms={rooms}
-                    maintenance={maintenance}
-                    onClick={setSelectedBuilding}
+                    metrics={getBuilding3DMetrics(b)}
+                    onClick={(building: any) => { setSelectedBuilding(building); setViewMode('2D'); }}
                     isSelected={idsMatch(selectedBuilding?.id, b.id)}
                     heatmapMode={heatmapMode}
                   />
@@ -9407,7 +9461,10 @@ function DigitalTwin() {
                 <div 
                   key={b.id} 
                   onClick={() => setSelectedBuilding(b)}
-                  className="group cursor-pointer bg-slate-800/40 border border-slate-700/50 p-8 rounded-[40px] hover:bg-slate-800 hover:border-emerald-500 transition-all transform hover:-translate-y-2 backdrop-blur-sm"
+                  className={cn(
+                    "group cursor-pointer bg-slate-800/40 border border-slate-700/50 p-8 rounded-[40px] hover:bg-slate-800 hover:border-emerald-500 transition-all transform hover:-translate-y-2 backdrop-blur-sm",
+                    getHeatmapCardClass(b)
+                  )}
                 >
                   <div className="w-full aspect-video bg-slate-700/50 rounded-3xl mb-8 flex items-center justify-center relative overflow-hidden border border-slate-600/30">
                     <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
