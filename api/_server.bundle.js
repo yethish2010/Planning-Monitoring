@@ -1294,6 +1294,12 @@ var duplicateRules = {
 };
 var normalizeDuplicateValue = (value) => typeof value === "string" ? value.trim().toLowerCase() : value;
 var idsEqual = (left, right) => left !== void 0 && left !== null && right !== void 0 && right !== null && left.toString() === right.toString();
+var shouldUseCaseInsensitiveTextComparison = (fieldName, value) => {
+  if (typeof value !== "string") return false;
+  const normalizedField = fieldName.toLowerCase();
+  if (normalizedField === "date" || normalizedField.endsWith("_date")) return false;
+  return true;
+};
 var getScheduleIdentityVariants = (schedule) => {
   const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
   const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
@@ -1355,8 +1361,10 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
   const rules = duplicateRules[tableName] || [];
   for (const rule of rules) {
     if (rule.fields.some((field) => data[field] == null || data[field] === "")) continue;
-    const whereClause = rule.fields.map((field) => typeof data[field] === "string" ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`).join(" AND ");
-    const values = rule.fields.map((field) => normalizeDuplicateValue(data[field]));
+    const whereClause = rule.fields.map((field) => shouldUseCaseInsensitiveTextComparison(field, data[field]) ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`).join(" AND ");
+    const values = rule.fields.map(
+      (field) => shouldUseCaseInsensitiveTextComparison(field, data[field]) ? normalizeDuplicateValue(data[field]) : data[field]
+    );
     const query = `SELECT id FROM ${tableName} WHERE ${whereClause}${excludeId ? " AND id != ?" : ""}`;
     const existing = await db.prepare(query).get(...values, ...excludeId ? [excludeId] : []);
     if (existing) {
