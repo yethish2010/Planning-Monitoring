@@ -259,6 +259,7 @@ var getPrimarySchemaSql = (dialect) => {
       id ${idDefinition},
       room_id TEXT UNIQUE NOT NULL,
       room_number TEXT NOT NULL,
+      room_aliases TEXT,
       floor_id INTEGER NOT NULL,
       parent_room_id INTEGER,
       room_layout TEXT DEFAULT 'Normal',
@@ -471,6 +472,7 @@ await ensureColumn("blocks", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("rooms", "parent_room_id", "INTEGER");
 await ensureColumn("rooms", "room_layout", "TEXT DEFAULT 'Normal'");
+await ensureColumn("rooms", "room_aliases", "TEXT");
 await ensureColumn("rooms", "sub_room_count", "INTEGER");
 await ensureColumn("rooms", "room_section_name", "TEXT");
 await ensureColumn("rooms", "usage_category", "TEXT");
@@ -659,6 +661,10 @@ var BOOKABLE_ROOM_TYPE_VALUES = [
   "Gym"
 ];
 var BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
+var normalizeRoomAliases = (value) => Array.from(new Set(
+  value?.toString().split(/[\n,;|/]+/).map((alias) => alias.trim()).filter(Boolean) || []
+)).join(", ");
+var getRoomAliasTokens = (value) => normalizeRoomAliases(value).split(",").map((alias) => normalizeDuplicateValue(alias)).filter(Boolean);
 var isReservableRoomRecord = (room) => {
   if (!room) return false;
   if (room.status && room.status !== "Available") return false;
@@ -671,6 +677,7 @@ var isReservableRoomRecord = (room) => {
 var normalizeRoomPayload = (payload) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
+  nextPayload.room_aliases = normalizeRoomAliases(nextPayload.room_aliases) || null;
   nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
   nextPayload.parent_room_id = nextPayload.parent_room_id ? Number(nextPayload.parent_room_id) : null;
@@ -1418,6 +1425,27 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
     const conflictingSchedule = candidates.find((candidate) => schedulesConflict(candidate, data));
     if (conflictingSchedule) {
       return "Schedule slot for this room already exists. Duplicate records are not allowed.";
+    }
+  }
+  if (tableName === "rooms") {
+    const candidateTokens = Array.from(new Set([
+      normalizeDuplicateValue(data.room_number),
+      ...getRoomAliasTokens(data.room_aliases)
+    ].filter(Boolean)));
+    if (candidateTokens.length > 0) {
+      const roomCandidates = await db.prepare(`SELECT id, room_number, room_aliases FROM rooms ${excludeId ? "WHERE id != ?" : ""}`).all(
+        ...excludeId ? [excludeId] : []
+      );
+      const conflictingRoom = roomCandidates.find((room) => {
+        const existingTokens = new Set([
+          normalizeDuplicateValue(room.room_number),
+          ...getRoomAliasTokens(room.room_aliases)
+        ].filter(Boolean));
+        return candidateTokens.some((token) => existingTokens.has(token));
+      });
+      if (conflictingRoom) {
+        return "Room number or alias already exists. Shared venue labels must be unique across Room Management.";
+      }
     }
   }
   return null;

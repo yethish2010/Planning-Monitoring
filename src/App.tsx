@@ -709,6 +709,19 @@ const isRoomReservable = (room: any) => {
   return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
 };
 
+const getRoomAliasList = (room: any) =>
+  (room?.room_aliases?.toString() || '')
+    .split(/[\n,;|/]+/)
+    .map(alias => alias.trim())
+    .filter(Boolean);
+
+const normalizeRoomAliases = (value: unknown) => Array.from(new Set(
+  value?.toString()
+    .split(/[\n,;|/]+/)
+    .map(alias => alias.trim())
+    .filter(Boolean) || [],
+)).join(', ');
+
 const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   if (!room) return 'Unknown Room';
   const parent = rooms.find(item => item.id?.toString() === room.parent_room_id?.toString());
@@ -723,6 +736,7 @@ const findRoomByImportLabel = (rooms: any[], value: unknown) => {
   return rooms.find(room =>
     normalizeLookupValue(room.room_id) === normalizedValue ||
     normalizeLookupValue(room.room_number) === normalizedValue ||
+    getRoomAliasList(room).some(alias => normalizeLookupValue(alias) === normalizedValue) ||
     normalizeLookupValue(getRoomDisplayLabel(room, rooms)) === normalizedValue
   ) || null;
 };
@@ -981,9 +995,10 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Room: {
-    headers: ['Room ID', 'Room Number', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
+    headers: ['Room ID', 'Room Number', 'Room Aliases', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
     instructions: [
       'Use Shared Room for one physical room with multiple doors/entrances. It behaves like a normal single room and does not need Sub Room Count, Sub Room Name, or Parent Room.',
+      'For seminar halls or shared venues with multiple room numbers like 4015 and 4016, create one canonical room row and list the alternate labels in Room Aliases separated by commas.',
       'Use one row for the parent room and one separate row for every split/inside child room.',
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
@@ -996,6 +1011,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       {
         'Room ID': 'ROOM-LAB-201',
         'Room Number': 'LAB-201',
+        'Room Aliases': '',
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
@@ -1009,6 +1025,25 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Capacity: 60,
         Status: 'Available',
         'Lab Name': 'Computer Lab',
+        'Restroom For': '',
+      },
+      {
+        'Room ID': 'ROOM-SH-4015',
+        'Room Number': '4015',
+        'Room Aliases': '4016',
+        Building: 'M-Plaza',
+        'Block / Direct Floors': 'Direct floors',
+        Floor: 'Fourth Floor',
+        'Room Type': 'Seminar Hall',
+        'Room Layout': 'Shared Room',
+        'Sub Room Count': '',
+        'Sub Room Name': '',
+        'Parent Room': '',
+        'Usage Category': 'Teaching',
+        'Is Bookable': 'Yes',
+        Capacity: 120,
+        Status: 'Available',
+        'Lab Name': '',
         'Restroom For': '',
       },
       {
@@ -1287,6 +1322,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
+      'Room can match the canonical Room Number or any Room Alias from Room Management. Use Room Aliases for shared seminar halls with multiple door numbers such as 4015 and 4016.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
       'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
@@ -3893,6 +3929,7 @@ function RoomManagement() {
     const requiresCapacity = isCapacityRoomType(roomType);
     const payload = {
       ...data,
+      room_aliases: normalizeRoomAliases(data.room_aliases),
       room_type: roomType,
       lab_name: data.lab_name?.toString().trim() || data.room_section_name?.toString().trim() || '',
       restroom_type: normalizeRestroomTypeValue(data.restroom_type),
@@ -3972,6 +4009,12 @@ function RoomManagement() {
       key: 'room_number',
       label: 'Room Number',
       render: (item: any) => getRoomDisplayLabel(item, rooms),
+    },
+    {
+      key: 'room_aliases',
+      label: 'Room Aliases',
+      required: false,
+      render: (item: any) => getRoomAliasList(item).join(', ') || '-',
     },
     {
       key: 'building_id',
@@ -4163,6 +4206,7 @@ function RoomManagement() {
       building_id: block?.building_id || '',
       block_id: block?.id || '',
       is_bookable: normalizeBooleanLikeValue(item?.is_bookable, true) ? '1' : '0',
+      room_aliases: item?.room_aliases || '',
       parent_room_id: item?.parent_room_id || '',
       room_layout: normalizeRoomLayoutValue(item?.room_layout),
       sub_room_count: item?.sub_room_count ?? '',
@@ -4268,6 +4312,7 @@ function RoomManagement() {
       const payload = {
         room_id: row['Room ID']?.toString(),
         room_number: row['Room Number']?.toString(),
+        room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
         floor_id: floor?.id ?? parseInt(floorValue as any),
         room_type: normalizeRoomTypeValue(row['Room Type']),
         room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
@@ -5912,12 +5957,12 @@ function SchedulingManagement() {
           .filter(Boolean);
 
         let importedCount = 0;
+        let linkedCount = 0;
+        let unmatchedRoomCount = 0;
 
         for (const schedule of validSchedules) {
           const room = findRoomByImportLabel(rooms.filter(isRoomReservable), schedule.room);
           const dept = findDepartmentForSchedule(schedule.department);
-
-          if (!room) continue;
 
           const payload = {
             schedule_id: `SCH-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
@@ -5926,15 +5971,15 @@ function SchedulingManagement() {
             course_code: schedule.course_code || null,
             course_name: schedule.course_name,
             faculty: schedule.faculty || 'TBA',
-            room_id: room.id,
+            room_id: room?.id ?? null,
             room_label: schedule.room || null,
             day_of_week: schedule.day_of_week,
             start_time: schedule.start_time,
             end_time: schedule.end_time,
             student_count: schedule.student_count ?? null,
             semester: normalizeSemesterValue(schedule.semester),
-            import_status: 'Linked',
-            review_note: null,
+            import_status: room ? 'Linked' : 'Unmatched Room',
+            review_note: room ? null : 'Room label from AI import did not match any canonical room or room alias in Room Management.',
             source_file: file.name,
           };
 
@@ -5944,16 +5989,21 @@ function SchedulingManagement() {
             ['room_label', 'section', 'day_of_week', 'start_time', 'end_time'],
           ]);
           importedCount += 1;
-          await ensureAllocationFromSchedule(room, dept, schedule.semester);
+          if (room) {
+            linkedCount += 1;
+            await ensureAllocationFromSchedule(room, dept, schedule.semester);
+          } else {
+            unmatchedRoomCount += 1;
+          }
         }
         setRefreshKey(prev => prev + 1);
         await refreshSchedulingLookups();
 
         if (importedCount === 0) {
-          throw new Error('Timetable was read, but no rows could be matched to existing rooms. Check that the room numbers in the file match Room Management exactly.');
+          throw new Error('Timetable was read, but no usable schedule rows were extracted from the file.');
         }
 
-        alert(`Successfully extracted and imported ${importedCount} schedule entries.`);
+        alert(`Successfully extracted and imported ${importedCount} schedule entries (${linkedCount} linked to rooms, ${unmatchedRoomCount} kept for review).`);
       }
     } catch (err: any) {
       console.error(err);
@@ -6856,6 +6906,9 @@ function BookingManagement() {
                       <span>Cap: {room.capacity}</span>
                     </div>
                   </div>
+                  {getRoomAliasList(room).length > 0 && (
+                    <p className="text-xs text-blue-600 mb-2">Aliases: {getRoomAliasList(room).join(', ')}</p>
+                  )}
                   <p className="text-xs text-slate-500 mb-4">Equipment: {getRoomEquipment(room.id).join(', ') || 'No equipment recorded'}</p>
                   <div className="flex gap-2">
                     <button
@@ -7746,6 +7799,7 @@ function AnalyticsDashboard() {
       Department: room.department,
       Type: getRoomTypeDisplay(room),
       Layout: room.room_layout || 'Normal',
+      RoomAliases: getRoomAliasList(room).join(', '),
       ParentRoom: room.parent_room_number || '',
       SubRoomCount: room.sub_room_count ?? '',
       SubRoomName: room.room_section_name || '',
@@ -8187,6 +8241,7 @@ function ReportGeneration() {
       School: room.school,
       Type: getRoomTypeDisplay(room),
       Layout: room.room_layout || 'Normal',
+      RoomAliases: getRoomAliasList(room).join(', '),
       ParentRoom: room.parent_room_number || '',
       SubRoomCount: room.sub_room_count ?? '',
       SubRoomName: room.room_section_name || '',
@@ -8230,6 +8285,7 @@ function ReportGeneration() {
       School: room.school,
       Type: getRoomTypeDisplay(room),
       Layout: room.room_layout || 'Normal',
+      RoomAliases: getRoomAliasList(room).join(', '),
       ParentRoom: room.parent_room_number || '',
       SubRoomCount: room.sub_room_count ?? '',
       SubRoomName: room.room_section_name || '',
@@ -9064,6 +9120,9 @@ function TimetableBuilder() {
           <div>
             <h3 className="text-lg font-bold text-slate-800">Timetable View</h3>
             <p className="text-xs text-slate-500">Visualizing schedules with precise timing slots</p>
+            {activeRoom && getRoomAliasList(activeRoom).length > 0 && (
+              <p className="text-[11px] font-bold text-blue-700">Aliases: {getRoomAliasList(activeRoom).join(', ')}</p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -9561,6 +9620,7 @@ function DigitalTwin() {
     })();
     const haystack = [
       room.room_number,
+      room.room_aliases,
       room.room_type,
       getRoomLiveStatus(room),
       getRoomDepartmentLabel(room),
@@ -10013,6 +10073,9 @@ function DigitalTwin() {
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{getRoomTypeDisplay(r)}</p>
                 <p className="text-[10px] text-slate-300 font-bold mb-1">{liveStatus}</p>
                 <p className="text-[10px] text-slate-500 mb-1">{departmentLabel}</p>
+                {getRoomAliasList(r).length > 0 && (
+                  <p className="text-[10px] text-cyan-300 mb-1">Aliases: {getRoomAliasList(r).join(', ')}</p>
+                )}
                 {roomContextCount > 1 && (
                   <p className="text-[10px] font-bold text-blue-300 mb-1">Mixed Contexts: {roomContextCount}</p>
                 )}
