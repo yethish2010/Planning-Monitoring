@@ -1232,54 +1232,60 @@ app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {
 The document contains multiple sections (A1, A2, etc.).
 Extract info for ALL sections.
 
-Return a JSON array of objects with these fields:
-- department (e.g., "Computer Science and Engineering")
-- section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
-- semester (Odd or Even if available, else null)
-- course_code (if available, else null)
-- course_name (the subject name, e.g., "Computer Networks")
-- faculty (the teacher's name)
-- room (the room number, e.g., "322")
-- day_of_week (Full name: Monday, Tuesday, etc.)
-- start_time (24h format HH:mm, e.g., "09:00")
-- end_time (24h format HH:mm, e.g., "09:55")
-- student_count (estimate or null)
+Return a single JSON object with exactly these keys:
+- sectionRoomMaps: array of objects with fields:
+  - section
+  - room
+  - semester
+  - department
+- schedules: array of objects with fields:
+  - department (e.g., "Computer Science and Engineering")
+  - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
+  - semester (Odd or Even if available, else null)
+  - course_code (if available, else null)
+  - course_name (the subject name, e.g., "Computer Networks")
+  - faculty (the teacher's name)
+  - room (the room number, e.g., "322")
+  - day_of_week (Full name: Monday, Tuesday, etc.)
+  - start_time (24h format HH:mm, e.g., "09:00")
+  - end_time (24h format HH:mm, e.g., "09:55")
+  - student_count (estimate or null)
 
-Ensure you capture the Room No mentioned in the header of each timetable.
+Ensure sectionRoomMaps captures the default Room No from the header of each section timetable.
 Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
 For normal theory slots, use the section header Room No as the room.
 Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
 Only extract actual class sessions.
 Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
 The course_name must always be the real subject title.
-If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
+If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.
+
+Example response:
+{
+  "sectionRoomMaps": [{"section":"A4","room":"331","semester":"Even","department":"Computer Science and Engineering"}],
+  "schedules": [{"department":"Computer Science and Engineering","section":"A4","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
+}` });
 
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-    const headerParts = [...parts, {
-      text: `Return a JSON array listing each timetable header block in this document with:
-- section
-- room
-- semester
-- department
-
-Only capture the default Room No from the header of each section timetable.
-Example: [{"section":"A4","room":"331","semester":"Even","department":"Computer Science and Engineering"}]`,
-    }];
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [{ parts }],
       config: { responseMimeType: "application/json" },
     });
-    const headerResponse = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [{ parts: headerParts }],
-      config: { responseMimeType: "application/json" },
-    });
-    const schedules = parseAIJsonResponse(await getAIResponseText(response));
-    const sectionRoomMaps = parseAIJsonResponse(await getAIResponseText(headerResponse));
+    const extractedPayload = parseAIJsonResponse(await getAIResponseText(response));
+    const schedules = Array.isArray(extractedPayload)
+      ? extractedPayload
+      : Array.isArray(extractedPayload?.schedules)
+        ? extractedPayload.schedules
+        : [];
+    const sectionRoomMaps = Array.isArray(extractedPayload?.sectionRoomMaps)
+      ? extractedPayload.sectionRoomMaps
+      : Array.isArray(extractedPayload?.section_room_maps)
+        ? extractedPayload.section_room_maps
+        : [];
     const enrichedSchedules = mergeExtractedSchedulesWithHeaderRooms(
-      Array.isArray(schedules) ? schedules : [],
-      Array.isArray(sectionRoomMaps) ? sectionRoomMaps : [],
+      schedules,
+      sectionRoomMaps,
     );
     res.json({ schedules: enrichedSchedules });
   } catch (err: any) {

@@ -6009,6 +6009,9 @@ function SchedulingManagement() {
     } catch (err: any) {
       console.error(err);
       let msg = err.message || 'Unknown error';
+      if (msg === 'Failed to fetch') {
+        msg = 'Network connection to the timetable extraction API was interrupted. This usually means the serverless function timed out or restarted before sending a response. Please try again.';
+      }
       const invalidKey = /API key not valid|API_KEY_INVALID|Invalid API Key/i.test(msg);
       if (invalidKey) {
         msg = `${msg}. Please set a valid GEMINI_API_KEY on the backend and restart the server.`;
