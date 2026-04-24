@@ -1317,6 +1317,15 @@ const formatLocalDate = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
+const DEFAULT_TIMETABLE_TIME_SLOTS = [
+  { start_time: '09:00', end_time: '09:55' },
+  { start_time: '09:55', end_time: '10:50' },
+  { start_time: '11:10', end_time: '12:05' },
+  { start_time: '12:05', end_time: '13:00' },
+  { start_time: '14:15', end_time: '15:10' },
+  { start_time: '15:10', end_time: '16:05' },
+];
+
 const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
   const today = formatLocalDate(new Date());
   if (endDate && endDate < today) return completedLabel;
@@ -8686,15 +8695,6 @@ function TimetableBuilder() {
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
   const [loading, setLoading] = useState(true);
 
-  const classTimeSlots = [
-    { start_time: '09:00', end_time: '09:55' },
-    { start_time: '09:55', end_time: '10:50' },
-    { start_time: '11:10', end_time: '12:05' },
-    { start_time: '12:05', end_time: '13:00' },
-    { start_time: '14:15', end_time: '15:10' },
-    { start_time: '15:10', end_time: '16:05' },
-  ];
-
   const timeToMinutes = (time?: string) => {
     const match = time?.match(/^(\d{1,2}):(\d{2})$/);
     if (!match) return null;
@@ -8707,7 +8707,7 @@ function TimetableBuilder() {
 
     if (scheduleStart == null || scheduleEnd == null) return [schedule];
 
-    const matchingSlots = classTimeSlots.filter(slot => {
+    const matchingSlots = DEFAULT_TIMETABLE_TIME_SLOTS.filter(slot => {
       const slotStart = timeToMinutes(slot.start_time);
       const slotEnd = timeToMinutes(slot.end_time);
       return slotStart != null && slotEnd != null && slotStart >= scheduleStart && slotEnd <= scheduleEnd;
@@ -8802,6 +8802,40 @@ function TimetableBuilder() {
     return { schedules: effectiveSchedules, hasExamOverride, date: dayDate };
   };
 
+  const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
+    const matchedKeys = new Set<string>();
+    const defaultSlots = DEFAULT_TIMETABLE_TIME_SLOTS.map(slot => {
+      const slotKey = `${slot.start_time}-${slot.end_time}`;
+      const slotSchedules = daySchedules.filter(schedule => {
+        const matchesSlot = schedule.start_time === slot.start_time && schedule.end_time === slot.end_time;
+        if (matchesSlot) {
+          matchedKeys.add(`${slotKey}-${schedule.display_id ?? schedule.id}`);
+        }
+        return matchesSlot;
+      });
+
+      return {
+        ...slot,
+        key: slotKey,
+        schedules: slotSchedules,
+        state: slotSchedules.length > 0 ? 'scheduled' : hasExamOverride ? 'exam' : 'vacant',
+      };
+    });
+
+    const extraSlots = daySchedules
+      .filter(schedule => !matchedKeys.has(`${schedule.start_time}-${schedule.end_time}-${schedule.display_id ?? schedule.id}`))
+      .map(schedule => ({
+        start_time: schedule.start_time,
+        end_time: schedule.end_time,
+        key: `custom-${schedule.display_id ?? schedule.id}`,
+        schedules: [schedule],
+        state: 'scheduled',
+      }))
+      .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+    return [...defaultSlots, ...extraSlots];
+  };
+
   if (loading) return <div className="p-8 text-center text-slate-400 font-medium">Loading Timetable...</div>;
 
   return (
@@ -8844,6 +8878,8 @@ function TimetableBuilder() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         {days.map(day => {
           const { schedules: daySchedules, hasExamOverride, date } = getSchedulesForDay(day);
+          const displaySlots = getDisplaySlotsForDay(daySchedules, hasExamOverride);
+          const occupiedSlotCount = displaySlots.filter(slot => slot.schedules.length > 0).length;
           return (
             <div key={day} className="space-y-4">
               <div className="flex items-center justify-between px-2">
@@ -8852,45 +8888,76 @@ function TimetableBuilder() {
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{date}</p>
                 </div>
                 <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
-                  {hasExamOverride ? 'Exam Override' : `${daySchedules.length} Classes`}
+                  {hasExamOverride ? 'Exam Override' : `${occupiedSlotCount}/${displaySlots.length} Slots Used`}
                 </span>
               </div>
               
               <div className="space-y-3">
-                {daySchedules.length > 0 ? daySchedules.map((s) => (
-                  <div key={s.display_id ?? s.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all group relative">
-                    <button 
-                      onClick={() => handleDelete(s.id)}
-                      className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X size={14} />
-                    </button>
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                      <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">{s.start_time} - {s.end_time}</span>
+                {displaySlots.map(slot => (
+                  <div
+                    key={slot.key}
+                    className={cn(
+                      "rounded-xl border p-4 transition-all",
+                      slot.state === 'scheduled'
+                        ? "bg-white border-slate-200 shadow-sm hover:shadow-md"
+                        : slot.state === 'exam'
+                          ? "border-amber-100 bg-amber-50/50"
+                          : "border-dashed border-slate-200 bg-slate-50/70",
+                    )}
+                  >
+                    <div className="flex items-center gap-2 mb-3">
+                      <div
+                        className={cn(
+                          "w-2 h-2 rounded-full",
+                          slot.state === 'scheduled' ? "bg-emerald-500" : slot.state === 'exam' ? "bg-amber-500" : "bg-slate-300",
+                        )}
+                      ></div>
+                      <span
+                        className={cn(
+                          "text-[10px] font-bold uppercase tracking-wider",
+                          slot.state === 'scheduled' ? "text-emerald-600" : slot.state === 'exam' ? "text-amber-600" : "text-slate-400",
+                        )}
+                      >
+                        {slot.start_time} - {slot.end_time}
+                      </span>
                     </div>
-                    <h5 className="text-sm font-bold text-slate-800 mb-1 line-clamp-1">{s.course_name}</h5>
-                    <p className="text-[10px] text-slate-500 font-medium mb-2">
-                      {[s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' • ')}
-                    </p>
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-50">
-                      <span className="text-[10px] font-bold text-slate-400">{s.department_name}</span>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
-                        <Users size={10} />
-                        {s.student_count}
+                    {slot.schedules.length > 0 ? (
+                      <div className="space-y-3">
+                        {slot.schedules.map((s: any) => (
+                          <div key={s.display_id ?? s.id} className="group relative rounded-lg border border-slate-100 bg-white/90 p-3 shadow-sm">
+                            <button
+                              onClick={() => handleDelete(s.id)}
+                              className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X size={14} />
+                            </button>
+                            <h5 className="pr-6 text-sm font-bold text-slate-800 mb-1 line-clamp-1">{s.course_name}</h5>
+                            <p className="text-[10px] text-slate-500 font-medium mb-2">
+                              {[s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' | ')}
+                            </p>
+                            <div className="flex items-center justify-between pt-2 border-t border-slate-50">
+                              <span className="text-[10px] font-bold text-slate-400">{s.department_name}</span>
+                              <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
+                                <Users size={10} />
+                                {s.student_count}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
+                    ) : slot.state === 'exam' ? (
+                      <div className="rounded-lg border border-amber-100 bg-amber-50/80 p-3">
+                        <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Exam Override</p>
+                        <p className="mt-1 text-xs text-slate-500">Normal classes are suppressed by the Academic Calendar for this period.</p>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 p-3">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Vacant Slot</p>
+                        <p className="mt-1 text-xs text-slate-400">No class is mapped for this period.</p>
+                      </div>
+                    )}
                   </div>
-                )) : hasExamOverride ? (
-                  <div className="py-12 text-center border-2 border-dashed border-amber-100 rounded-xl bg-amber-50/40">
-                    <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">Examination Period</p>
-                    <p className="mt-2 text-xs text-slate-500">Normal classes are suppressed by Academic Calendar for this date.</p>
-                  </div>
-                ) : (
-                  <div className="py-12 text-center border-2 border-dashed border-slate-100 rounded-xl">
-                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">No Classes</p>
-                  </div>
-                )}
+                ))}
               </div>
             </div>
           );
