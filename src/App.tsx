@@ -828,6 +828,34 @@ const findCampusForImport = (campuses: any[], row: any) => {
 const SEMESTER_OPTIONS = ['Odd', 'Even'];
 const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
 const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
+const ACADEMIC_CALENDAR_TITLE_OPTIONS_BY_EVENT: Record<string, string[]> = {
+  'Semester Period': ['Odd Semester', 'Even Semester', 'Teaching Period', 'Semester Duration'],
+  'Class Work': ['Class Work', 'Instruction Period', 'Teaching Days'],
+  Examinations: ['CIAT-I', 'CIAT-II', 'Mid Semester Examinations', 'Semester End Examinations', 'Practical Examinations'],
+  Holiday: ['Public Holiday', 'Festival Holiday', 'Declared Holiday'],
+  Vacation: ['Summer Vacation', 'Winter Vacation', 'Semester Break'],
+  Orientation: ['Orientation Program', 'Student Induction'],
+  Registration: ['Course Registration', 'Semester Registration'],
+  'Project Review': ['Project Review - I', 'Project Review - II'],
+  Internship: ['Internship Period'],
+};
+
+const getAcademicCalendarTitleOptions = (eventType: unknown) =>
+  ACADEMIC_CALENDAR_TITLE_OPTIONS_BY_EVENT[eventType?.toString() || ''] || [];
+
+const getAcademicCalendarEventRank = (eventType: unknown) => {
+  const normalized = normalizeLookupValue(eventType);
+  if (normalized.includes('semester')) return 0;
+  if (normalized.includes('class')) return 1;
+  if (normalized.includes('exam') || normalized.includes('ciat')) return 2;
+  if (normalized.includes('holiday')) return 3;
+  if (normalized.includes('vacation')) return 4;
+  if (normalized.includes('registration')) return 5;
+  if (normalized.includes('orientation')) return 6;
+  if (normalized.includes('project')) return 7;
+  if (normalized.includes('internship')) return 8;
+  return 99;
+};
 
 const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: Record<string, any>[]; instructions?: string[] }> = {
   User: {
@@ -2539,6 +2567,7 @@ function GenericCRUD({
   dataFilter,
   filterControls,
   initialSearchTerm,
+  dataSorter,
 }: {
   type: string,
   fields: any[],
@@ -2551,6 +2580,7 @@ function GenericCRUD({
   dataFilter?: (item: any) => boolean,
   filterControls?: React.ReactNode,
   initialSearchTerm?: string,
+  dataSorter?: (a: any, b: any) => number,
 }) {
   const [data, setData] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -2617,7 +2647,9 @@ function GenericCRUD({
     return value;
   };
 
-  const displayData = dataFilter ? data.filter(dataFilter) : data;
+  const displayData = (dataFilter ? data.filter(dataFilter) : data)
+    .slice()
+    .sort(dataSorter || (() => 0));
   const filteredData = displayData.filter(item => {
     const query = searchTerm.trim().toLowerCase();
     if (!query) return true;
@@ -4307,7 +4339,19 @@ function AcademicCalendarManagement() {
       options: (formData: any) => getYearOfStudyOptions(formData.program, formData.semester),
       render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program),
     },
-    { key: 'event_type', label: 'Event Type', type: 'select', options: ACADEMIC_CALENDAR_EVENT_TYPES },
+    {
+      key: 'event_type',
+      label: 'Event Type',
+      type: 'select',
+      options: ACADEMIC_CALENDAR_EVENT_TYPES,
+      onChange: (nextData: any, value: string) => {
+        const titleOptions = getAcademicCalendarTitleOptions(value);
+        if (!nextData.title?.toString().trim() && titleOptions.length > 0) {
+          return { ...nextData, event_type: value, title: titleOptions[0] };
+        }
+        return nextData;
+      },
+    },
     { key: 'title', label: 'Title', fullWidth: true },
     { key: 'start_date', label: 'Start Date', type: 'date' },
     { key: 'end_date', label: 'End Date', type: 'date' },
@@ -4331,8 +4375,26 @@ function AcademicCalendarManagement() {
       school_id: department.school_id,
       program: normalizeProgramValue(data.program),
       year_of_study: normalizeYearOfStudyValue(data.year_of_study),
+      title: data.title?.toString().trim() || data.event_type,
       status: getRangeLifecycleStatus(data.start_date, data.end_date, 'Completed'),
     };
+  };
+
+  const academicCalendarSorter = (left: any, right: any) => {
+    const departmentCompare = (departments.find(item => idsMatch(item.id, left.department_id))?.name || '')
+      .localeCompare(departments.find(item => idsMatch(item.id, right.department_id))?.name || '');
+    if (departmentCompare !== 0) return departmentCompare;
+
+    const startCompare = (left.start_date || '').localeCompare(right.start_date || '');
+    if (startCompare !== 0) return startCompare;
+
+    const endCompare = (left.end_date || '').localeCompare(right.end_date || '');
+    if (endCompare !== 0) return endCompare;
+
+    const eventCompare = getAcademicCalendarEventRank(left.event_type) - getAcademicCalendarEventRank(right.event_type);
+    if (eventCompare !== 0) return eventCompare;
+
+    return (left.title || '').localeCompare(right.title || '');
   };
 
   const handleImport = async (data: any[]) => {
@@ -4361,7 +4423,7 @@ function AcademicCalendarManagement() {
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])),
         semester: normalizeSemesterValue(row['Semester'], ''),
         event_type: row['Event Type'] || 'Semester Period',
-        title: row['Title'],
+        title: row['Title'] || row['Event Type'],
         start_date: startDate,
         end_date: endDate,
         status: getRangeLifecycleStatus(startDate, endDate, 'Completed'),
@@ -4384,6 +4446,7 @@ function AcademicCalendarManagement() {
       onImport={handleImport}
       onDataChanged={refreshLookups}
       prepareSubmitData={prepareSubmitData}
+      dataSorter={academicCalendarSorter}
     />
   );
 }
