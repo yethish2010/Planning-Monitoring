@@ -81,6 +81,7 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 
   return {
     ...schedule,
+    section: schedule.section?.toString().trim() || null,
     course_name: schedule.course_name?.toString().trim(),
     faculty: schedule.faculty?.toString().trim() || 'TBA',
     room: schedule.room?.toString().trim(),
@@ -760,6 +761,7 @@ const findMatchingImportRecord = (records: any[], payload: any, uniqueFieldGroup
 const getScheduleRenderSignature = (schedule: any) => [
   normalizeImportMatchValue(schedule?.room_id),
   normalizeImportMatchValue(schedule?.room_label),
+  normalizeImportMatchValue(schedule?.section),
   normalizeImportMatchValue(schedule?.day_of_week),
   normalizeImportMatchValue(schedule?.start_time),
   normalizeImportMatchValue(schedule?.end_time),
@@ -1251,11 +1253,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Schedule: {
-    headers: ['Schedule ID', 'Department', 'Semester', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time'],
+    headers: ['Schedule ID', 'Department', 'Section', 'Semester', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time'],
     exampleRows: [
       {
         'Schedule ID': 'SCHD-001',
         Department: 'Computer Science and Engineering',
+        Section: 'A2',
         Semester: 'Odd',
         'Course Code': 'CSE301',
         'Course Name': 'Database Management Systems',
@@ -1268,6 +1271,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
+      'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
@@ -5714,6 +5718,7 @@ function SchedulingManagement() {
   const fields = [
     { key: 'schedule_id', label: 'Schedule ID' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
+    { key: 'section', label: 'Section' },
     { key: 'semester', label: 'Semester' },
     { key: 'course_code', label: 'Course Code' },
     { key: 'course_name', label: 'Course Name' },
@@ -5784,6 +5789,7 @@ function SchedulingManagement() {
       const startTime = formatExcelTime(row['Start Time']);
       const endTime = formatExcelTime(row['End Time']);
       const roomLabel = getImportValue(row, ['Room', 'Room Number'])?.toString().trim() || '';
+      const section = getImportValue(row, ['Section'])?.toString().trim() || '';
 
       if (!scheduleId || !courseName || !dayOfWeek || !startTime || !endTime) {
         skippedCount += 1;
@@ -5801,6 +5807,7 @@ function SchedulingManagement() {
       const payload = {
         schedule_id: scheduleId,
         department_id: dept?.id,
+        section: section || null,
         course_code: row['Course Code'],
         course_name: courseName,
         faculty: row['Faculty'],
@@ -5815,7 +5822,7 @@ function SchedulingManagement() {
         source_file: row['Source File'] || null,
       };
 
-      await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'day_of_week', 'start_time', 'end_time']]);
+      await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'section', 'day_of_week', 'start_time', 'end_time']]);
       importedCount += 1;
       if (room) linkedCount += 1;
       else unmatchedRoomCount += 1;
@@ -5880,6 +5887,7 @@ function SchedulingManagement() {
           const payload = {
             schedule_id: `SCH-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
             department_id: dept?.id ?? null,
+            section: schedule.section || null,
             course_code: schedule.course_code || null,
             course_name: schedule.course_name,
             faculty: schedule.faculty || 'TBA',
@@ -5897,8 +5905,8 @@ function SchedulingManagement() {
 
           await upsertImportRecord('/api/schedules', payload, [
             ['schedule_id'],
-            ['room_id', 'day_of_week', 'start_time', 'end_time'],
-            ['room_label', 'day_of_week', 'start_time', 'end_time'],
+            ['room_id', 'section', 'day_of_week', 'start_time', 'end_time'],
+            ['room_label', 'section', 'day_of_week', 'start_time', 'end_time'],
           ]);
           importedCount += 1;
           await ensureAllocationFromSchedule(room, dept, schedule.semester);
@@ -8862,7 +8870,9 @@ function TimetableBuilder() {
                       <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">{s.start_time} - {s.end_time}</span>
                     </div>
                     <h5 className="text-sm font-bold text-slate-800 mb-1 line-clamp-1">{s.course_name}</h5>
-                    <p className="text-[10px] text-slate-500 font-medium mb-2">{s.course_code} • {s.faculty}</p>
+                    <p className="text-[10px] text-slate-500 font-medium mb-2">
+                      {[s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' • ')}
+                    </p>
                     <div className="flex items-center justify-between pt-2 border-t border-slate-50">
                       <span className="text-[10px] font-bold text-slate-400">{s.department_name}</span>
                       <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">

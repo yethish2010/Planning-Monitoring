@@ -368,6 +368,7 @@ var getPrimarySchemaSql = (dialect) => {
       id ${idDefinition},
       schedule_id TEXT UNIQUE NOT NULL,
       department_id INTEGER,
+      section TEXT,
       course_code TEXT,
       course_name TEXT,
       faculty TEXT,
@@ -477,6 +478,7 @@ await ensureColumn("rooms", "is_bookable", "INTEGER DEFAULT 1");
 await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("schedules", "room_label", "TEXT");
+await ensureColumn("schedules", "section", "TEXT");
 await ensureColumn("schedules", "semester", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
 await ensureColumn("schedules", "review_note", "TEXT");
@@ -1187,6 +1189,7 @@ Extract info for ALL sections.
 
 Return a JSON array of objects with these fields:
 - department (e.g., "Computer Science and Engineering")
+- section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
 - semester (Odd or Even if available, else null)
 - course_code (if available, else null)
 - course_name (the subject name, e.g., "Computer Networks")
@@ -1198,6 +1201,7 @@ Return a JSON array of objects with these fields:
 - student_count (estimate or null)
 
 Ensure you capture the Room No mentioned in the header of each timetable.
+Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
 Only extract actual class sessions.
 Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
 The course_name must always be the real subject title.
@@ -1308,7 +1312,7 @@ var duplicateRules = {
   ],
   schedules: [
     { fields: ["schedule_id"], label: "Schedule ID" },
-    { fields: ["room_id", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room" }
+    { fields: ["room_id", "section", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room and section" }
   ],
   bookings: [
     { fields: ["request_id"], label: "Request ID" }
@@ -1329,13 +1333,14 @@ var getScheduleIdentityVariants = (schedule) => {
   const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
   const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
   const end = normalizeDuplicateValue(schedule?.end_time)?.toString() || "";
+  const section = normalizeDuplicateValue(schedule?.section)?.toString() || "";
   const variants = [];
   if (schedule?.room_id !== void 0 && schedule?.room_id !== null && schedule.room_id !== "") {
-    variants.push(`room|${schedule.room_id.toString()}|${day}|${start}|${end}`);
+    variants.push(`room|${schedule.room_id.toString()}|${section}|${day}|${start}|${end}`);
   }
   const normalizedRoomLabel = normalizeDuplicateValue(schedule?.room_label)?.toString() || "";
   if (normalizedRoomLabel) {
-    variants.push(`label|${normalizedRoomLabel}|${day}|${start}|${end}`);
+    variants.push(`label|${normalizedRoomLabel}|${section}|${day}|${start}|${end}`);
   }
   if (variants.length === 0) {
     const scheduleId = normalizeDuplicateValue(schedule?.schedule_id)?.toString() || "";
@@ -1398,7 +1403,7 @@ var checkDuplicateRecord = async (tableName, data, excludeId) => {
   }
   if (tableName === "schedules" && data?.day_of_week && data?.start_time && data?.end_time) {
     const candidates = await db.prepare(`
-      SELECT id, schedule_id, room_id, room_label, day_of_week, start_time, end_time
+      SELECT id, schedule_id, room_id, room_label, section, day_of_week, start_time, end_time
       FROM schedules
       WHERE LOWER(TRIM(day_of_week)) = ?
       AND LOWER(TRIM(start_time)) = ?
