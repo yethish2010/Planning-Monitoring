@@ -1110,6 +1110,46 @@ const parseAIJsonResponse = (text: string) => {
   return JSON.parse(cleanText);
 };
 
+const normalizeExtractedSectionValue = (value: any) => {
+  const raw = value?.toString().trim();
+  if (!raw) return "";
+  const match = raw.match(/section[\s:-]*([a-z0-9]+)/i) || raw.match(/^([a-z]+\d+)$/i);
+  return (match?.[1] || raw).toUpperCase();
+};
+
+const normalizeExtractedRoomValue = (value: any) => {
+  const raw = value?.toString().trim();
+  if (!raw) return "";
+  const directMatch =
+    raw.match(/(?:room|r)\s*\.?\s*no\.?\s*[:\-]?\s*([a-z0-9-]+)/i) ||
+    raw.match(/\b([a-z]?\d{3,4}[a-z]?)\b/i);
+  return directMatch?.[1]?.toUpperCase() || raw;
+};
+
+const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMaps: any[]) => {
+  if (!Array.isArray(schedules) || schedules.length === 0) return [];
+
+  const fallbackBySection = new Map<string, string>();
+  for (const item of Array.isArray(sectionRoomMaps) ? sectionRoomMaps : []) {
+    const section = normalizeExtractedSectionValue(item?.section);
+    const room = normalizeExtractedRoomValue(item?.room);
+    if (section && room && !fallbackBySection.has(section)) {
+      fallbackBySection.set(section, room);
+    }
+  }
+
+  return schedules.map(schedule => {
+    const normalizedSection = normalizeExtractedSectionValue(schedule?.section);
+    const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
+    const inheritedRoom = normalizedSection ? fallbackBySection.get(normalizedSection) || "" : "";
+    return {
+      ...schedule,
+      section: normalizedSection || schedule?.section || null,
+      room: explicitRoom || inheritedRoom || schedule?.room || null,
+    };
+  });
+};
+
 // --- AUTH ROUTES ---
 
 const getUserSessionPayload = (user: any) => ({
@@ -1207,19 +1247,41 @@ Return a JSON array of objects with these fields:
 
 Ensure you capture the Room No mentioned in the header of each timetable.
 Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
+For normal theory slots, use the section header Room No as the room.
+Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
 Only extract actual class sessions.
 Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
 The course_name must always be the real subject title.
 If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
 
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const headerParts = [...parts, {
+      text: `Return a JSON array listing each timetable header block in this document with:
+- section
+- room
+- semester
+- department
+
+Only capture the default Room No from the header of each section timetable.
+Example: [{"section":"A4","room":"331","semester":"Even","department":"Computer Science and Engineering"}]`,
+    }];
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [{ parts }],
       config: { responseMimeType: "application/json" },
     });
+    const headerResponse = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ parts: headerParts }],
+      config: { responseMimeType: "application/json" },
+    });
     const schedules = parseAIJsonResponse(await getAIResponseText(response));
-    res.json({ schedules: Array.isArray(schedules) ? schedules : [] });
+    const sectionRoomMaps = parseAIJsonResponse(await getAIResponseText(headerResponse));
+    const enrichedSchedules = mergeExtractedSchedulesWithHeaderRooms(
+      Array.isArray(schedules) ? schedules : [],
+      Array.isArray(sectionRoomMaps) ? sectionRoomMaps : [],
+    );
+    res.json({ schedules: enrichedSchedules });
   } catch (err: any) {
     const errorMessage = err?.message || "";
     const leakedKey = /reported as leaked|leaked/i.test(errorMessage);

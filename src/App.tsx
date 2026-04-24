@@ -1323,6 +1323,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
       'Room can match the canonical Room Number or any Room Alias from Room Management. Use Room Aliases for shared seminar halls with multiple door numbers such as 4015 and 4016.',
+      'For PDF timetable extraction, normal slots inherit the section header Room No automatically. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
       'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
