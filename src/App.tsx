@@ -1273,6 +1273,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
+      'Department, Semester, and Section are also used by Timetable View to infer the correct slot pattern for mixed-use rooms. Fill them consistently for accurate vacancy display.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
       'Normal schedules stay in the master timetable, but they are suppressed automatically on dates covered by Academic Calendar rows with Event Type = Examinations for the same department and semester.',
@@ -8702,6 +8703,7 @@ function TimetableBuilder() {
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
+  const [timetableContext, setTimetableContext] = useState({ department_id: '', semester: '', section: '' });
   const [loading, setLoading] = useState(true);
 
   const timeToMinutes = (time?: string) => {
@@ -8715,13 +8717,72 @@ function TimetableBuilder() {
     [rooms, selectedRoom],
   );
 
-  const roomTimeSlots = useMemo(() => {
-    const roomSchedules = schedules.filter(schedule => {
-      if (activeRoom && schedule.room_id != null) return idsMatch(schedule.room_id, activeRoom.id);
-      return activeRoom ? false : schedule.room === selectedRoom;
-    });
+  const roomScopedSchedules = useMemo(() => schedules.filter(schedule => {
+    if (activeRoom && schedule.room_id != null) return idsMatch(schedule.room_id, activeRoom.id);
+    return activeRoom ? false : schedule.room === selectedRoom;
+  }), [activeRoom, schedules, selectedRoom]);
 
-    const intervals = roomSchedules
+  const roomDepartmentOptions = useMemo(() => Array.from(new Map(
+    roomScopedSchedules
+      .filter(schedule => schedule.department_id != null)
+      .map(schedule => [
+        schedule.department_id?.toString(),
+        {
+          value: schedule.department_id?.toString(),
+          label: departments.find(department => idsMatch(department.id, schedule.department_id))?.name || schedule.department || `Department ${schedule.department_id}`,
+        },
+      ]),
+  ).values()).sort((a, b) => a.label.localeCompare(b.label)), [departments, roomScopedSchedules]);
+
+  const roomSemesterOptions = useMemo(() => Array.from(new Set(
+    roomScopedSchedules
+      .map(schedule => normalizeSemesterValue(schedule.semester, ''))
+      .filter(Boolean),
+  )).sort(), [roomScopedSchedules]);
+
+  const roomSectionOptions = useMemo(() => Array.from(new Set(
+    roomScopedSchedules
+      .filter(schedule =>
+        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
+        (!timetableContext.semester || normalizeSemesterValue(schedule.semester, '') === timetableContext.semester),
+      )
+      .map(schedule => schedule.section?.toString().trim())
+      .filter((section): section is string => Boolean(section)),
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.semester]);
+
+  useEffect(() => {
+    setTimetableContext({ department_id: '', semester: '', section: '' });
+  }, [selectedRoom]);
+
+  useEffect(() => {
+    setTimetableContext(current => ({
+      department_id: current.department_id && roomDepartmentOptions.some(option => option.value === current.department_id) ? current.department_id : '',
+      semester: current.semester && roomSemesterOptions.includes(current.semester) ? current.semester : '',
+      section: current.section && roomSectionOptions.includes(current.section) ? current.section : '',
+    }));
+  }, [roomDepartmentOptions, roomSectionOptions, roomSemesterOptions]);
+
+  const hasContextFilter = Boolean(timetableContext.department_id || timetableContext.semester || timetableContext.section);
+
+  const distinctContextCount = useMemo(() => new Set(
+    roomScopedSchedules.map(schedule => [
+      schedule.department_id?.toString() || '',
+      normalizeSemesterValue(schedule.semester, ''),
+      schedule.section?.toString().trim() || '',
+    ].join('|')),
+  ).size, [roomScopedSchedules]);
+
+  const requiresContextFilterForVacancy = distinctContextCount > 1 && !hasContextFilter;
+
+  const contextSchedules = useMemo(() => roomScopedSchedules.filter(schedule => {
+    if (timetableContext.department_id && !idsMatch(schedule.department_id, timetableContext.department_id)) return false;
+    if (timetableContext.semester && normalizeSemesterValue(schedule.semester, '') !== timetableContext.semester) return false;
+    if (timetableContext.section && (schedule.section?.toString().trim() || '') !== timetableContext.section) return false;
+    return true;
+  }), [roomScopedSchedules, timetableContext.department_id, timetableContext.section, timetableContext.semester]);
+
+  const roomTimeSlots = useMemo(() => {
+    const intervals = contextSchedules
       .map(schedule => ({
         start: timeToMinutes(schedule.start_time),
         end: timeToMinutes(schedule.end_time),
@@ -8751,7 +8812,7 @@ function TimetableBuilder() {
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
-  }, [activeRoom, schedules, selectedRoom]);
+  }, [contextSchedules]);
 
   const expandScheduleForDisplay = (schedule: any) => {
     const scheduleStart = timeToMinutes(schedule.start_time);
@@ -8833,11 +8894,7 @@ function TimetableBuilder() {
 
   const getSchedulesForDay = (day: string) => {
     const dayDate = weekDates[day];
-    const baseSchedules = schedules.filter(s => {
-      if (s.day_of_week !== day) return false;
-      if (activeRoom && s.room_id != null) return idsMatch(s.room_id, activeRoom.id);
-      return activeRoom ? false : s.room === selectedRoom;
-    });
+    const baseSchedules = contextSchedules.filter(s => s.day_of_week === day);
 
     const effectiveSchedules = deduplicateScheduleRows(baseSchedules.filter(schedule =>
       !isScheduleSuppressedForDate(schedule, dayDate, academicCalendars)
@@ -8854,6 +8911,16 @@ function TimetableBuilder() {
   };
 
   const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
+    if (requiresContextFilterForVacancy) {
+      return daySchedules.map((schedule, index) => ({
+        start_time: schedule.start_time,
+        end_time: schedule.end_time,
+        key: `context-${schedule.display_id ?? schedule.id ?? index}`,
+        schedules: [schedule],
+        state: 'scheduled',
+      }));
+    }
+
     const matchedKeys = new Set<string>();
     const defaultSlots = roomTimeSlots.map(slot => {
       const slotKey = getTimeSlotKey(slot);
@@ -8927,6 +8994,53 @@ function TimetableBuilder() {
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Department Context</p>
+            <select
+              value={timetableContext.department_id}
+              onChange={e => setTimetableContext(prev => ({ ...prev, department_id: e.target.value, section: '' }))}
+              className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
+            >
+              <option value="">All Departments</option>
+              {roomDepartmentOptions.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Semester Context</p>
+            <select
+              value={timetableContext.semester}
+              onChange={e => setTimetableContext(prev => ({ ...prev, semester: e.target.value, section: '' }))}
+              className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
+            >
+              <option value="">All Semesters</option>
+              {roomSemesterOptions.map(semester => (
+                <option key={semester} value={semester}>{semester}</option>
+              ))}
+            </select>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Section Context</p>
+            <select
+              value={timetableContext.section}
+              onChange={e => setTimetableContext(prev => ({ ...prev, section: e.target.value }))}
+              className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
+            >
+              <option value="">All Sections</option>
+              {roomSectionOptions.map(section => (
+                <option key={section} value={section}>{section}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] text-slate-500">
+          Vacancy is computed inside the selected academic context. Use these filters when the same room is shared by multiple semesters or sections with different timing patterns.
+        </p>
+      </div>
+
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Slot Legend</span>
           <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1">
@@ -8947,6 +9061,15 @@ function TimetableBuilder() {
         </p>
       </div>
 
+      {requiresContextFilterForVacancy && (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
+          <p className="text-sm font-bold text-blue-800">Mixed timetable patterns detected for this room.</p>
+          <p className="mt-1 text-xs text-blue-700">
+            This room is used by multiple department, semester, or section contexts. Select a context above to see accurate vacant slots; until then, only scheduled classes are shown.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         {days.map(day => {
           const { schedules: daySchedules, hasExamOverride, date } = getSchedulesForDay(day);
@@ -8960,7 +9083,11 @@ function TimetableBuilder() {
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{date}</p>
                 </div>
                 <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
-                  {hasExamOverride ? 'Exam Override' : `${occupiedSlotCount}/${displaySlots.length} Slots Used`}
+                  {hasExamOverride
+                    ? 'Exam Override'
+                    : requiresContextFilterForVacancy
+                      ? `${daySchedules.length} Classes`
+                      : `${occupiedSlotCount}/${displaySlots.length} Slots Used`}
                 </span>
               </div>
               
