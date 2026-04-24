@@ -1177,6 +1177,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
       `Allowed Program values include: ${PROGRAM_OPTIONS.join(', ')}.`,
       'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester -> Year / Semester.',
+      'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. Roman numerals are normalized automatically during import.',
       'For Year / Semester, use values like 1st Year - 1st Semester, 1st Year - 2nd Semester, 2nd Year - 3rd Semester, 2nd Year - 4th Semester, and so on.',
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
       'Use Event Type = Examinations for CIAT-I, CIAT-II, semester-end exams, or any exam window where normal class timetable occupancy must be ignored.',
@@ -1230,6 +1231,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Use Academic Calendar to auto-fill department, batch, semester, start date, and end date wherever possible.',
+      'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. Roman numerals are normalized automatically during import.',
       'Use Allocation Mode = Shared when the same room is used by multiple batches or different departments in different timetable slots during the same date range.',
       'Use Allocation Mode = Exclusive only when the room must stay reserved for one batch for that full date range.',
       'Only Exclusive allocations block overlapping date ranges. Shared allocations can overlap across departments and are separated later by timetable slots.',
@@ -1266,7 +1268,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
-      'Semester accepts Odd/Even. If blank, Odd is used for the derived Department Room Mapping.',
+      'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
       'Normal schedules stay in the master timetable, but they are suppressed automatically on dates covered by Academic Calendar rows with Event Type = Examinations for the same department and semester.',
