@@ -8875,6 +8875,24 @@ function TimetableBuilder() {
         </div>
       </div>
 
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Slot Legend</span>
+          <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1">
+            <div className="h-2.5 w-2.5 rounded-full bg-emerald-500"></div>
+            <span className="text-[11px] font-bold text-emerald-700">Scheduled</span>
+          </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
+            <div className="h-2.5 w-2.5 rounded-full border-2 border-slate-400 bg-white"></div>
+            <span className="text-[11px] font-bold text-slate-600">Vacant</span>
+          </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1">
+            <div className="h-2.5 w-2.5 rounded-full bg-amber-500"></div>
+            <span className="text-[11px] font-bold text-amber-700">Exam Blocked</span>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         {days.map(day => {
           const { schedules: daySchedules, hasExamOverride, date } = getSchedulesForDay(day);
@@ -8899,26 +8917,40 @@ function TimetableBuilder() {
                     className={cn(
                       "rounded-xl border p-4 transition-all",
                       slot.state === 'scheduled'
-                        ? "bg-white border-slate-200 shadow-sm hover:shadow-md"
+                        ? "bg-emerald-50/60 border-emerald-200 shadow-sm hover:shadow-md"
                         : slot.state === 'exam'
                           ? "border-amber-100 bg-amber-50/50"
                           : "border-dashed border-slate-200 bg-slate-50/70",
                     )}
                   >
-                    <div className="flex items-center gap-2 mb-3">
-                      <div
-                        className={cn(
-                          "w-2 h-2 rounded-full",
-                          slot.state === 'scheduled' ? "bg-emerald-500" : slot.state === 'exam' ? "bg-amber-500" : "bg-slate-300",
-                        )}
-                      ></div>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={cn(
+                            "w-2 h-2 rounded-full",
+                            slot.state === 'scheduled' ? "bg-emerald-500" : slot.state === 'exam' ? "bg-amber-500" : "border border-slate-400 bg-white",
+                          )}
+                        ></div>
+                        <span
+                          className={cn(
+                            "text-[10px] font-bold uppercase tracking-wider",
+                            slot.state === 'scheduled' ? "text-emerald-700" : slot.state === 'exam' ? "text-amber-600" : "text-slate-400",
+                          )}
+                        >
+                          {slot.start_time} - {slot.end_time}
+                        </span>
+                      </div>
                       <span
                         className={cn(
-                          "text-[10px] font-bold uppercase tracking-wider",
-                          slot.state === 'scheduled' ? "text-emerald-600" : slot.state === 'exam' ? "text-amber-600" : "text-slate-400",
+                          "rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-widest",
+                          slot.state === 'scheduled'
+                            ? "bg-emerald-100 text-emerald-700"
+                            : slot.state === 'exam'
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-slate-200 text-slate-500",
                         )}
                       >
-                        {slot.start_time} - {slot.end_time}
+                        {slot.state === 'scheduled' ? 'Scheduled' : slot.state === 'exam' ? 'Blocked' : 'Vacant'}
                       </span>
                     </div>
                     {slot.schedules.length > 0 ? (
