@@ -893,6 +893,24 @@ var normalizeSemesterKey = (value) => {
   if (!normalized) return "";
   if (normalized.includes("odd") || normalized.includes("fall")) return "odd";
   if (normalized.includes("even") || normalized.includes("spring") || normalized.includes("summer")) return "even";
+  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
+  if (romanMatch) {
+    const romanToNumber = {
+      i: 1,
+      ii: 2,
+      iii: 3,
+      iv: 4,
+      v: 5,
+      vi: 6,
+      vii: 7,
+      viii: 8,
+      ix: 9,
+      x: 10
+    };
+    return (romanToNumber[romanMatch[1]] || 0) % 2 === 0 ? "even" : "odd";
+  }
+  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
+  if (numericMatch) return Number(numericMatch) % 2 === 0 ? "even" : "odd";
   return normalized;
 };
 var isExaminationCalendarEvent = (calendar) => {

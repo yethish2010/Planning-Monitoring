@@ -153,13 +153,39 @@ const normalizeSchoolTypeValue = (value: unknown) => {
   return matchedAlias?.[1] || value?.toString().trim() || 'Administration';
 };
 
+const parseSemesterNumber = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return null;
+
+  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
+  if (numericMatch) return Number(numericMatch);
+
+  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
+  if (!romanMatch) return null;
+
+  const romanToNumber: Record<string, number> = {
+    i: 1,
+    ii: 2,
+    iii: 3,
+    iv: 4,
+    v: 5,
+    vi: 6,
+    vii: 7,
+    viii: 8,
+    ix: 9,
+    x: 10,
+  };
+
+  return romanToNumber[romanMatch[1]] || null;
+};
+
 const normalizeSemesterValue = (value: unknown, fallback = 'Odd') => {
   const normalized = normalizeLookupValue(value);
   if (!normalized) return fallback;
   if (normalized.includes('odd') || normalized.includes('fall')) return 'Odd';
   if (normalized.includes('even') || normalized.includes('spring') || normalized.includes('summer')) return 'Even';
 
-  const semesterNumber = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
+  const semesterNumber = parseSemesterNumber(value);
   if (semesterNumber) {
     return Number(semesterNumber) % 2 === 0 ? 'Even' : 'Odd';
   }
