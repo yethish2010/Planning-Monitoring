@@ -8917,24 +8917,24 @@ function TimetableBuilder() {
                     className={cn(
                       "rounded-xl border p-4 transition-all",
                       slot.state === 'scheduled'
-                        ? "bg-emerald-50/60 border-emerald-200 shadow-sm hover:shadow-md"
+                        ? "bg-emerald-100 border-emerald-300 shadow-sm hover:shadow-md"
                         : slot.state === 'exam'
-                          ? "border-amber-100 bg-amber-50/50"
-                          : "border-dashed border-slate-200 bg-slate-50/70",
+                          ? "border-amber-300 bg-amber-100/90 shadow-sm"
+                          : "border-dashed border-slate-300 bg-slate-100/90",
                     )}
                   >
                     <div className="flex items-center justify-between gap-3 mb-3">
                       <div className="flex items-center gap-2">
                         <div
                           className={cn(
-                            "w-2 h-2 rounded-full",
-                            slot.state === 'scheduled' ? "bg-emerald-500" : slot.state === 'exam' ? "bg-amber-500" : "border border-slate-400 bg-white",
+                            "w-2.5 h-2.5 rounded-full",
+                            slot.state === 'scheduled' ? "bg-emerald-600" : slot.state === 'exam' ? "bg-amber-600" : "border-2 border-slate-500 bg-white",
                           )}
                         ></div>
                         <span
                           className={cn(
                             "text-[10px] font-bold uppercase tracking-wider",
-                            slot.state === 'scheduled' ? "text-emerald-700" : slot.state === 'exam' ? "text-amber-600" : "text-slate-400",
+                            slot.state === 'scheduled' ? "text-emerald-800" : slot.state === 'exam' ? "text-amber-800" : "text-slate-600",
                           )}
                         >
                           {slot.start_time} - {slot.end_time}
@@ -8942,12 +8942,12 @@ function TimetableBuilder() {
                       </div>
                       <span
                         className={cn(
-                          "rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-widest",
+                          "rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-widest border",
                           slot.state === 'scheduled'
-                            ? "bg-emerald-100 text-emerald-700"
+                            ? "border-emerald-300 bg-emerald-200 text-emerald-800"
                             : slot.state === 'exam'
-                              ? "bg-amber-100 text-amber-700"
-                              : "bg-slate-200 text-slate-500",
+                              ? "border-amber-300 bg-amber-200 text-amber-800"
+                              : "border-slate-300 bg-slate-200 text-slate-600",
                         )}
                       >
                         {slot.state === 'scheduled' ? 'Scheduled' : slot.state === 'exam' ? 'Blocked' : 'Vacant'}
@@ -8956,7 +8956,7 @@ function TimetableBuilder() {
                     {slot.schedules.length > 0 ? (
                       <div className="space-y-3">
                         {slot.schedules.map((s: any) => (
-                          <div key={s.display_id ?? s.id} className="group relative rounded-lg border border-slate-100 bg-white/90 p-3 shadow-sm">
+                          <div key={s.display_id ?? s.id} className="group relative rounded-lg border border-emerald-200 bg-white p-3 shadow-sm ring-1 ring-emerald-100">
                             <button
                               onClick={() => handleDelete(s.id)}
                               className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -8978,14 +8978,14 @@ function TimetableBuilder() {
                         ))}
                       </div>
                     ) : slot.state === 'exam' ? (
-                      <div className="rounded-lg border border-amber-100 bg-amber-50/80 p-3">
-                        <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Exam Override</p>
-                        <p className="mt-1 text-xs text-slate-500">Normal classes are suppressed by the Academic Calendar for this period.</p>
+                      <div className="rounded-lg border border-amber-300 bg-amber-100 p-3">
+                        <p className="text-[10px] font-bold text-amber-800 uppercase tracking-widest">Exam Override</p>
+                        <p className="mt-1 text-xs text-amber-900/80">Normal classes are suppressed by the Academic Calendar for this period.</p>
                       </div>
                     ) : (
-                      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 p-3">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Vacant Slot</p>
-                        <p className="mt-1 text-xs text-slate-400">No class is mapped for this period.</p>
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-slate-100 p-3">
+                        <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Vacant Slot</p>
+                        <p className="mt-1 text-xs text-slate-600">No class is mapped for this period.</p>
                       </div>
                     )}
                   </div>
