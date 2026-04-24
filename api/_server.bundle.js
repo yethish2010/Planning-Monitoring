@@ -880,6 +880,50 @@ var syncBatchAllocationStatuses = async () => {
     }
   }
 };
+var getDayOfWeekForDate = (date) => (/* @__PURE__ */ new Date(`${date}T00:00:00`)).toLocaleDateString("en-US", { weekday: "long" });
+var normalizeSemesterKey = (value) => {
+  const normalized = normalizeDuplicateValue(value)?.toString() || "";
+  if (!normalized) return "";
+  if (normalized.includes("odd") || normalized.includes("fall")) return "odd";
+  if (normalized.includes("even") || normalized.includes("spring") || normalized.includes("summer")) return "even";
+  return normalized;
+};
+var isExaminationCalendarEvent = (calendar) => {
+  const eventType = normalizeDuplicateValue(calendar?.event_type)?.toString() || "";
+  const title = normalizeDuplicateValue(calendar?.title)?.toString() || "";
+  return eventType.includes("exam") || eventType.includes("ciat") || title.includes("exam") || title.includes("ciat");
+};
+var scheduleMatchesCalendarOverride = (schedule, calendar) => {
+  if (!schedule?.department_id || !calendar?.department_id) return false;
+  if (schedule.department_id.toString() !== calendar.department_id.toString()) return false;
+  const scheduleSemester = normalizeSemesterKey(schedule.semester);
+  const calendarSemester = normalizeSemesterKey(calendar.semester);
+  if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
+  return true;
+};
+var filterSchedulesByAcademicCalendar = async (schedules, date) => {
+  const normalizedDate = normalizeIsoDate(date);
+  if (!normalizedDate || !Array.isArray(schedules) || schedules.length === 0) return schedules;
+  const activeExamCalendars = await db.prepare(`
+    SELECT id, department_id, semester, event_type, title, start_date, end_date
+    FROM academic_calendars
+    WHERE start_date <= ? AND end_date >= ?
+  `).all(normalizedDate, normalizedDate);
+  const examinationCalendars = activeExamCalendars.filter(isExaminationCalendarEvent);
+  if (examinationCalendars.length === 0) return schedules;
+  return schedules.filter(
+    (schedule) => !examinationCalendars.some((calendar) => scheduleMatchesCalendarOverride(schedule, calendar))
+  );
+};
+var getEffectiveSchedulesForDate = async (date, predicate) => {
+  const normalizedDate = normalizeIsoDate(date);
+  if (!normalizedDate) return [];
+  const dayOfWeek = getDayOfWeekForDate(normalizedDate);
+  const daySchedules = await db.prepare(`SELECT * FROM schedules WHERE day_of_week = ?`).all(dayOfWeek);
+  const deduplicatedSchedules = deduplicateSchedules(daySchedules).kept;
+  const filteredSchedules = predicate ? deduplicatedSchedules.filter(predicate) : deduplicatedSchedules;
+  return filterSchedulesByAcademicCalendar(filteredSchedules, normalizedDate);
+};
 var ensureNotificationsTable = async () => {
   const idDefinition = db.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
   const timestampType = db.dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
@@ -1249,6 +1293,7 @@ var duplicateRules = {
   ]
 };
 var normalizeDuplicateValue = (value) => typeof value === "string" ? value.trim().toLowerCase() : value;
+var idsEqual = (left, right) => left !== void 0 && left !== null && right !== void 0 && right !== null && left.toString() === right.toString();
 var getScheduleIdentityVariants = (schedule) => {
   const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
   const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
@@ -1440,7 +1485,12 @@ var createCrudRoutes = (tableName, idField = "id") => {
       }
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
       if (tableName === "schedules") {
-        return res.json(deduplicateSchedules(items).kept);
+        const deduplicatedItems = deduplicateSchedules(items).kept;
+        const requestedDate = normalizeIsoDate(req.query.date);
+        if (requestedDate) {
+          return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
+        }
+        return res.json(deduplicatedItems);
       }
       res.json(items);
     } catch (err) {
@@ -1764,19 +1814,19 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
     const items = await db.prepare(`SELECT * FROM rooms`).all();
     const now = /* @__PURE__ */ new Date();
-    const dayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" });
     const currentTime = now.getHours().toString().padStart(2, "0") + ":" + now.getMinutes().toString().padStart(2, "0");
     const currentDate = now.toISOString().split("T")[0];
+    const activeSchedules = await getEffectiveSchedulesForDate(
+      currentDate,
+      (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
+    );
     const enrichedItems = [];
     for (const room of items) {
       if (room.status !== "Available") {
         enrichedItems.push(room);
         continue;
       }
-      const schedule = await db.prepare(`
-          SELECT * FROM schedules 
-          WHERE room = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
-        `).get(room.room_number, dayOfWeek, currentTime, currentTime);
+      const schedule = activeSchedules.find((item) => idsEqual(item.room_id, room.id));
       if (schedule) {
         enrichedItems.push({ ...room, status: "Occupied (Scheduled)" });
         continue;
@@ -1800,8 +1850,7 @@ app.get(`/api/rooms/:roomId/schedule`, authenticate, async (req, res) => {
   try {
     const { roomId } = req.params;
     const { date } = req.query;
-    const dayOfWeek = new Date(date).toLocaleDateString("en-US", { weekday: "long" });
-    const schedules = await db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
+    const schedules = await getEffectiveSchedulesForDate(date, (schedule) => idsEqual(schedule.room_id, roomId));
     const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
     res.json({ schedules, bookings });
   } catch (err) {
@@ -1816,18 +1865,22 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get();
     const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get();
     const now = /* @__PURE__ */ new Date();
-    const dayOfWeek = now.toLocaleDateString("en-US", { weekday: "long" });
     const currentTime = now.getHours().toString().padStart(2, "0") + ":" + now.getMinutes().toString().padStart(2, "0");
     const currentDate = now.toISOString().split("T")[0];
-    const currentlyScheduled = await db.prepare(`
-      SELECT COUNT(DISTINCT room_id) as count FROM (
-        SELECT room_id FROM schedules 
-        WHERE day_of_week = ? AND start_time <= ? AND end_time > ?
-        UNION
-        SELECT room_id FROM bookings 
-        WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-      )
-    `).get(dayOfWeek, currentTime, currentTime, currentDate, currentTime, currentTime);
+    const activeSchedules = await getEffectiveSchedulesForDate(
+      currentDate,
+      (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
+    );
+    const activeBookings = await db.prepare(`
+      SELECT room_id FROM bookings 
+      WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+    `).all(currentDate, currentTime, currentTime);
+    const currentlyScheduled = {
+      count: (/* @__PURE__ */ new Set([
+        ...activeSchedules.map((item) => item.room_id).filter(Boolean),
+        ...activeBookings.map((item) => item.room_id).filter(Boolean)
+      ])).size
+    };
     const availableNow = totalRooms.count - maintenanceRooms.count - currentlyScheduled.count;
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
@@ -1863,7 +1916,6 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   if (isPastDateTime(date, time)) {
     return res.status(400).json({ error: "Past search times are not allowed." });
   }
-  const dayOfWeek = new Date(date).toLocaleDateString("en-US", { weekday: "long" });
   const requestedStart = time;
   const [h, m] = requestedStart.split(":").map(Number);
   const durationMinutes = Math.round((parseFloat(duration) || 1) * 60);
@@ -1875,11 +1927,10 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   const allRooms = allRoomsRaw.filter(
     (room) => isReservableRoomRecord(room) && (minimumCapacity === null || (parseInt(room.capacity, 10) || 0) >= minimumCapacity)
   );
-  const busySchedules = await db.prepare(`
-    SELECT room_id FROM schedules 
-    WHERE day_of_week = ? 
-    AND NOT (end_time <= ? OR start_time >= ?)
-  `).all(dayOfWeek, requestedStart, requestedEnd);
+  const busySchedules = await getEffectiveSchedulesForDate(
+    date,
+    (schedule) => !(schedule.end_time <= requestedStart || schedule.start_time >= requestedEnd)
+  );
   const busyBookings = await db.prepare(`
     SELECT room_id FROM bookings 
     WHERE date = ? 
@@ -1908,19 +1959,13 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
   if (!Number.isInteger(targetStrength) || targetStrength <= 0) {
     return res.status(400).json({ error: "Strength must be a valid positive number." });
   }
-  const dayOfWeek = new Date(date).toLocaleDateString("en-US", { weekday: "long" });
   try {
     const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all();
     const allRooms = allRoomsRaw.filter(isReservableRoomRecord);
-    const busyInSchedules = await db.prepare(`
-      SELECT DISTINCT room_id FROM schedules 
-      WHERE day_of_week = ? 
-      AND (
-        (start_time < ? AND end_time > ?) OR
-        (start_time < ? AND end_time > ?) OR
-        (start_time >= ? AND start_time < ?)
-      )
-    `).all(dayOfWeek, endTime, startTime, startTime, endTime, startTime, endTime);
+    const busyInSchedules = await getEffectiveSchedulesForDate(
+      date,
+      (schedule) => schedule.start_time < endTime && schedule.end_time > startTime || schedule.start_time < startTime && schedule.end_time > endTime || schedule.start_time >= startTime && schedule.start_time < endTime
+    );
     const busyRoomIdsSchedules = new Set(busyInSchedules.map((s) => s.room_id));
     const busyInBookings = await db.prepare(`
       SELECT DISTINCT room_id FROM bookings 

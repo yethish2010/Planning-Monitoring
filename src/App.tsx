@@ -355,6 +355,46 @@ const getStudyPeriodDisplay = (yearOfStudy: unknown, semester: unknown, program?
   return `${yearLabel} - ${formatOrdinal(semesterNumber)} Semester`;
 };
 
+const isExaminationCalendarEvent = (calendar: any) => {
+  const eventType = normalizeLookupValue(calendar?.event_type);
+  const title = normalizeLookupValue(calendar?.title);
+  return eventType.includes('exam') || eventType.includes('ciat') || title.includes('exam') || title.includes('ciat');
+};
+
+const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any) => {
+  if (!idsMatch(schedule?.department_id, calendar?.department_id)) return false;
+  const scheduleSemester = normalizeSemesterValue(schedule?.semester, '');
+  const calendarSemester = normalizeSemesterValue(calendar?.semester, '');
+  if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
+  return true;
+};
+
+const isScheduleSuppressedForDate = (schedule: any, date: string, calendars: any[]) => {
+  if (!date || !Array.isArray(calendars) || calendars.length === 0) return false;
+  return calendars.some(calendar =>
+    isExaminationCalendarEvent(calendar) &&
+    calendar?.start_date &&
+    calendar?.end_date &&
+    calendar.start_date <= date &&
+    calendar.end_date >= date &&
+    doesScheduleMatchCalendarOverride(schedule, calendar)
+  );
+};
+
+const getWeekDatesForReferenceDate = (referenceDate: string) => {
+  const fallbackDate = referenceDate || formatLocalDate(new Date());
+  const seedDate = new Date(`${fallbackDate}T00:00:00`);
+  const mondayOffset = (seedDate.getDay() + 6) % 7;
+  seedDate.setDate(seedDate.getDate() - mondayOffset);
+
+  const weekDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  return Object.fromEntries(weekDays.map((day, index) => {
+    const nextDate = new Date(seedDate);
+    nextDate.setDate(seedDate.getDate() + index);
+    return [day, formatLocalDate(nextDate)];
+  })) as Record<string, string>;
+};
+
 const ROOM_TYPE_OPTIONS = [
   'Admin Office',
   'Auditorium',
@@ -1047,6 +1087,36 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'End Date': '2026-05-30',
         Notes: 'Room allocation remains active only during this period.',
       },
+      {
+        'Calendar ID': 'CAL-MTECH2-CIAT1-2025-26',
+        School: 'School of Computing',
+        Department: 'Computer Science and Engineering',
+        Program: 'M.Tech',
+        Batch: '2025-2027',
+        'Academic Year': '2025-26',
+        Semester: 'Even',
+        'Year / Semester': '2nd Year - 4th Semester',
+        'Event Type': 'Examinations',
+        Title: 'CIAT-I',
+        'Start Date': '2026-03-09',
+        'End Date': '2026-03-16',
+        Notes: 'Normal timetable occupancy is suppressed during CIAT-I dates.',
+      },
+      {
+        'Calendar ID': 'CAL-MTECH2-CIAT2-2025-26',
+        School: 'School of Computing',
+        Department: 'Computer Science and Engineering',
+        Program: 'M.Tech',
+        Batch: '2025-2027',
+        'Academic Year': '2025-26',
+        Semester: 'Even',
+        'Year / Semester': '2nd Year - 4th Semester',
+        'Event Type': 'Examinations',
+        Title: 'CIAT-II',
+        'Start Date': '2026-04-27',
+        'End Date': '2026-05-05',
+        Notes: 'Normal timetable occupancy is suppressed during CIAT-II dates.',
+      },
     ],
     instructions: [
       `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
@@ -1054,6 +1124,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester -> Year / Semester.',
       'For Year / Semester, use values like 1st Year - 1st Semester, 1st Year - 2nd Semester, 2nd Year - 3rd Semester, 2nd Year - 4th Semester, and so on.',
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
+      'Use Event Type = Examinations for CIAT-I, CIAT-II, semester-end exams, or any exam window where normal class timetable occupancy must be ignored.',
+      'When an Examinations row is active for a department and semester, Timetable View, Room Bookings vacancy checks, and Digital Twin suppress normal class schedules for those dates.',
       'Completed calendars can be reused as history; do not delete them unless they were imported by mistake.',
     ],
   },
@@ -1119,6 +1191,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Semester accepts Odd/Even. If blank, Odd is used for the derived Department Room Mapping.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
+      'Normal schedules stay in the master timetable, but they are suppressed automatically on dates covered by Academic Calendar rows with Event Type = Examinations for the same department and semester.',
     ],
   },
   Maintenance: {
@@ -8481,7 +8554,9 @@ function TimetableBuilder() {
   const [schedules, setSchedules] = useState<any[]>([]);
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
+  const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
   const [loading, setLoading] = useState(true);
 
   const classTimeSlots = [
@@ -8522,17 +8597,20 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sRes, rRes, dRes] = await Promise.all([
+      const [sRes, rRes, dRes, cRes] = await Promise.all([
         fetch('/api/schedules', { credentials: 'include' }),
         fetch('/api/rooms', { credentials: 'include' }),
-        fetch('/api/departments', { credentials: 'include' })
+        fetch('/api/departments', { credentials: 'include' }),
+        fetch('/api/academic_calendars', { credentials: 'include' }),
       ]);
       const sData = await sRes.json();
       const rData = await rRes.json();
       const dData = await dRes.json();
+      const cData = await cRes.json();
       setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
       setDepartments(dData);
+      setAcademicCalendars(Array.isArray(cData) ? cData : []);
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
       const requestedRoomLabel = params.get('room');
@@ -8572,22 +8650,29 @@ function TimetableBuilder() {
     .filter(room => isRoomReservable(room) || idsMatch(room.id, selectedRoom))
     .sort((a, b) => getRoomDisplayLabel(a, rooms).localeCompare(getRoomDisplayLabel(b, rooms), undefined, { numeric: true }));
 
+  const weekDates = useMemo(() => getWeekDatesForReferenceDate(referenceDate), [referenceDate]);
+
   const getSchedulesForDay = (day: string) => {
     const activeRoom = rooms.find(r => r.id?.toString() === selectedRoom);
+    const dayDate = weekDates[day];
+    const baseSchedules = schedules.filter(s => {
+      if (s.day_of_week !== day) return false;
+      if (activeRoom && s.room_id != null) return idsMatch(s.room_id, activeRoom.id);
+      return activeRoom ? false : s.room === selectedRoom;
+    });
 
-    return deduplicateScheduleRows(schedules
-      .filter(s => {
-        if (s.day_of_week !== day) return false;
-        if (activeRoom && s.room_id != null) return idsMatch(s.room_id, activeRoom.id);
-        return activeRoom ? false : s.room === selectedRoom;
-      })
-    )
+    const effectiveSchedules = deduplicateScheduleRows(baseSchedules.filter(schedule =>
+      !isScheduleSuppressedForDate(schedule, dayDate, academicCalendars)
+    ))
       .map(s => ({
         ...s,
         department_name: departments.find(d => idsMatch(d.id, s.department_id))?.name ?? s.department,
       }))
       .flatMap(expandScheduleForDisplay)
       .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+    const hasExamOverride = baseSchedules.some(schedule => isScheduleSuppressedForDate(schedule, dayDate, academicCalendars));
+    return { schedules: effectiveSchedules, hasExamOverride, date: dayDate };
   };
 
   if (loading) return <div className="p-8 text-center text-slate-400 font-medium">Loading Timetable...</div>;
@@ -8604,28 +8689,44 @@ function TimetableBuilder() {
             <p className="text-xs text-slate-500">Visualizing schedules with precise timing slots</p>
           </div>
         </div>
-        <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
-          <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Room:</span>
-          <select 
-            value={selectedRoom}
-            onChange={(e) => setSelectedRoom(e.target.value)}
-            className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
-          >
-            {timetableRoomOptions.map(r => (
-              <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
-            ))}
-          </select>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Week Of:</span>
+            <input
+              type="date"
+              value={referenceDate}
+              onChange={e => setReferenceDate(e.target.value)}
+              className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
+            />
+          </div>
+          <div className="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Room:</span>
+            <select 
+              value={selectedRoom}
+              onChange={(e) => setSelectedRoom(e.target.value)}
+              className="bg-transparent text-sm font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              {timetableRoomOptions.map(r => (
+                <option key={r.id} value={r.id}>Room {getRoomDisplayLabel(r, rooms)}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         {days.map(day => {
-          const daySchedules = getSchedulesForDay(day);
+          const { schedules: daySchedules, hasExamOverride, date } = getSchedulesForDay(day);
           return (
             <div key={day} className="space-y-4">
               <div className="flex items-center justify-between px-2">
-                <h4 className="font-bold text-slate-800">{day}</h4>
-                <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{daySchedules.length} Classes</span>
+                <div>
+                  <h4 className="font-bold text-slate-800">{day}</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{date}</p>
+                </div>
+                <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+                  {hasExamOverride ? 'Exam Override' : `${daySchedules.length} Classes`}
+                </span>
               </div>
               
               <div className="space-y-3">
@@ -8651,7 +8752,12 @@ function TimetableBuilder() {
                       </div>
                     </div>
                   </div>
-                )) : (
+                )) : hasExamOverride ? (
+                  <div className="py-12 text-center border-2 border-dashed border-amber-100 rounded-xl bg-amber-50/40">
+                    <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">Examination Period</p>
+                    <p className="mt-2 text-xs text-slate-500">Normal classes are suppressed by Academic Calendar for this date.</p>
+                  </div>
+                ) : (
                   <div className="py-12 text-center border-2 border-dashed border-slate-100 rounded-xl">
                     <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">No Classes</p>
                   </div>
@@ -8740,6 +8846,7 @@ function DigitalTwin() {
   const [equipment, setEquipment] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   
   const [selectedBuilding, setSelectedBuilding] = useState<any>(null);
   const [selectedBlock, setSelectedBlock] = useState<any>(null);
@@ -8758,7 +8865,7 @@ function DigitalTwin() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [cRes, bRes, blRes, fRes, rRes, mRes, sRes, bkRes, eRes, aRes, dRes] = await Promise.all([
+      const [cRes, bRes, blRes, fRes, rRes, mRes, sRes, bkRes, eRes, aRes, dRes, acRes] = await Promise.all([
         fetch('/api/campuses', { credentials: 'include' }),
         fetch('/api/buildings', { credentials: 'include' }),
         fetch('/api/blocks', { credentials: 'include' }),
@@ -8769,10 +8876,11 @@ function DigitalTwin() {
         fetch('/api/bookings', { credentials: 'include' }),
         fetch('/api/equipment', { credentials: 'include' }),
         fetch('/api/department_allocations', { credentials: 'include' }),
-        fetch('/api/departments', { credentials: 'include' })
+        fetch('/api/departments', { credentials: 'include' }),
+        fetch('/api/academic_calendars', { credentials: 'include' }),
       ]);
-      const [cData, bData, blData, fData, rData, mData, sData, bkData, eData, aData, dData] = await Promise.all([
-        cRes.json(), bRes.json(), blRes.json(), fRes.json(), rRes.json(), mRes.json(), sRes.json(), bkRes.json(), eRes.json(), aRes.json(), dRes.json()
+      const [cData, bData, blData, fData, rData, mData, sData, bkData, eData, aData, dData, acData] = await Promise.all([
+        cRes.json(), bRes.json(), blRes.json(), fRes.json(), rRes.json(), mRes.json(), sRes.json(), bkRes.json(), eRes.json(), aRes.json(), dRes.json(), acRes.json()
       ]);
       
       setCampuses(cData);
@@ -8786,6 +8894,7 @@ function DigitalTwin() {
       setEquipment(eData);
       setAllocations(aData);
       setDepartments(dData);
+      setAcademicCalendars(Array.isArray(acData) ? acData : []);
     };
     fetchData();
   }, []);
@@ -8849,7 +8958,6 @@ function DigitalTwin() {
   };
 
   const currentDate = formatLocalDate(new Date());
-  const currentDay = new Date().toLocaleDateString('en-US', { weekday: 'long' });
   const currentTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
   const scheduleDaysOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const roomTypes = Array.from(new Set(rooms.map(room => room.room_type).filter(Boolean))).sort();
@@ -8867,7 +8975,7 @@ function DigitalTwin() {
   };
 
   const getRoomSchedules = (room: any) =>
-    schedules
+    deduplicateScheduleRows(schedules)
       .filter(schedule => idsMatch(schedule.room_id, room.id))
       .map(schedule => ({
         ...schedule,
@@ -8879,27 +8987,28 @@ function DigitalTwin() {
         return (a.start_time || '').localeCompare(b.start_time || '');
       });
 
+  const getEffectiveRoomSchedulesForDate = (room: any, date: string) =>
+    getRoomSchedules(room)
+      .filter(schedule => schedule.day_of_week === new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' }))
+      .filter(schedule => !isScheduleSuppressedForDate(schedule, date, academicCalendars));
+
   const getCurrentSchedule = (room: any) =>
-    getRoomSchedules(room).find(schedule =>
-      schedule.day_of_week === currentDay &&
-      schedule.start_time <= currentTime &&
-      schedule.end_time > currentTime
-    );
+    getEffectiveRoomSchedulesForDate(room, currentDate).find(schedule => schedule.start_time <= currentTime && schedule.end_time > currentTime);
 
   const getNextSchedule = (room: any) => {
-    const dayIndex = scheduleDaysOrder.indexOf(currentDay);
-    const orderedDays = [
-      ...scheduleDaysOrder.slice(Math.max(dayIndex, 0)),
-      ...scheduleDaysOrder.slice(0, Math.max(dayIndex, 0)),
-    ];
-    const roomSchedules = getRoomSchedules(room);
-
-    for (const day of orderedDays) {
-      const daySchedules = roomSchedules.filter(schedule => schedule.day_of_week === day);
-      const upcomingSchedules = day === currentDay
+    for (let offset = 0; offset < 7; offset += 1) {
+      const date = new Date(`${currentDate}T00:00:00`);
+      date.setDate(date.getDate() + offset);
+      const dateKey = formatLocalDate(date);
+      const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+      const daySchedules = getEffectiveRoomSchedulesForDate(room, dateKey)
+        .filter(schedule => schedule.day_of_week === dayName);
+      const upcomingSchedules = offset === 0
         ? daySchedules.filter(schedule => schedule.start_time > currentTime)
         : daySchedules;
-      if (upcomingSchedules.length > 0) return upcomingSchedules[0];
+      if (upcomingSchedules.length > 0) {
+        return { ...upcomingSchedules[0], effective_date: dateKey };
+      }
     }
 
     return null;
