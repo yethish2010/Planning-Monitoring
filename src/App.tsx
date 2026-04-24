@@ -1326,6 +1326,9 @@ const DEFAULT_TIMETABLE_TIME_SLOTS = [
   { start_time: '15:10', end_time: '16:05' },
 ];
 
+const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
+  `${slot?.start_time || ''}-${slot?.end_time || ''}`;
+
 const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
   const today = formatLocalDate(new Date());
   if (endDate && endDate < today) return completedLabel;
@@ -8701,13 +8704,36 @@ function TimetableBuilder() {
     return Number(match[1]) * 60 + Number(match[2]);
   };
 
+  const activeRoom = useMemo(
+    () => rooms.find(r => r.id?.toString() === selectedRoom) ?? null,
+    [rooms, selectedRoom],
+  );
+
+  const roomTimeSlots = useMemo(() => {
+    const roomSchedules = schedules.filter(schedule => {
+      if (activeRoom && schedule.room_id != null) return idsMatch(schedule.room_id, activeRoom.id);
+      return activeRoom ? false : schedule.room === selectedRoom;
+    });
+
+    const uniqueSlots = Array.from(new Map(
+      roomSchedules
+        .filter(schedule => schedule.start_time && schedule.end_time)
+        .map(schedule => [
+          getTimeSlotKey(schedule),
+          { start_time: schedule.start_time, end_time: schedule.end_time },
+        ]),
+    ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+    return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
+  }, [activeRoom, schedules, selectedRoom]);
+
   const expandScheduleForDisplay = (schedule: any) => {
     const scheduleStart = timeToMinutes(schedule.start_time);
     const scheduleEnd = timeToMinutes(schedule.end_time);
 
     if (scheduleStart == null || scheduleEnd == null) return [schedule];
 
-    const matchingSlots = DEFAULT_TIMETABLE_TIME_SLOTS.filter(slot => {
+    const matchingSlots = roomTimeSlots.filter(slot => {
       const slotStart = timeToMinutes(slot.start_time);
       const slotEnd = timeToMinutes(slot.end_time);
       return slotStart != null && slotEnd != null && slotStart >= scheduleStart && slotEnd <= scheduleEnd;
@@ -8780,7 +8806,6 @@ function TimetableBuilder() {
   const weekDates = useMemo(() => getWeekDatesForReferenceDate(referenceDate), [referenceDate]);
 
   const getSchedulesForDay = (day: string) => {
-    const activeRoom = rooms.find(r => r.id?.toString() === selectedRoom);
     const dayDate = weekDates[day];
     const baseSchedules = schedules.filter(s => {
       if (s.day_of_week !== day) return false;
@@ -8804,8 +8829,8 @@ function TimetableBuilder() {
 
   const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
     const matchedKeys = new Set<string>();
-    const defaultSlots = DEFAULT_TIMETABLE_TIME_SLOTS.map(slot => {
-      const slotKey = `${slot.start_time}-${slot.end_time}`;
+    const defaultSlots = roomTimeSlots.map(slot => {
+      const slotKey = getTimeSlotKey(slot);
       const slotSchedules = daySchedules.filter(schedule => {
         const matchesSlot = schedule.start_time === slot.start_time && schedule.end_time === slot.end_time;
         if (matchesSlot) {
@@ -8823,7 +8848,7 @@ function TimetableBuilder() {
     });
 
     const extraSlots = daySchedules
-      .filter(schedule => !matchedKeys.has(`${schedule.start_time}-${schedule.end_time}-${schedule.display_id ?? schedule.id}`))
+      .filter(schedule => !matchedKeys.has(`${getTimeSlotKey(schedule)}-${schedule.display_id ?? schedule.id}`))
       .map(schedule => ({
         start_time: schedule.start_time,
         end_time: schedule.end_time,
@@ -8891,6 +8916,9 @@ function TimetableBuilder() {
             <span className="text-[11px] font-bold text-amber-700">Exam Blocked</span>
           </div>
         </div>
+        <p className="mt-3 text-[11px] text-slate-500">
+          Slots are inferred from the selected room&apos;s actual timetable timings, so different rooms can follow different year or semester patterns.
+        </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
