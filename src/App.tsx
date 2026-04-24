@@ -1329,6 +1329,12 @@ const DEFAULT_TIMETABLE_TIME_SLOTS = [
 const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
   `${slot?.start_time || ''}-${slot?.end_time || ''}`;
 
+const minutesToTime = (minutes: number) => {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+};
+
 const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
   const today = formatLocalDate(new Date());
   if (endDate && endDate < today) return completedLabel;
@@ -8715,13 +8721,33 @@ function TimetableBuilder() {
       return activeRoom ? false : schedule.room === selectedRoom;
     });
 
+    const intervals = roomSchedules
+      .map(schedule => ({
+        start: timeToMinutes(schedule.start_time),
+        end: timeToMinutes(schedule.end_time),
+      }))
+      .filter((interval): interval is { start: number; end: number } =>
+        interval.start != null && interval.end != null && interval.end > interval.start,
+      );
+
+    const boundaryPoints = Array.from(new Set(intervals.flatMap(interval => [interval.start, interval.end])))
+      .sort((a, b) => a - b);
+
     const uniqueSlots = Array.from(new Map(
-      roomSchedules
-        .filter(schedule => schedule.start_time && schedule.end_time)
-        .map(schedule => [
-          getTimeSlotKey(schedule),
-          { start_time: schedule.start_time, end_time: schedule.end_time },
-        ]),
+      boundaryPoints
+        .slice(0, -1)
+        .map((start, index) => ({ start, end: boundaryPoints[index + 1] }))
+        .filter(segment =>
+          segment.end > segment.start &&
+          intervals.some(interval => interval.start <= segment.start && interval.end >= segment.end),
+        )
+        .map(segment => {
+          const slot = {
+            start_time: minutesToTime(segment.start),
+            end_time: minutesToTime(segment.end),
+          };
+          return [getTimeSlotKey(slot), slot] as const;
+        }),
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
@@ -8917,7 +8943,7 @@ function TimetableBuilder() {
           </div>
         </div>
         <p className="mt-3 text-[11px] text-slate-500">
-          Slots are inferred from the selected room&apos;s actual timetable timings, so different rooms can follow different year or semester patterns.
+          Slots are inferred from the selected room&apos;s actual timetable timings and reduced to the smallest valid periods, so merged sessions like 09:00-11:00 are shown across 09:00-10:00 and 10:00-11:00 instead of as a separate slot.
         </p>
       </div>
 
