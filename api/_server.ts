@@ -2310,18 +2310,19 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       return (h2 + m2 / 60) - (h1 + m1 / 60);
     };
 
-    const latestAllocationByRoom = new Map<number, any>();
+    const latestAllocationByRoom = new Map<string, any>();
     allocations.forEach((allocation) => {
-      if (!latestAllocationByRoom.has(allocation.room_id)) {
-        latestAllocationByRoom.set(allocation.room_id, allocation);
+      const roomKey = allocation.room_id?.toString();
+      if (roomKey && !latestAllocationByRoom.has(roomKey)) {
+        latestAllocationByRoom.set(roomKey, allocation);
       }
     });
 
     const reports = rooms.map(room => {
-      const roomSchedules = schedules.filter(s => s.room_id === room.id);
-      const roomBookings = bookings.filter(b => b.room_id === room.id);
-      const allRoomBookings = allBookings.filter(b => b.room_id === room.id);
-      const allocation = latestAllocationByRoom.get(room.id);
+      const roomSchedules = schedules.filter(s => idsEqual(s.room_id, room.id));
+      const roomBookings = bookings.filter(b => idsEqual(b.room_id, room.id));
+      const allRoomBookings = allBookings.filter(b => idsEqual(b.room_id, room.id));
+      const allocation = latestAllocationByRoom.get(room.id?.toString());
       const inferredDepartmentCounts = new Map<number, number>();
       [...roomSchedules, ...allRoomBookings].forEach((entry: any) => {
         if (!entry.department_id) return;
@@ -2333,7 +2334,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       const department = departments.find(dept => dept.id === resolvedDepartmentId);
       const resolvedSchoolId = allocation?.school_id || department?.school_id || null;
       const school = schools.find(item => item.id === resolvedSchoolId);
-      const maintenanceIssues = maintenance.filter(item => item.room_id === room.id && item.status !== "Completed").length;
+      const maintenanceIssues = maintenance.filter(item => idsEqual(item.room_id, room.id) && item.status !== "Completed").length;
 
       const scheduledHours = roomSchedules.reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
       const bookedHours = roomBookings.reduce((acc, b) => {
@@ -2449,8 +2450,8 @@ app.get("/api/analytics/utilization-trends", authenticate, async (req, res) => {
     };
 
     const data = rooms.map(room => {
-      const sHours = schedules.filter(s => s.room_id === room.id).reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
-      const bHours = bookings.filter(b => b.room_id === room.id).reduce((acc, b) => acc + calculateHours(b.start_time, b.end_time), 0);
+      const sHours = schedules.filter(s => idsEqual(s.room_id, room.id)).reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
+      const bHours = bookings.filter(b => idsEqual(b.room_id, room.id)).reduce((acc, b) => acc + calculateHours(b.start_time, b.end_time), 0);
       const total = sHours + bHours;
       const utilization = Math.min(100, Math.round((total / 72) * 100)); // 72h week
       return { name: room.room_number, utilization };

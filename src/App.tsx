@@ -9507,16 +9507,6 @@ function DigitalTwin() {
     }
   };
 
-  const stats = {
-    totalRooms: rooms.length,
-    availableRooms: rooms.filter(r => r.status === 'Available').length,
-    maintenanceRooms: rooms.filter(r => r.status === 'Maintenance').length,
-    utilization: Math.round((rooms.filter(r => r.status !== 'Available').length / (rooms.length || 1)) * 100),
-    totalBuildings: buildings.length,
-    totalBlocks: blocks.length,
-    totalSchedules: schedules.length,
-  };
-
   const getBlocksForBuilding = (buildingId: number) =>
     blocks.filter(block => idsMatch(block.building_id, buildingId));
 
@@ -9559,6 +9549,14 @@ function DigitalTwin() {
     return `Shared: ${activeAllocationNames.join(', ')}`;
   };
 
+  const calculateUsageHours = (start?: string, end?: string) => {
+    if (!start || !end) return 0;
+    const [startHour, startMinute] = start.split(':').map(Number);
+    const [endHour, endMinute] = end.split(':').map(Number);
+    if ([startHour, startMinute, endHour, endMinute].some(value => Number.isNaN(value))) return 0;
+    return Math.max(0, (endHour + endMinute / 60) - (startHour + startMinute / 60));
+  };
+
   const getRoomSchedules = (room: any) =>
     deduplicateScheduleRows(schedules)
       .filter(schedule => idsMatch(schedule.room_id, room.id))
@@ -9571,6 +9569,23 @@ function DigitalTwin() {
         if (dayCompare !== 0) return dayCompare;
         return (a.start_time || '').localeCompare(b.start_time || '');
       });
+
+  const getApprovedRoomBookings = (room: any) =>
+    bookings.filter(booking => idsMatch(booking.room_id, room.id) && booking.status === 'Approved');
+
+  const getRoomUsageMetrics = (room: any) => {
+    const scheduledHours = getRoomSchedules(room).reduce((acc, schedule) => acc + calculateUsageHours(schedule.start_time, schedule.end_time), 0);
+    const bookedHours = getApprovedRoomBookings(room).reduce((acc, booking) => acc + calculateUsageHours(booking.start_time, booking.end_time), 0);
+    const totalUsedHours = scheduledHours + bookedHours;
+    const utilizationPercent = Math.min(100, Math.round((totalUsedHours / 72) * 100));
+
+    return {
+      scheduledHours: Math.round(scheduledHours * 10) / 10,
+      bookedHours: Math.round(bookedHours * 10) / 10,
+      totalUsedHours: Math.round(totalUsedHours * 10) / 10,
+      utilizationPercent,
+    };
+  };
 
   const getEffectiveRoomSchedulesForDate = (room: any, date: string) =>
     getRoomSchedules(room)
@@ -9658,8 +9673,9 @@ function DigitalTwin() {
   const getBuildingUtilization = (building: any) => {
     const buildingRooms = getRoomsForBuilding(building);
     if (buildingRooms.length === 0) return 0;
-    const activeRooms = buildingRooms.filter(room => ['Booked', 'Scheduled', 'Maintenance'].includes(getRoomLiveStatus(room))).length;
-    return Math.round((activeRooms / buildingRooms.length) * 100);
+    return Math.round(
+      buildingRooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / (buildingRooms.length || 1)
+    );
   };
 
   const getBuilding3DMetrics = (building: any) => {
@@ -9667,10 +9683,14 @@ function DigitalTwin() {
     const buildingFloors = floors.filter(floor => buildingBlocks.some(block => idsMatch(block.id, floor.block_id)));
     const buildingRooms = getRoomsForBuilding(building);
     const visibleRooms = buildingRooms.filter(roomMatchesFilters);
-    const activeRooms = visibleRooms.filter(room => ['Booked', 'Scheduled', 'Maintenance'].includes(getRoomLiveStatus(room))).length;
+    const usageRooms = visibleRooms.length > 0 ? visibleRooms : buildingRooms;
+    const activeRooms = usageRooms.filter(room => getRoomUsageMetrics(room).totalUsedHours > 0).length;
     const maintenanceCount = visibleRooms.filter(room => getRoomMaintenance(room).length > 0 || room.status === 'Maintenance').length;
-    const roomCount = visibleRooms.length || buildingRooms.length;
-    const utilizationRatio = roomCount > 0 ? activeRooms / roomCount : 0;
+    const roomCount = usageRooms.length;
+    const utilizationPercent = roomCount > 0
+      ? Math.round(usageRooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / roomCount)
+      : 0;
+    const utilizationRatio = utilizationPercent / 100;
 
     return {
       floorCount: Math.max(buildingFloors.length, Number(building.planned_floor_count) || 0, 1),
@@ -9678,9 +9698,19 @@ function DigitalTwin() {
       activeRooms,
       maintenanceCount,
       utilizationRatio,
-      utilizationPercent: Math.round(utilizationRatio * 100),
+      utilizationPercent,
       hasAlert: maintenanceCount > 0,
     };
+  };
+
+  const stats = {
+    totalRooms: rooms.length,
+    availableRooms: rooms.filter(r => getRoomLiveStatus(r) === 'Available').length,
+    maintenanceRooms: rooms.filter(r => getRoomLiveStatus(r) === 'Maintenance').length,
+    utilization: Math.round(rooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / (rooms.length || 1)),
+    totalBuildings: buildings.length,
+    totalBlocks: blocks.length,
+    totalSchedules: schedules.length,
   };
 
   const getHeatmapCardClass = (building: any) => {
@@ -9975,7 +10005,7 @@ function DigitalTwin() {
                         <span className="text-sm font-bold text-white">{visibleRooms.length}/{buildingRooms.length}</span>
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Live Use</span>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Utilization</span>
                         <span className="text-sm font-bold text-white">{utilization}%</span>
                       </div>
                       <div className="flex flex-col">
