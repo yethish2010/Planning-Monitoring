@@ -800,7 +800,7 @@ const getBatchAllocationOverlapError = async (allocation: any, excludeId?: strin
   });
 
   if (!conflictingAllocation) return null;
-  return `Room ${room?.room_number || allocation.room_id} already has an overlapping Exclusive batch allocation. Change one allocation to Shared or update the date range first.`;
+  return `Room ${room?.room_number || allocation.room_id} already has an overlapping Exclusive batch allocation. Shared allocations can overlap across batches or departments, but any overlap involving Exclusive is blocked.`;
 };
 
 const syncBatchAllocationStatuses = async () => {

@@ -1181,12 +1181,32 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'End Date': '2026-05-30',
         Notes: 'Room automatically releases after the calendar ends.',
       },
+      {
+        'Allocation ID': 'ALLOC-ECE2-322',
+        'Academic Calendar': 'CAL-BTECH-ECE-2025-26',
+        Department: 'Electronics and Communication Engineering',
+        Program: 'B.Tech',
+        Batch: '2024-2028',
+        'Academic Year': '2025-26',
+        Semester: 'Even',
+        'Year / Semester': '2nd Year - 4th Semester',
+        Building: 'M-Plaza',
+        Block: 'North',
+        Floor: 'Third Floor',
+        Room: '322',
+        'Allocation Mode': 'Shared',
+        'Room Type': 'Classroom',
+        'Required Capacity': 42,
+        'Start Date': '2026-01-02',
+        'End Date': '2026-05-30',
+        Notes: 'Shared room across departments; timetable slots must not overlap.',
+      },
     ],
     instructions: [
       'Use Academic Calendar to auto-fill department, batch, semester, start date, and end date wherever possible.',
-      'Use Allocation Mode = Shared when the same room is used by multiple batches in different timetable slots during the same date range.',
+      'Use Allocation Mode = Shared when the same room is used by multiple batches or different departments in different timetable slots during the same date range.',
       'Use Allocation Mode = Exclusive only when the room must stay reserved for one batch for that full date range.',
-      'Only Exclusive allocations block overlapping date ranges. Shared allocations can overlap and are separated later by timetable slots.',
+      'Only Exclusive allocations block overlapping date ranges. Shared allocations can overlap across departments and are separated later by timetable slots.',
       'Allocations are automatically shown as Released after the end date passes.',
     ],
   },
@@ -4844,7 +4864,7 @@ function BatchRoomAllocationManagement() {
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5">
           <div>
             <h3 className="text-lg font-bold text-slate-800">Find Batch Room Allocations</h3>
-            <p className="text-sm text-slate-500">Track active, upcoming, and released room allocations by batch, year, and semester.</p>
+            <p className="text-sm text-slate-500">Track active, upcoming, and released room allocations by batch, year, and semester, including rooms shared across departments.</p>
           </div>
           <button
             onClick={() => setLookupFilters({ school_id: '', department_id: '', status: '' })}

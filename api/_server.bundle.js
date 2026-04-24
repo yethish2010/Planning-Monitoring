@@ -876,7 +876,7 @@ var getBatchAllocationOverlapError = async (allocation, excludeId) => {
     return existingMode !== "shared" || nextMode !== "shared";
   });
   if (!conflictingAllocation) return null;
-  return `Room ${room?.room_number || allocation.room_id} already has an overlapping Exclusive batch allocation. Change one allocation to Shared or update the date range first.`;
+  return `Room ${room?.room_number || allocation.room_id} already has an overlapping Exclusive batch allocation. Shared allocations can overlap across batches or departments, but any overlap involving Exclusive is blocked.`;
 };
 var syncBatchAllocationStatuses = async () => {
   const allocations = await db.prepare("SELECT id, start_date, end_date, status FROM batch_room_allocations").all();
