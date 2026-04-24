@@ -771,6 +771,22 @@ const getScheduleRenderSignature = (schedule: any) => [
   normalizeImportMatchValue(schedule?.department_id),
 ].join('|');
 
+const getScheduleAcademicContextKey = (schedule: any) => [
+  normalizeImportMatchValue(schedule?.department_id),
+  normalizeImportMatchValue(normalizeSemesterValue(schedule?.semester, '')),
+  normalizeImportMatchValue(schedule?.section),
+].join('|');
+
+const getScheduleAcademicContextLabel = (schedule: any, departments: any[]) => {
+  const departmentName = schedule?.department_name
+    || departments.find((department: any) => idsMatch(department.id, schedule?.department_id))?.name
+    || schedule?.department
+    || '';
+  const semester = normalizeSemesterValue(schedule?.semester, '');
+  const section = schedule?.section?.toString().trim() || '';
+  return [departmentName, semester, section ? `Section ${section}` : ''].filter(Boolean).join(' • ');
+};
+
 const deduplicateScheduleRows = (rows: any[]) => {
   const seen = new Set<string>();
   return rows.filter((row) => {
@@ -1273,7 +1289,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
-      'Department, Semester, and Section are also used by Timetable View to infer the correct slot pattern for mixed-use rooms. Fill them consistently for accurate vacancy display.',
+      'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
       'Normal schedules stay in the master timetable, but they are suppressed automatically on dates covered by Academic Calendar rows with Event Type = Examinations for the same department and semester.',
@@ -6064,6 +6080,9 @@ function BookingManagement() {
     buildingId: '',
     blockId: '',
     floorId: '',
+    departmentId: '',
+    semester: '',
+    section: '',
     roomType: '',
     equipment: '',
     sortBy: 'best-fit'
@@ -6126,9 +6145,18 @@ function BookingManagement() {
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
       const requestedRoomLabel = params.get('room');
+      const requestedDepartmentId = params.get('departmentId') || '';
+      const requestedSemester = normalizeSemesterValue(params.get('semester'), '');
+      const requestedSection = params.get('section')?.trim() || '';
       const requestedRoom = requestedRoomId
         ? safeRooms.find(room => idsMatch(room.id, requestedRoomId))
         : findRoomByImportLabel(safeRooms, requestedRoomLabel);
+      setSearchCriteria(prev => ({
+        ...prev,
+        departmentId: requestedDepartmentId || prev.departmentId,
+        semester: requestedSemester || prev.semester,
+        section: requestedSection || prev.section,
+      }));
       if (requestedRoom) {
         const floor = safeFloors.find(item => idsMatch(item.id, requestedRoom.floor_id));
         const block = safeBlocks.find(item => idsMatch(item.id, floor?.block_id));
@@ -6158,6 +6186,11 @@ function BookingManagement() {
   const bookingDepartmentOptions = canChooseAnyRequestDepartment || !user?.department
     ? departments
     : departments.filter(dept => normalizeLookupValue(dept.name) === normalizeLookupValue(user.department));
+  const selectedAcademicContextLabel = [
+    departments.find(dept => idsMatch(dept.id, searchCriteria.departmentId))?.name,
+    searchCriteria.semester,
+    searchCriteria.section ? `Section ${searchCriteria.section}` : '',
+  ].filter(Boolean).join(' • ');
 
   useEffect(() => {
     const interval = window.setInterval(fetchMyBookings, 10000);
@@ -6270,6 +6303,12 @@ function BookingManagement() {
     return `${building?.name || 'Building not set'}${blockLabel} - ${floor ? getFloorName(floor.floor_number) : 'Floor not set'}`;
   };
   const getRoomEquipment = (roomId: number) => equipment.filter(item => item.room_id === roomId).map(item => item.name).filter(Boolean);
+  const scheduleMatchesSelectedAcademicContext = (schedule: any) => {
+    if (searchCriteria.departmentId && !idsMatch(schedule.department_id, searchCriteria.departmentId)) return false;
+    if (searchCriteria.semester && normalizeSemesterValue(schedule.semester, '') !== searchCriteria.semester) return false;
+    if (searchCriteria.section && (schedule.section?.toString().trim() || '') !== searchCriteria.section.trim()) return false;
+    return true;
+  };
   const filterAndSortRooms = (roomList: any[]) => {
     const requestedCapacity = parseInt(searchCriteria.members, 10) || 0;
     return roomList.filter(room => {
@@ -6380,7 +6419,7 @@ function BookingManagement() {
     setBookingForm({
       eventName: '',
       purpose: '',
-      departmentId: userDepartmentId,
+      departmentId: searchCriteria.departmentId || userDepartmentId,
       equipmentRequired: searchCriteria.equipment,
       notes: '',
       recurring: false,
@@ -6700,6 +6739,40 @@ function BookingManagement() {
             </select>
           </div>
           <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Academic Department</label>
+            <select
+              value={searchCriteria.departmentId}
+              onChange={e => setSearchCriteria({ ...searchCriteria, departmentId: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">Any Department</option>
+              {departments
+                .slice()
+                .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+                .map(department => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Academic Semester</label>
+            <select
+              value={searchCriteria.semester}
+              onChange={e => setSearchCriteria({ ...searchCriteria, semester: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            >
+              <option value="">Any Semester</option>
+              {SEMESTER_OPTIONS.map(semester => <option key={semester} value={semester}>{semester}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Academic Section</label>
+            <input
+              value={searchCriteria.section}
+              onChange={e => setSearchCriteria({ ...searchCriteria, section: e.target.value })}
+              placeholder="Any Section"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+          <div className="space-y-1">
             <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Room Type</label>
             <select
               value={searchCriteria.roomType}
@@ -6740,6 +6813,11 @@ function BookingManagement() {
               bookingMessage.type === 'error' ? "bg-rose-50 border-rose-100 text-rose-700" : "bg-emerald-50 border-emerald-100 text-emerald-700"
             )}>
               {bookingMessage.text}
+            </div>
+          )}
+          {selectedAcademicContextLabel && (
+            <div className="md:col-span-4 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              Academic context selected: <span className="font-bold">{selectedAcademicContextLabel}</span>. Vacancy still uses actual time overlaps, and this context is carried into room schedule review and request defaults for mixed-use rooms.
             </div>
           )}
           <div className="md:col-span-4 mt-2">
@@ -6963,6 +7041,9 @@ function BookingManagement() {
                 <p className="text-xs text-slate-500">
                   {bookingModal.rooms.map(room => `Room ${getRoomDisplayLabel(room, rooms)}`).join(', ')} - {getDurationLabel()}
                 </p>
+                {selectedAcademicContextLabel && (
+                  <p className="mt-1 text-[11px] font-bold text-blue-700">Academic Context: {selectedAcademicContextLabel}</p>
+                )}
               </div>
               <button onClick={() => setBookingModal(null)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
             </div>
@@ -7031,6 +7112,9 @@ function BookingManagement() {
             <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <div>
                 <h3 className="text-lg font-bold text-slate-800">Room {getRoomDisplayLabel(selectedRoomForSchedule, rooms)} Schedule</h3>
+                {selectedAcademicContextLabel && (
+                  <p className="mt-1 text-[11px] font-bold text-blue-700">Academic Context: {selectedAcademicContextLabel}</p>
+                )}
                 <p className="text-xs text-slate-500">{searchCriteria.date} • {new Date(searchCriteria.date).toLocaleDateString('en-US', { weekday: 'long' })}</p>
               </div>
               <button onClick={() => setIsScheduleModalOpen(false)} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
@@ -7047,13 +7131,23 @@ function BookingManagement() {
                     {roomSchedule.schedules.length > 0 ? (
                       <div className="space-y-2">
                         {roomSchedule.schedules.map((s: any) => (
-                          <div key={s.id} className="p-3 bg-blue-50 border border-blue-100 rounded-xl flex justify-between items-center">
+                          <div key={s.id} className={cn(
+                            "p-3 rounded-xl flex justify-between items-center",
+                            scheduleMatchesSelectedAcademicContext(s)
+                              ? "bg-blue-50 border border-blue-200"
+                              : "bg-slate-50 border border-slate-200"
+                          )}>
                             <div>
-                              <p className="font-bold text-blue-800 text-sm">{s.course_name}</p>
-                              <p className="text-xs text-blue-600">{s.faculty}</p>
+                              <p className={cn("font-bold text-sm", scheduleMatchesSelectedAcademicContext(s) ? "text-blue-800" : "text-slate-700")}>{s.course_name}</p>
+                              <p className={cn("text-xs", scheduleMatchesSelectedAcademicContext(s) ? "text-blue-600" : "text-slate-500")}>
+                                {[s.faculty, getScheduleAcademicContextLabel(s, departments)].filter(Boolean).join(' • ')}
+                              </p>
                             </div>
                             <div className="text-right">
-                              <p className="text-xs font-bold text-blue-700">{s.start_time} - {s.end_time}</p>
+                              <p className={cn("text-xs font-bold", scheduleMatchesSelectedAcademicContext(s) ? "text-blue-700" : "text-slate-600")}>{s.start_time} - {s.end_time}</p>
+                              {selectedAcademicContextLabel && scheduleMatchesSelectedAcademicContext(s) && (
+                                <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">Matching Context</p>
+                              )}
                             </div>
                           </div>
                         ))}
@@ -8751,10 +8845,6 @@ function TimetableBuilder() {
   )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.semester]);
 
   useEffect(() => {
-    setTimetableContext({ department_id: '', semester: '', section: '' });
-  }, [selectedRoom]);
-
-  useEffect(() => {
     setTimetableContext(current => ({
       department_id: current.department_id && roomDepartmentOptions.some(option => option.value === current.department_id) ? current.department_id : '',
       semester: current.semester && roomSemesterOptions.includes(current.semester) ? current.semester : '',
@@ -8854,11 +8944,19 @@ function TimetableBuilder() {
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
       const requestedRoomLabel = params.get('room');
+      const requestedDepartmentId = params.get('departmentId') || '';
+      const requestedSemester = normalizeSemesterValue(params.get('semester'), '');
+      const requestedSection = params.get('section')?.trim() || '';
       const requestedRoom = requestedRoomId
         ? rData.find((room: any) => idsMatch(room.id, requestedRoomId))
         : findRoomByImportLabel(rData, requestedRoomLabel);
       const firstBookableRoom = rData.find(isRoomReservable);
       const activeRoom = requestedRoom || (selectedRoom ? rData.find((room: any) => idsMatch(room.id, selectedRoom)) : null) || firstBookableRoom;
+      setTimetableContext({
+        department_id: requestedDepartmentId,
+        semester: requestedSemester,
+        section: requestedSection,
+      });
       if (activeRoom) {
         setSelectedRoom(activeRoom.id?.toString());
       }
@@ -9471,6 +9569,8 @@ function DigitalTwin() {
         schedule.course_code,
         schedule.faculty,
         schedule.department_name,
+        schedule.semester,
+        schedule.section,
         schedule.day_of_week,
       ]),
       building?.name,
@@ -9535,10 +9635,20 @@ function DigitalTwin() {
       : selectedBuildingVisibleBlocks;
   const shouldShowBlockLevel = selectedBuildingBlockOptions.length > 0;
   const activeBlock = selectedBlock || (!shouldShowBlockLevel ? selectedBuildingDirectBlock : null);
-  const getRoomDeepLinkSearch = (room: any) => {
+  const getRoomContextCount = (room: any) => new Set(
+    getRoomSchedules(room).map(schedule => getScheduleAcademicContextKey(schedule)),
+  ).size;
+
+  const getRoomLinkContextSchedule = (room: any) => getCurrentSchedule(room) || getNextSchedule(room) || getRoomSchedules(room)[0] || null;
+
+  const getRoomDeepLinkSearch = (room: any, schedule?: any) => {
     const params = new URLSearchParams();
     if (room?.id !== undefined && room?.id !== null) params.set('roomId', room.id.toString());
     params.set('room', getRoomDisplayLabel(room, rooms));
+    if (schedule?.department_id !== undefined && schedule?.department_id !== null) params.set('departmentId', schedule.department_id.toString());
+    const normalizedSemester = normalizeSemesterValue(schedule?.semester, '');
+    if (normalizedSemester) params.set('semester', normalizedSemester);
+    if (schedule?.section) params.set('section', schedule.section.toString());
     return `?${params.toString()}`;
   };
 
@@ -9877,6 +9987,8 @@ function DigitalTwin() {
               const roomSchedules = getRoomSchedules(r);
               const currentSchedule = getCurrentSchedule(r);
               const nextSchedule = currentSchedule ? null : getNextSchedule(r);
+              const linkContextSchedule = getRoomLinkContextSchedule(r);
+              const roomContextCount = getRoomContextCount(r);
               const statusClass =
                 liveStatus === 'Available' ? "bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20" :
                 liveStatus === 'Booked' || liveStatus === 'Scheduled' ? "bg-rose-500/10 border-rose-500/30 hover:bg-rose-500/20" :
@@ -9901,16 +10013,21 @@ function DigitalTwin() {
                 <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mb-1">{getRoomTypeDisplay(r)}</p>
                 <p className="text-[10px] text-slate-300 font-bold mb-1">{liveStatus}</p>
                 <p className="text-[10px] text-slate-500 mb-1">{departmentLabel}</p>
+                {roomContextCount > 1 && (
+                  <p className="text-[10px] font-bold text-blue-300 mb-1">Mixed Contexts: {roomContextCount}</p>
+                )}
                 {currentSchedule ? (
                   <div className="mt-3 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-rose-300">Current Class</p>
                     <p className="mt-1 text-xs font-bold text-white line-clamp-1">{currentSchedule.course_name}</p>
+                    <p className="text-[10px] text-slate-500">{getScheduleAcademicContextLabel(currentSchedule, departments) || 'Academic context not set'}</p>
                     <p className="text-[10px] text-slate-400">{currentSchedule.start_time} - {currentSchedule.end_time} • {currentSchedule.faculty || 'Faculty not set'}</p>
                   </div>
                 ) : nextSchedule ? (
                   <div className="mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-300">Next Class</p>
                     <p className="mt-1 text-xs font-bold text-white line-clamp-1">{nextSchedule.course_name}</p>
+                    <p className="text-[10px] text-slate-500">{getScheduleAcademicContextLabel(nextSchedule, departments) || 'Academic context not set'}</p>
                     <p className="text-[10px] text-slate-400">{nextSchedule.day_of_week} • {nextSchedule.start_time} - {nextSchedule.end_time}</p>
                   </div>
                 ) : (
@@ -9925,8 +10042,8 @@ function DigitalTwin() {
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-4">
-                  <Link to={`/timetable${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Timetable</Link>
-                  <Link to={`/bookings${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Bookings</Link>
+                  <Link to={`/timetable${getRoomDeepLinkSearch(r, linkContextSchedule)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Timetable</Link>
+                  <Link to={`/bookings${getRoomDeepLinkSearch(r, linkContextSchedule)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Bookings</Link>
                   <Link to={`/equipment${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Equipment</Link>
                   <Link to={`/maintenance${getRoomDeepLinkSearch(r)}`} className="px-2 py-1 rounded-lg bg-white/5 text-[10px] font-bold text-slate-300 hover:text-white text-center">Maintenance</Link>
                 </div>
