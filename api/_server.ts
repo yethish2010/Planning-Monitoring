@@ -200,6 +200,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       semester TEXT,
       start_date DATE NOT NULL,
       end_date DATE NOT NULL,
+      allocation_mode TEXT DEFAULT 'Shared',
       room_type TEXT,
       capacity INTEGER,
       status TEXT DEFAULT 'Planned',
@@ -351,6 +352,7 @@ await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
+await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
 
 const normalizeRoomTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase();
@@ -758,6 +760,9 @@ const normalizeBatchRoomAllocationPayload = async (payload: any) => {
   nextPayload.semester = nextPayload.semester?.toString().trim() || linkedCalendar?.semester || null;
   nextPayload.start_date = startDate;
   nextPayload.end_date = endDate;
+  nextPayload.allocation_mode = ["exclusive", "shared"].includes((nextPayload.allocation_mode || "").toString().trim().toLowerCase())
+    ? ((nextPayload.allocation_mode || "").toString().trim().toLowerCase() === "exclusive" ? "Exclusive" : "Shared")
+    : "Shared";
   nextPayload.room_type = room.room_type;
   nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
   nextPayload.status = deriveBatchAllocationStatus(startDate, endDate, nextPayload.status);
@@ -777,7 +782,7 @@ const getBatchAllocationOverlapError = async (allocation: any, excludeId?: strin
   if (!allocation?.room_id || !allocation?.start_date || !allocation?.end_date) return null;
   const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(allocation.room_id) as any;
   const existingAllocations = await db.prepare(`
-    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
+    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status, allocation_mode
     FROM batch_room_allocations
     WHERE room_id = ?
     ${excludeId ? "AND id != ?" : ""}
@@ -787,11 +792,15 @@ const getBatchAllocationOverlapError = async (allocation: any, excludeId?: strin
     if ((existing.status || "").toString().trim().toLowerCase() === "released") return false;
     const existingStart = normalizeIsoDate(existing.start_date);
     const existingEnd = normalizeIsoDate(existing.end_date);
-    return !(existingEnd < allocation.start_date || existingStart > allocation.end_date);
+    const overlaps = !(existingEnd < allocation.start_date || existingStart > allocation.end_date);
+    if (!overlaps) return false;
+    const existingMode = (existing.allocation_mode || "Shared").toString().trim().toLowerCase();
+    const nextMode = (allocation.allocation_mode || "Shared").toString().trim().toLowerCase();
+    return existingMode !== "shared" || nextMode !== "shared";
   });
 
   if (!conflictingAllocation) return null;
-  return `Room ${room?.room_number || allocation.room_id} already has a batch allocation for an overlapping period. Release or change the existing allocation first.`;
+  return `Room ${room?.room_number || allocation.room_id} already has an overlapping Exclusive batch allocation. Change one allocation to Shared or update the date range first.`;
 };
 
 const syncBatchAllocationStatuses = async () => {

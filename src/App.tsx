@@ -828,6 +828,7 @@ const findCampusForImport = (campuses: any[], row: any) => {
 const SEMESTER_OPTIONS = ['Odd', 'Even'];
 const ACADEMIC_CALENDAR_EVENT_TYPES = ['Semester Period', 'Class Work', 'Examinations', 'Holiday', 'Vacation', 'Orientation', 'Registration', 'Project Review', 'Internship'];
 const ALLOCATION_STATUS_OPTIONS = ['Planned', 'Active', 'Released'];
+const BATCH_ALLOCATION_MODE_OPTIONS = ['Shared', 'Exclusive'];
 const ACADEMIC_CALENDAR_TITLE_OPTIONS_BY_EVENT: Record<string, string[]> = {
   'Semester Period': ['Odd Semester', 'Even Semester', 'Teaching Period', 'Semester Duration'],
   'Class Work': ['Class Work', 'Instruction Period', 'Teaching Days'],
@@ -1158,7 +1159,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   'Batch Room Allocation': {
-    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Allocation ID', 'Academic Calendar', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Building', 'Block', 'Floor', 'Room', 'Allocation Mode', 'Room Type', 'Required Capacity', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Allocation ID': 'ALLOC-MTECH2-322',
@@ -1173,6 +1174,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Block: 'North',
         Floor: 'Third Floor',
         Room: '322',
+        'Allocation Mode': 'Shared',
         'Room Type': 'Classroom',
         'Required Capacity': 36,
         'Start Date': '2026-01-02',
@@ -1182,7 +1184,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Use Academic Calendar to auto-fill department, batch, semester, start date, and end date wherever possible.',
-      'The same room can be reused by another batch only when the date ranges do not overlap.',
+      'Use Allocation Mode = Shared when the same room is used by multiple batches in different timetable slots during the same date range.',
+      'Use Allocation Mode = Exclusive only when the room must stay reserved for one batch for that full date range.',
+      'Only Exclusive allocations block overlapping date ranges. Shared allocations can overlap and are separated later by timetable slots.',
       'Allocations are automatically shown as Released after the end date passes.',
     ],
   },
@@ -4667,6 +4671,7 @@ function BatchRoomAllocationManagement() {
       options: (formData: any) => getYearOfStudyOptions(formData.program, formData.semester),
       render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program),
     },
+    { key: 'allocation_mode', label: 'Allocation Mode', type: 'select', options: BATCH_ALLOCATION_MODE_OPTIONS, required: false },
     {
       key: 'building_id',
       label: 'Building',
@@ -4772,6 +4777,7 @@ function BatchRoomAllocationManagement() {
         academic_year: row['Academic Year'] || calendar?.academic_year,
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])) || calendar?.year_of_study,
         semester: normalizeSemesterValue(getImportValue(row, ['Semester']), '') || calendar?.semester,
+        allocation_mode: getImportValue(row, ['Allocation Mode'])?.toString() || 'Shared',
         room_type: row['Room Type'] || room?.room_type,
         capacity: parseInt(getImportValue(row, ['Required Capacity', 'Capacity'])?.toString() || '0', 10) || 0,
         start_date: startDate,
@@ -4816,6 +4822,7 @@ function BatchRoomAllocationManagement() {
     payload.school_id = department.school_id;
     payload.program = normalizeProgramValue(payload.program);
     payload.year_of_study = normalizeYearOfStudyValue(payload.year_of_study);
+    payload.allocation_mode = BATCH_ALLOCATION_MODE_OPTIONS.includes(payload.allocation_mode) ? payload.allocation_mode : 'Shared';
     payload.room_type = room.room_type;
     payload.status = getRangeLifecycleStatus(payload.start_date, payload.end_date, 'Released', 'Planned');
     if (calendar) {
@@ -4887,7 +4894,7 @@ function BatchRoomAllocationManagement() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-100">
-                {['Department', 'Program', 'Batch', 'Year / Semester', 'Semester', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
+                {['Department', 'Program', 'Batch', 'Year / Semester', 'Semester', 'Mode', 'Building', 'Block', 'Floor', 'Room', 'From', 'To', 'Status', 'Open'].map(header => (
                   <th key={header} className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{header}</th>
                 ))}
               </tr>
@@ -4903,6 +4910,7 @@ function BatchRoomAllocationManagement() {
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.batch || '-'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{getStudyPeriodDisplay(allocation.year_of_study, allocation.semester, allocation.program)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{allocation.semester || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{allocation.allocation_mode || 'Shared'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{building?.name || 'Unknown'}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{getBlockDisplayLabel(block, building)}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{floor ? getFloorName(floor.floor_number) : 'Unknown'}</td>
@@ -4921,7 +4929,7 @@ function BatchRoomAllocationManagement() {
               })}
               {lookupResults.length === 0 && (
                 <tr>
-                  <td colSpan={13} className="px-4 py-8 text-center text-sm text-slate-400 italic">
+                  <td colSpan={14} className="px-4 py-8 text-center text-sm text-slate-400 italic">
                     Select a school, department, or status to view batch room allocations.
                   </td>
                 </tr>
@@ -9032,9 +9040,16 @@ function DigitalTwin() {
     equipment.filter(item => idsMatch(item.room_id, room.id)).map(item => item.name).filter(Boolean);
 
   const getRoomDepartmentLabel = (room: any) => {
-    const allocation = allocations.find(item => idsMatch(item.room_id, room.id));
-    const department = departments.find(item => idsMatch(item.id, allocation?.department_id));
-    return department?.name || 'Unmapped';
+    const activeAllocationNames = Array.from(new Set(
+      allocations
+        .filter(item => idsMatch(item.room_id, room.id))
+        .filter(item => getRangeLifecycleStatus(item.start_date, item.end_date, 'Released', 'Planned') !== 'Released')
+        .map(item => departments.find(department => idsMatch(department.id, item.department_id))?.name)
+        .filter(Boolean)
+    ));
+    if (activeAllocationNames.length === 0) return 'Unmapped';
+    if (activeAllocationNames.length === 1) return activeAllocationNames[0] as string;
+    return `Shared: ${activeAllocationNames.join(', ')}`;
   };
 
   const getRoomSchedules = (room: any) =>
