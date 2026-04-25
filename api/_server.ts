@@ -29,6 +29,7 @@ const databasePath = process.env.DATABASE_PATH
   : defaultDatabasePath;
 const databaseProvider = process.env.DATABASE_PROVIDER || "";
 const databaseUrl = process.env.DATABASE_URL || "";
+const APP_TIME_ZONE = process.env.APP_TIMEZONE || "Asia/Kolkata";
 const normalizeOrigin = (value?: string | null) => {
   const trimmed = value?.trim();
   if (!trimmed) return "";
@@ -50,6 +51,24 @@ const allowedOrigins = new Set(
     .map(normalizeOrigin)
     .filter(Boolean)
 );
+
+const getCampusDateTimeParts = (value: Date = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(value);
+
+  const readPart = (type: string) => parts.find(part => part.type === type)?.value || "";
+  return {
+    date: `${readPart("year")}-${readPart("month")}-${readPart("day")}`,
+    time: `${readPart("hour")}:${readPart("minute")}`,
+  };
+};
 
 const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
   const idDefinition = dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
@@ -2039,9 +2058,7 @@ createCrudRoutes("maintenance");
     try {
       const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
       
-      const now = new Date();
-      const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-      const currentDate = now.toISOString().split('T')[0];
+      const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
       const activeSchedules = await getEffectiveSchedulesForDate(currentDate, schedule =>
         schedule.start_time <= currentTime && schedule.end_time > currentTime
       );
@@ -2103,12 +2120,22 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get() as any;
     
     // Calculate currently scheduled rooms
-    const now = new Date();
-    const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    const currentDate = now.toISOString().split('T')[0];
+    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
     const activeSchedules = await getEffectiveSchedulesForDate(currentDate, schedule =>
       schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
+    const linkedScheduledRooms = await db.prepare(`
+      SELECT DISTINCT room_id
+      FROM schedules
+      WHERE room_id IS NOT NULL
+    `).all() as any[];
+    const upcomingApprovedBookedRooms = await db.prepare(`
+      SELECT DISTINCT room_id
+      FROM bookings
+      WHERE status = 'Approved'
+        AND room_id IS NOT NULL
+        AND date >= ?
+    `).all(currentDate) as any[];
     const activeBookings = await db.prepare(`
       SELECT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
@@ -2138,7 +2165,10 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow: availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      scheduledRooms: currentlyScheduled.count,
+      scheduledRooms: new Set([
+        ...linkedScheduledRooms.map(item => item.room_id).filter(Boolean),
+        ...upcomingApprovedBookedRooms.map(item => item.room_id).filter(Boolean),
+      ]).size,
       recentAlerts
     });
   } catch (err: any) {

@@ -175,6 +175,7 @@ var defaultDatabasePath = isVercelRuntime ? path2.join("/tmp", "campus.db") : pa
 var databasePath = process.env.DATABASE_PATH ? path2.resolve(process.env.DATABASE_PATH) : defaultDatabasePath;
 var databaseProvider = process.env.DATABASE_PROVIDER || "";
 var databaseUrl = process.env.DATABASE_URL || "";
+var APP_TIME_ZONE = process.env.APP_TIMEZONE || "Asia/Kolkata";
 var normalizeOrigin = (value) => {
   const trimmed = value?.trim();
   if (!trimmed) return "";
@@ -193,6 +194,22 @@ var allowedOrigins = new Set(
     "http://localhost:3000"
   ].map(normalizeOrigin).filter(Boolean)
 );
+var getCampusDateTimeParts = (value = /* @__PURE__ */ new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(value);
+  const readPart = (type) => parts.find((part) => part.type === type)?.value || "";
+  return {
+    date: `${readPart("year")}-${readPart("month")}-${readPart("day")}`,
+    time: `${readPart("hour")}:${readPart("minute")}`
+  };
+};
 var getPrimarySchemaSql = (dialect) => {
   const idDefinition = dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
   const timestampType = dialect === "postgres" ? "TIMESTAMP" : "DATETIME";
@@ -1937,9 +1954,7 @@ createCrudRoutes("maintenance");
 app.get(`/api/rooms`, authenticate, async (req, res) => {
   try {
     const items = await db.prepare(`SELECT * FROM rooms`).all();
-    const now = /* @__PURE__ */ new Date();
-    const currentTime = now.getHours().toString().padStart(2, "0") + ":" + now.getMinutes().toString().padStart(2, "0");
-    const currentDate = now.toISOString().split("T")[0];
+    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
     const activeSchedules = await getEffectiveSchedulesForDate(
       currentDate,
       (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
@@ -1988,13 +2003,23 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     const maintenanceRooms = await db.prepare("SELECT COUNT(*) as count FROM rooms WHERE status = 'Maintenance'").get();
     const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get();
     const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get();
-    const now = /* @__PURE__ */ new Date();
-    const currentTime = now.getHours().toString().padStart(2, "0") + ":" + now.getMinutes().toString().padStart(2, "0");
-    const currentDate = now.toISOString().split("T")[0];
+    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
     const activeSchedules = await getEffectiveSchedulesForDate(
       currentDate,
       (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
+    const linkedScheduledRooms = await db.prepare(`
+      SELECT DISTINCT room_id
+      FROM schedules
+      WHERE room_id IS NOT NULL
+    `).all();
+    const upcomingApprovedBookedRooms = await db.prepare(`
+      SELECT DISTINCT room_id
+      FROM bookings
+      WHERE status = 'Approved'
+        AND room_id IS NOT NULL
+        AND date >= ?
+    `).all(currentDate);
     const activeBookings = await db.prepare(`
       SELECT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
@@ -2021,7 +2046,10 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      scheduledRooms: currentlyScheduled.count,
+      scheduledRooms: (/* @__PURE__ */ new Set([
+        ...linkedScheduledRooms.map((item) => item.room_id).filter(Boolean),
+        ...upcomingApprovedBookedRooms.map((item) => item.room_id).filter(Boolean)
+      ])).size,
       recentAlerts
     });
   } catch (err) {
