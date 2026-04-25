@@ -2446,6 +2446,7 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode, roles?
 // --- DASHBOARD HOME ---
 
 function DashboardHome() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [utilizationTrend, setUtilizationTrend] = useState<any[]>([]);
@@ -2514,11 +2515,11 @@ function DashboardHome() {
   }, [schoolUsageItems, stats]);
 
   const statCards = [
-    { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-    { label: 'Scheduled Rooms', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50' },
-    { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50' },
-    { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50' },
+    { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/buildings' },
+    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/bookings' },
+    { label: 'Scheduled Rooms', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/timetable' },
+    { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance' },
+    { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings' },
   ];
 
   if (loading) {
@@ -2533,7 +2534,13 @@ function DashboardHome() {
     <div className="space-y-8">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         {statCards.map((stat) => (
-          <div key={stat.label} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all group">
+          <button
+            key={stat.label}
+            type="button"
+            onClick={() => navigate(stat.path)}
+            className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all group text-left focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+            aria-label={`Open ${stat.label}`}
+          >
             <div className="flex items-center justify-between mb-4">
               <div className={cn("p-3 rounded-2xl transition-all group-hover:scale-110", stat.bg)}>
                 <stat.icon className={stat.color} size={24} />
@@ -2545,7 +2552,7 @@ function DashboardHome() {
             </div>
             <h3 className="text-3xl font-black text-slate-800 mb-1">{stat.value}</h3>
             <p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{stat.label}</p>
-          </div>
+          </button>
         ))}
       </div>
 
@@ -9420,6 +9427,7 @@ function Building3D({ building, metrics, onClick, isSelected, heatmapMode }: any
 }
 
 function DigitalTwin() {
+  const navigate = useNavigate();
   const [campuses, setCampuses] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
@@ -9768,6 +9776,13 @@ function DigitalTwin() {
     totalBlocks: scopeBlocks.length,
     totalSchedules: scopeSchedules.length,
   };
+  const twinStatCards = [
+    { label: 'Total Rooms', value: stats.totalRooms, icon: DoorOpen, iconBg: 'bg-emerald-50', iconClass: 'text-emerald-500', path: '/rooms' },
+    { label: 'Utilization', value: stats.utilization, icon: Activity, iconBg: 'bg-blue-50', iconClass: 'text-blue-500', path: '/reports' },
+    { label: 'Maintenance', value: stats.maintenanceRooms, icon: Wrench, iconBg: 'bg-amber-50', iconClass: 'text-amber-500', path: '/maintenance' },
+    { label: 'Buildings', value: stats.totalBuildings, icon: Building2, iconBg: 'bg-indigo-50', iconClass: 'text-indigo-500', path: '/buildings' },
+    { label: 'Timetable Rows', value: stats.totalSchedules, icon: Calendar, iconBg: 'bg-cyan-50', iconClass: 'text-cyan-500', path: '/scheduling' },
+  ];
   const getRoomContextCount = (room: any) => new Set(
     getRoomSchedules(room).map(schedule => getScheduleAcademicContextKey(schedule)),
   ).size;
@@ -9789,51 +9804,23 @@ function DigitalTwin() {
     <div className="space-y-8">
       {/* Digital Twin Header Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-500">
-            <DoorOpen size={24} />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Rooms</p>
-            <p className="text-xl font-bold text-slate-800">{stats.totalRooms}</p>
-          </div>
-        </div>
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-500">
-            <Activity size={24} />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Utilization</p>
-            <p className="text-xl font-bold text-slate-800">{stats.utilization}%</p>
-          </div>
-        </div>
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-500">
-            <Wrench size={24} />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Maintenance</p>
-            <p className="text-xl font-bold text-slate-800">{stats.maintenanceRooms}</p>
-          </div>
-        </div>
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-500">
-            <Building2 size={24} />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Buildings</p>
-            <p className="text-xl font-bold text-slate-800">{stats.totalBuildings}</p>
-          </div>
-        </div>
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-cyan-50 rounded-2xl flex items-center justify-center text-cyan-500">
-            <Calendar size={24} />
-          </div>
-          <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Timetable Rows</p>
-            <p className="text-xl font-bold text-slate-800">{stats.totalSchedules}</p>
-          </div>
-        </div>
+        {twinStatCards.map((card) => (
+          <button
+            key={card.label}
+            type="button"
+            onClick={() => navigate(card.path)}
+            className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4 text-left hover:shadow-md hover:-translate-y-0.5 transition-all focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+            aria-label={`Open ${card.label}`}
+          >
+            <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center", card.iconBg, card.iconClass)}>
+              <card.icon size={24} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{card.label}</p>
+              <p className="text-xl font-bold text-slate-800">{card.value}</p>
+            </div>
+          </button>
+        ))}
       </div>
 
       <div className="flex items-center justify-between">
