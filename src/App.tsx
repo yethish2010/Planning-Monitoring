@@ -9095,7 +9095,7 @@ function TimetableBuilder() {
         ...slot,
         key: slotKey,
         schedules: slotSchedules,
-        state: slotSchedules.length > 0 ? 'scheduled' : hasExamOverride ? 'exam' : 'vacant',
+        state: slotSchedules.length > 1 ? 'multi' : slotSchedules.length === 1 ? 'scheduled' : hasExamOverride ? 'exam' : 'vacant',
       };
     });
 
@@ -9209,6 +9209,10 @@ function TimetableBuilder() {
             <div className="h-2.5 w-2.5 rounded-full bg-emerald-500"></div>
             <span className="text-[11px] font-bold text-emerald-700">Scheduled</span>
           </div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1">
+            <div className="h-2.5 w-2.5 rounded-full bg-rose-500"></div>
+            <span className="text-[11px] font-bold text-rose-700">Multiple Classes</span>
+          </div>
           <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
             <div className="h-2.5 w-2.5 rounded-full border-2 border-slate-400 bg-white"></div>
             <span className="text-[11px] font-bold text-slate-600">Vacant</span>
@@ -9259,7 +9263,9 @@ function TimetableBuilder() {
                     key={slot.key}
                     className={cn(
                       "rounded-xl border p-4 transition-all",
-                      slot.state === 'scheduled'
+                      slot.state === 'multi'
+                        ? "bg-rose-100 border-rose-300 shadow-sm hover:shadow-md"
+                        : slot.state === 'scheduled'
                         ? "bg-emerald-100 border-emerald-300 shadow-sm hover:shadow-md"
                         : slot.state === 'exam'
                           ? "border-amber-300 bg-amber-100/90 shadow-sm"
@@ -9271,13 +9277,13 @@ function TimetableBuilder() {
                         <div
                           className={cn(
                             "w-2.5 h-2.5 rounded-full",
-                            slot.state === 'scheduled' ? "bg-emerald-600" : slot.state === 'exam' ? "bg-amber-600" : "border-2 border-slate-500 bg-white",
+                            slot.state === 'multi' ? "bg-rose-600" : slot.state === 'scheduled' ? "bg-emerald-600" : slot.state === 'exam' ? "bg-amber-600" : "border-2 border-slate-500 bg-white",
                           )}
                         ></div>
                         <span
                           className={cn(
                             "text-[10px] font-bold uppercase tracking-wider",
-                            slot.state === 'scheduled' ? "text-emerald-800" : slot.state === 'exam' ? "text-amber-800" : "text-slate-600",
+                            slot.state === 'multi' ? "text-rose-800" : slot.state === 'scheduled' ? "text-emerald-800" : slot.state === 'exam' ? "text-amber-800" : "text-slate-600",
                           )}
                         >
                           {slot.start_time} - {slot.end_time}
@@ -9286,20 +9292,30 @@ function TimetableBuilder() {
                       <span
                         className={cn(
                           "rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-widest border",
-                          slot.state === 'scheduled'
+                          slot.state === 'multi'
+                            ? "border-rose-300 bg-rose-200 text-rose-800"
+                            : slot.state === 'scheduled'
                             ? "border-emerald-300 bg-emerald-200 text-emerald-800"
                             : slot.state === 'exam'
                               ? "border-amber-300 bg-amber-200 text-amber-800"
                               : "border-slate-300 bg-slate-200 text-slate-600",
                         )}
                       >
-                        {slot.state === 'scheduled' ? 'Scheduled' : slot.state === 'exam' ? 'Blocked' : 'Vacant'}
+                        {slot.state === 'multi' ? 'Multiple' : slot.state === 'scheduled' ? 'Scheduled' : slot.state === 'exam' ? 'Blocked' : 'Vacant'}
                       </span>
                     </div>
                     {slot.schedules.length > 0 ? (
                       <div className="space-y-3">
                         {slot.schedules.map((s: any) => (
-                          <div key={s.display_id ?? s.id} className="group relative rounded-lg border border-emerald-200 bg-white p-3 shadow-sm ring-1 ring-emerald-100">
+                          <div
+                            key={s.display_id ?? s.id}
+                            className={cn(
+                              "group relative rounded-lg bg-white p-3 shadow-sm",
+                              slot.state === 'multi'
+                                ? "border border-rose-200 ring-1 ring-rose-100"
+                                : "border border-emerald-200 ring-1 ring-emerald-100"
+                            )}
+                          >
                             <button
                               onClick={() => handleDelete(s.id)}
                               className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
