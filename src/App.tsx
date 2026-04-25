@@ -84,6 +84,7 @@ const sanitizeExtractedSchedule = (schedule: any) => {
     section: schedule.section?.toString().trim() || null,
     course_name: schedule.course_name?.toString().trim(),
     faculty: schedule.faculty?.toString().trim() || 'TBA',
+    year_of_study: normalizeYearOfStudyValue(schedule.year_of_study ?? schedule.year),
     room: schedule.room?.toString().trim(),
     day_of_week: schedule.day_of_week?.toString().trim(),
     start_time: schedule.start_time?.toString().trim(),
@@ -178,6 +179,37 @@ const parseSemesterNumber = (value: unknown) => {
   };
 
   return romanToNumber[romanMatch[1]] || null;
+};
+
+const parseYearOfStudyNumber = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return null;
+
+  const numericMatch =
+    normalized.match(/(?:^|\b)(\d+)(?:st|nd|rd|th)?\s*year\b/)?.[1] ||
+    normalized.match(/\byear\s*(\d+)\b/)?.[1] ||
+    normalized.match(/^(\d+)$/)?.[1];
+  if (numericMatch) return Number(numericMatch);
+
+  const romanMatch =
+    normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\s*year\b/)?.[1] ||
+    normalized.match(/\byear\s*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/)?.[1] ||
+    normalized.match(/^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/)?.[1];
+  if (!romanMatch) return null;
+
+  const romanToNumber: Record<string, number> = {
+    i: 1,
+    ii: 2,
+    iii: 3,
+    iv: 4,
+    v: 5,
+    vi: 6,
+    vii: 7,
+    viii: 8,
+    ix: 9,
+    x: 10,
+  };
+  return romanToNumber[romanMatch] || null;
 };
 
 const normalizeSemesterValue = (value: unknown, fallback = 'Odd') => {
@@ -320,10 +352,8 @@ const normalizeProgramValue = (value: unknown) => {
 };
 
 const normalizeYearOfStudyValue = (value: unknown, fallback = '') => {
-  const normalized = value?.toString().trim() || '';
-  if (!normalized) return fallback;
-  const matchedNumber = normalized.match(/(\d+)/);
-  return matchedNumber?.[1] || fallback;
+  const yearNumber = parseYearOfStudyNumber(value);
+  return yearNumber ? yearNumber.toString() : fallback;
 };
 
 const toRomanNumeral = (value: number) => {
@@ -440,6 +470,10 @@ const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any, batchRo
   const scheduleSemester = normalizeSemesterValue(schedule?.semester, '');
   const calendarSemester = normalizeSemesterValue(calendar?.semester, '');
   if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
+
+  const scheduleYear = normalizeYearOfStudyValue(schedule?.year_of_study, '');
+  const calendarYear = normalizeYearOfStudyValue(calendar?.year_of_study, '');
+  if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
 
   const calendarHasSpecificContext = Boolean(
     calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
@@ -1394,10 +1428,10 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
       'Room can match the canonical Room Number or any Room Alias from Room Management. Use Room Aliases for shared seminar halls with multiple door numbers such as 4015 and 4016.',
       'Timetable imports link against any matching room in Room Management, even if that room is not currently bookable for ad-hoc bookings. This keeps seminar halls, shared rooms, and internal-use venues linked correctly in schedules.',
-      'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department and Semester when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
+      'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department, Semester, and Year when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
-      'Year is shown automatically in Schedule Records and Timetable View as I Year, II Year, III Year, or IV Year by deriving it from the semester value, so no separate Year column is required in the schedule import sheet.',
+      'Year is shown automatically in Schedule Records and Timetable View as I Year, II Year, III Year, or IV Year. Explicit Year values like II Year or 2 Year are normalized during extraction/import, and if Year is omitted it is still derived from Semester, so no separate Year column is required in the schedule import sheet.',
       'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
@@ -6082,6 +6116,7 @@ function SchedulingManagement() {
             start_time: schedule.start_time,
             end_time: schedule.end_time,
             student_count: schedule.student_count ?? null,
+            year_of_study: normalizeYearOfStudyValue(schedule.year_of_study, getYearNumberFromAcademicContext('', schedule.semester)?.toString() || ''),
             semester: normalizeSemesterValue(schedule.semester),
             import_status: room ? 'Linked' : 'Unmatched Room',
             review_note: room ? null : 'Room label from AI import did not match any canonical room or room alias in Room Management.',

@@ -368,6 +368,7 @@ await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("schedules", "room_label", "TEXT");
 await ensureColumn("schedules", "section", "TEXT");
 await ensureColumn("schedules", "semester", "TEXT");
+await ensureColumn("schedules", "year_of_study", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
 await ensureColumn("schedules", "review_note", "TEXT");
 await ensureColumn("schedules", "source_file", "TEXT");
@@ -853,29 +854,38 @@ const syncBatchAllocationStatuses = async () => {
 const getDayOfWeekForDate = (date: string) =>
   new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { weekday: "long" });
 
+const parseSemesterNumber = (value: any) => {
+  const normalized = normalizeDuplicateValue(value)?.toString() || "";
+  if (!normalized) return null;
+
+  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
+  if (numericMatch) return Number(numericMatch);
+
+  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
+  if (!romanMatch) return null;
+
+  const romanToNumber: Record<string, number> = {
+    i: 1,
+    ii: 2,
+    iii: 3,
+    iv: 4,
+    v: 5,
+    vi: 6,
+    vii: 7,
+    viii: 8,
+    ix: 9,
+    x: 10,
+  };
+  return romanToNumber[romanMatch[1]] || null;
+};
+
 const normalizeSemesterKey = (value: any) => {
   const normalized = normalizeDuplicateValue(value)?.toString() || "";
   if (!normalized) return "";
   if (normalized.includes("odd") || normalized.includes("fall")) return "odd";
   if (normalized.includes("even") || normalized.includes("spring") || normalized.includes("summer")) return "even";
-  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
-  if (romanMatch) {
-    const romanToNumber: Record<string, number> = {
-      i: 1,
-      ii: 2,
-      iii: 3,
-      iv: 4,
-      v: 5,
-      vi: 6,
-      vii: 7,
-      viii: 8,
-      ix: 9,
-      x: 10,
-    };
-    return (romanToNumber[romanMatch[1]] || 0) % 2 === 0 ? "even" : "odd";
-  }
-  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
-  if (numericMatch) return Number(numericMatch) % 2 === 0 ? "even" : "odd";
+  const semesterNumber = parseSemesterNumber(value);
+  if (semesterNumber) return semesterNumber % 2 === 0 ? "even" : "odd";
   return normalized;
 };
 
@@ -889,10 +899,33 @@ const normalizeAcademicContextText = (value: any) =>
   normalizeDuplicateValue(value)?.toString() || "";
 
 const normalizeYearOfStudyKey = (value: any) => {
-  const normalized = value?.toString().trim() || "";
+  const normalized = value?.toString().trim().toLowerCase() || "";
   if (!normalized) return "";
-  const matchedNumber = normalized.match(/(\d+)/);
-  return matchedNumber?.[1] || "";
+  const numericMatch =
+    normalized.match(/(?:^|\b)(\d+)(?:st|nd|rd|th)?\s*year\b/)?.[1] ||
+    normalized.match(/\byear\s*(\d+)\b/)?.[1] ||
+    normalized.match(/^(\d+)$/)?.[1];
+  if (numericMatch) return numericMatch;
+
+  const romanMatch =
+    normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\s*year\b/)?.[1] ||
+    normalized.match(/\byear\s*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/)?.[1] ||
+    normalized.match(/^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/)?.[1];
+  if (!romanMatch) return "";
+
+  const romanToNumber: Record<string, string> = {
+    i: "1",
+    ii: "2",
+    iii: "3",
+    iv: "4",
+    v: "5",
+    vi: "6",
+    vii: "7",
+    viii: "8",
+    ix: "9",
+    x: "10",
+  };
+  return romanToNumber[romanMatch] || "";
 };
 
 const allocationMatchesCalendarContext = (allocation: any, calendar: any) => {
@@ -922,6 +955,10 @@ const scheduleMatchesCalendarOverride = (schedule: any, calendar: any, activeBat
   const scheduleSemester = normalizeSemesterKey(schedule.semester);
   const calendarSemester = normalizeSemesterKey(calendar.semester);
   if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
+
+  const scheduleYear = normalizeYearOfStudyKey(schedule.year_of_study);
+  const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
+  if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
 
   const calendarHasSpecificContext = Boolean(
     calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
@@ -1207,14 +1244,15 @@ const normalizeExtractedRoomValue = (value: any) => {
 const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMaps: any[]) => {
   if (!Array.isArray(schedules) || schedules.length === 0) return [];
 
-  const fallbackBySection = new Map<string, { room: string; semester: any; department: any }>();
+  const fallbackBySection = new Map<string, { room: string; semester: any; department: any; year_of_study: any }>();
   for (const item of Array.isArray(sectionRoomMaps) ? sectionRoomMaps : []) {
     const section = normalizeExtractedSectionValue(item?.section);
     const room = normalizeExtractedRoomValue(item?.room);
     const semester = item?.semester || null;
     const department = item?.department || null;
-    if (section && (room || semester || department) && !fallbackBySection.has(section)) {
-      fallbackBySection.set(section, { room, semester, department });
+    const year_of_study = normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null;
+    if (section && (room || semester || department || year_of_study) && !fallbackBySection.has(section)) {
+      fallbackBySection.set(section, { room, semester, department, year_of_study });
     }
   }
 
@@ -1223,11 +1261,18 @@ const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMap
     const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
     const inheritedDefaults = normalizedSection ? fallbackBySection.get(normalizedSection) : null;
     const inheritedRoom = inheritedDefaults?.room || "";
+    const inheritedYear = inheritedDefaults?.year_of_study || "";
+    const scheduleYear = normalizeYearOfStudyKey(schedule?.year_of_study || schedule?.year);
+    const derivedYearFromSemester = (() => {
+      const semesterNumber = parseSemesterNumber(schedule?.semester || inheritedDefaults?.semester);
+      return semesterNumber ? Math.ceil(semesterNumber / 2).toString() : "";
+    })();
     return {
       ...schedule,
       section: normalizedSection || schedule?.section || null,
       department: schedule?.department || inheritedDefaults?.department || null,
       semester: schedule?.semester || inheritedDefaults?.semester || null,
+      year_of_study: scheduleYear || inheritedYear || derivedYearFromSemester || null,
       room: explicitRoom || inheritedRoom || schedule?.room || null,
     };
   });
@@ -1319,11 +1364,13 @@ Return a single JSON object with exactly these keys:
 - sectionRoomMaps: array of objects with fields:
   - section
   - room
+  - year_of_study
   - semester
   - department
 - schedules: array of objects with fields:
   - department (e.g., "Computer Science and Engineering")
   - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
+  - year_of_study (Roman or numeric year if available, e.g., "II", "2", "IV Year")
   - semester (Odd or Even if available, else null)
   - course_code (if available, else null)
   - course_name (the subject name, e.g., "Computer Networks")
@@ -1334,7 +1381,7 @@ Return a single JSON object with exactly these keys:
   - end_time (24h format HH:mm, e.g., "09:55")
   - student_count (estimate or null)
 
-Ensure sectionRoomMaps captures the default Room No from the header of each section timetable.
+Ensure sectionRoomMaps captures the default Room No and academic context from the header of each section timetable.
 Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
 For normal theory slots, use the section header Room No as the room.
 Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
@@ -1345,8 +1392,8 @@ If a slot has multiple subjects or is a lab, create separate entries if needed o
 
 Example response:
 {
-  "sectionRoomMaps": [{"section":"A4","room":"331","semester":"Even","department":"Computer Science and Engineering"}],
-  "schedules": [{"department":"Computer Science and Engineering","section":"A4","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
+  "sectionRoomMaps": [{"section":"A4","room":"331","year_of_study":"II","semester":"Even","department":"Computer Science and Engineering"}],
+  "schedules": [{"department":"Computer Science and Engineering","section":"A4","year_of_study":"II","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
 }` });
 
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
