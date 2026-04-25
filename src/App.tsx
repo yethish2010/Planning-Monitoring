@@ -388,15 +388,57 @@ const isExaminationCalendarEvent = (calendar: any) => {
   return eventType.includes('exam') || eventType.includes('ciat') || title.includes('exam') || title.includes('ciat');
 };
 
-const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any) => {
+const normalizeAcademicContextText = (value: unknown) => normalizeLookupValue(value);
+
+const doesAllocationMatchCalendarContext = (allocation: any, calendar: any) => {
+  if (calendar?.id && allocation?.academic_calendar_id && idsMatch(allocation.academic_calendar_id, calendar.id)) return true;
+  if (!idsMatch(allocation?.department_id, calendar?.department_id)) return false;
+
+  const allocationSemester = normalizeSemesterValue(allocation?.semester, '');
+  const calendarSemester = normalizeSemesterValue(calendar?.semester, '');
+  if (allocationSemester && calendarSemester && allocationSemester !== calendarSemester) return false;
+
+  if (calendar?.program && normalizeAcademicContextText(allocation?.program) !== normalizeAcademicContextText(calendar?.program)) return false;
+  if (calendar?.batch && normalizeAcademicContextText(allocation?.batch) !== normalizeAcademicContextText(calendar?.batch)) return false;
+  if (calendar?.academic_year && normalizeAcademicContextText(allocation?.academic_year) !== normalizeAcademicContextText(calendar?.academic_year)) return false;
+
+  const allocationYear = normalizeYearOfStudyValue(allocation?.year_of_study, '');
+  const calendarYear = normalizeYearOfStudyValue(calendar?.year_of_study, '');
+  if (calendarYear && allocationYear && allocationYear !== calendarYear) return false;
+
+  return true;
+};
+
+const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any, batchRoomAllocations: any[] = [], date?: string) => {
   if (!idsMatch(schedule?.department_id, calendar?.department_id)) return false;
   const scheduleSemester = normalizeSemesterValue(schedule?.semester, '');
   const calendarSemester = normalizeSemesterValue(calendar?.semester, '');
   if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
-  return true;
+
+  const calendarHasSpecificContext = Boolean(
+    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
+  );
+  if (!calendarHasSpecificContext) return true;
+
+  const relevantAllocations = batchRoomAllocations.filter(allocation => {
+    if (schedule?.room_id != null && allocation?.room_id != null && !idsMatch(allocation.room_id, schedule.room_id)) return false;
+    if (!idsMatch(allocation?.department_id, schedule?.department_id)) return false;
+
+    const allocationSemester = normalizeSemesterValue(allocation?.semester, '');
+    if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
+
+    if (date && allocation?.start_date && allocation?.end_date) {
+      if (allocation.start_date > date || allocation.end_date < date) return false;
+    }
+
+    return true;
+  });
+
+  if (relevantAllocations.length === 0) return true;
+  return relevantAllocations.some(allocation => doesAllocationMatchCalendarContext(allocation, calendar));
 };
 
-const isScheduleSuppressedForDate = (schedule: any, date: string, calendars: any[]) => {
+const isScheduleSuppressedForDate = (schedule: any, date: string, calendars: any[], batchRoomAllocations: any[] = []) => {
   if (!date || !Array.isArray(calendars) || calendars.length === 0) return false;
   return calendars.some(calendar =>
     isExaminationCalendarEvent(calendar) &&
@@ -404,7 +446,7 @@ const isScheduleSuppressedForDate = (schedule: any, date: string, calendars: any
     calendar?.end_date &&
     calendar.start_date <= date &&
     calendar.end_date >= date &&
-    doesScheduleMatchCalendarOverride(schedule, calendar)
+    doesScheduleMatchCalendarOverride(schedule, calendar, batchRoomAllocations, date)
   );
 };
 
@@ -1235,6 +1277,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
       'Use Event Type = Examinations for CIAT-I, CIAT-II, semester-end exams, or any exam window where normal class timetable occupancy must be ignored.',
       'When an Examinations row is active for a department and semester, Timetable View, Room Bookings vacancy checks, and Digital Twin suppress normal class schedules for those dates.',
+      'If Program, Batch, Academic Year, or Year / Semester are also filled and matching Batch Room Allocations exist, the exam suppression is narrowed safely to that exact academic context instead of blocking every room in the department.',
       'Completed calendars can be reused as history; do not delete them unless they were imported by mistake.',
     ],
   },
@@ -1284,6 +1327,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Use Academic Calendar to auto-fill department, batch, semester, start date, and end date wherever possible.',
+      'For CIAT or examination windows that should suppress only one batch or year, keep Program, Batch, Academic Year, and Year / Semester aligned with the Academic Calendar row so the app can apply the exam override safely.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. Roman numerals are normalized automatically during import.',
       'Use Allocation Mode = Shared when the same room is used by multiple batches or different departments in different timetable slots during the same date range.',
       'Use Allocation Mode = Exclusive only when the room must stay reserved for one batch for that full date range.',
@@ -1331,6 +1375,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
       'Normal schedules stay in the master timetable, but they are suppressed automatically on dates covered by Academic Calendar rows with Event Type = Examinations for the same department and semester.',
+      'If the matching Academic Calendar row is more specific and Batch Room Allocations are available, the suppression also respects Program, Batch, Academic Year, and Year / Semester so CIAT rows do not block unrelated classes.',
     ],
   },
   Maintenance: {
@@ -8906,6 +8951,7 @@ function TimetableBuilder() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
+  const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
   const [timetableContext, setTimetableContext] = useState({ department_id: '', semester: '', section: '' });
@@ -9038,20 +9084,23 @@ function TimetableBuilder() {
 
   const fetchData = async () => {
     try {
-      const [sRes, rRes, dRes, cRes] = await Promise.all([
+      const [sRes, rRes, dRes, cRes, baRes] = await Promise.all([
         fetch('/api/schedules', { credentials: 'include' }),
         fetch('/api/rooms', { credentials: 'include' }),
         fetch('/api/departments', { credentials: 'include' }),
         fetch('/api/academic_calendars', { credentials: 'include' }),
+        fetch('/api/batch_room_allocations', { credentials: 'include' }),
       ]);
       const sData = await sRes.json();
       const rData = await rRes.json();
       const dData = await dRes.json();
       const cData = await cRes.json();
+      const baData = await baRes.json();
       setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
       setDepartments(dData);
       setAcademicCalendars(Array.isArray(cData) ? cData : []);
+      setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
       const requestedRoomLabel = params.get('room');
@@ -9106,7 +9155,7 @@ function TimetableBuilder() {
     const baseSchedules = contextSchedules.filter(s => s.day_of_week === day);
 
     const effectiveSchedules = deduplicateScheduleRows(baseSchedules.filter(schedule =>
-      !isScheduleSuppressedForDate(schedule, dayDate, academicCalendars)
+      !isScheduleSuppressedForDate(schedule, dayDate, academicCalendars, batchRoomAllocations)
     ))
       .map(s => ({
         ...s,
@@ -9115,7 +9164,7 @@ function TimetableBuilder() {
       .flatMap(expandScheduleForDisplay)
       .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
-    const hasExamOverride = baseSchedules.some(schedule => isScheduleSuppressedForDate(schedule, dayDate, academicCalendars));
+    const hasExamOverride = baseSchedules.some(schedule => isScheduleSuppressedForDate(schedule, dayDate, academicCalendars, batchRoomAllocations));
     return { schedules: effectiveSchedules, hasExamOverride, date: dayDate };
   };
 
@@ -9482,6 +9531,7 @@ function DigitalTwin() {
   const [bookings, setBookings] = useState<any[]>([]);
   const [equipment, setEquipment] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
+  const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
   
@@ -9502,7 +9552,7 @@ function DigitalTwin() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [cRes, bRes, blRes, fRes, rRes, mRes, sRes, bkRes, eRes, aRes, dRes, acRes] = await Promise.all([
+      const [cRes, bRes, blRes, fRes, rRes, mRes, sRes, bkRes, eRes, aRes, baRes, dRes, acRes] = await Promise.all([
         fetch('/api/campuses', { credentials: 'include' }),
         fetch('/api/buildings', { credentials: 'include' }),
         fetch('/api/blocks', { credentials: 'include' }),
@@ -9513,11 +9563,12 @@ function DigitalTwin() {
         fetch('/api/bookings', { credentials: 'include' }),
         fetch('/api/equipment', { credentials: 'include' }),
         fetch('/api/department_allocations', { credentials: 'include' }),
+        fetch('/api/batch_room_allocations', { credentials: 'include' }),
         fetch('/api/departments', { credentials: 'include' }),
         fetch('/api/academic_calendars', { credentials: 'include' }),
       ]);
-      const [cData, bData, blData, fData, rData, mData, sData, bkData, eData, aData, dData, acData] = await Promise.all([
-        cRes.json(), bRes.json(), blRes.json(), fRes.json(), rRes.json(), mRes.json(), sRes.json(), bkRes.json(), eRes.json(), aRes.json(), dRes.json(), acRes.json()
+      const [cData, bData, blData, fData, rData, mData, sData, bkData, eData, aData, baData, dData, acData] = await Promise.all([
+        cRes.json(), bRes.json(), blRes.json(), fRes.json(), rRes.json(), mRes.json(), sRes.json(), bkRes.json(), eRes.json(), aRes.json(), baRes.json(), dRes.json(), acRes.json()
       ]);
       
       setCampuses(cData);
@@ -9530,6 +9581,7 @@ function DigitalTwin() {
       setBookings(bkData);
       setEquipment(eData);
       setAllocations(aData);
+      setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       setDepartments(dData);
       setAcademicCalendars(Array.isArray(acData) ? acData : []);
     };
@@ -9670,7 +9722,7 @@ function DigitalTwin() {
   const getEffectiveRoomSchedulesForDate = (room: any, date: string) =>
     getRoomSchedules(room)
       .filter(schedule => schedule.day_of_week === new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' }))
-      .filter(schedule => !isScheduleSuppressedForDate(schedule, date, academicCalendars));
+      .filter(schedule => !isScheduleSuppressedForDate(schedule, date, academicCalendars, batchRoomAllocations));
 
   const getCurrentSchedule = (room: any) =>
     getEffectiveRoomSchedulesForDate(room, currentDate).find(schedule => schedule.start_time <= currentTime && schedule.end_time > currentTime);

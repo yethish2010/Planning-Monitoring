@@ -885,7 +885,37 @@ const isExaminationCalendarEvent = (calendar: any) => {
   return eventType.includes("exam") || eventType.includes("ciat") || title.includes("exam") || title.includes("ciat");
 };
 
-const scheduleMatchesCalendarOverride = (schedule: any, calendar: any) => {
+const normalizeAcademicContextText = (value: any) =>
+  normalizeDuplicateValue(value)?.toString() || "";
+
+const normalizeYearOfStudyKey = (value: any) => {
+  const normalized = value?.toString().trim() || "";
+  if (!normalized) return "";
+  const matchedNumber = normalized.match(/(\d+)/);
+  return matchedNumber?.[1] || "";
+};
+
+const allocationMatchesCalendarContext = (allocation: any, calendar: any) => {
+  if (calendar?.id && allocation?.academic_calendar_id && allocation.academic_calendar_id.toString() === calendar.id.toString()) return true;
+  if (!allocation?.department_id || !calendar?.department_id) return false;
+  if (allocation.department_id.toString() !== calendar.department_id.toString()) return false;
+
+  const allocationSemester = normalizeSemesterKey(allocation.semester);
+  const calendarSemester = normalizeSemesterKey(calendar.semester);
+  if (allocationSemester && calendarSemester && allocationSemester !== calendarSemester) return false;
+
+  if (calendar?.program && normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(calendar.program)) return false;
+  if (calendar?.batch && normalizeAcademicContextText(allocation.batch) !== normalizeAcademicContextText(calendar.batch)) return false;
+  if (calendar?.academic_year && normalizeAcademicContextText(allocation.academic_year) !== normalizeAcademicContextText(calendar.academic_year)) return false;
+
+  const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
+  const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
+  if (calendarYear && allocationYear && allocationYear !== calendarYear) return false;
+
+  return true;
+};
+
+const scheduleMatchesCalendarOverride = (schedule: any, calendar: any, activeBatchAllocations: any[] = [], date?: string) => {
   if (!schedule?.department_id || !calendar?.department_id) return false;
   if (schedule.department_id.toString() !== calendar.department_id.toString()) return false;
 
@@ -893,7 +923,30 @@ const scheduleMatchesCalendarOverride = (schedule: any, calendar: any) => {
   const calendarSemester = normalizeSemesterKey(calendar.semester);
   if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
 
-  return true;
+  const calendarHasSpecificContext = Boolean(
+    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
+  );
+  if (!calendarHasSpecificContext) return true;
+
+  const relevantAllocations = activeBatchAllocations.filter((allocation: any) => {
+    if (schedule?.room_id != null && allocation?.room_id != null && allocation.room_id.toString() !== schedule.room_id.toString()) return false;
+    if (!allocation?.department_id || allocation.department_id.toString() !== schedule.department_id.toString()) return false;
+
+    const allocationSemester = normalizeSemesterKey(allocation.semester);
+    if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
+
+    if (date && allocation?.start_date && allocation?.end_date) {
+      const allocationStart = normalizeIsoDate(allocation.start_date);
+      const allocationEnd = normalizeIsoDate(allocation.end_date);
+      if (allocationStart && allocationEnd && (allocationStart > date || allocationEnd < date)) return false;
+    }
+
+    return true;
+  });
+
+  if (relevantAllocations.length === 0) return true;
+  return relevantAllocations.some((allocation: any) => allocationMatchesCalendarContext(allocation, calendar));
+
 };
 
 const filterSchedulesByAcademicCalendar = async (schedules: any[], date: string) => {
@@ -901,7 +954,7 @@ const filterSchedulesByAcademicCalendar = async (schedules: any[], date: string)
   if (!normalizedDate || !Array.isArray(schedules) || schedules.length === 0) return schedules;
 
   const activeExamCalendars = await db.prepare(`
-    SELECT id, department_id, semester, event_type, title, start_date, end_date
+    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, event_type, title, start_date, end_date
     FROM academic_calendars
     WHERE start_date <= ? AND end_date >= ?
   `).all(normalizedDate, normalizedDate) as any[];
@@ -909,8 +962,14 @@ const filterSchedulesByAcademicCalendar = async (schedules: any[], date: string)
   const examinationCalendars = activeExamCalendars.filter(isExaminationCalendarEvent);
   if (examinationCalendars.length === 0) return schedules;
 
+  const activeBatchAllocations = await db.prepare(`
+    SELECT id, academic_calendar_id, room_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
+    FROM batch_room_allocations
+    WHERE start_date <= ? AND end_date >= ? AND status != ?
+  `).all(normalizedDate, normalizedDate, "Released") as any[];
+
   return schedules.filter(schedule =>
-    !examinationCalendars.some(calendar => scheduleMatchesCalendarOverride(schedule, calendar))
+    !examinationCalendars.some(calendar => scheduleMatchesCalendarOverride(schedule, calendar, activeBatchAllocations, normalizedDate))
   );
 };
 
