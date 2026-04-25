@@ -1453,7 +1453,7 @@ const DEFAULT_TIMETABLE_TIME_SLOTS = [
   { start_time: '15:10', end_time: '16:05' },
 ];
 
-const MIN_INFERRED_TIMETABLE_SLOT_MINUTES = 20;
+const MIN_INFERRED_TIMETABLE_SLOT_MINUTES = 30;
 
 const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
   `${slot?.start_time || ''}-${slot?.end_time || ''}`;
@@ -9379,7 +9379,7 @@ function TimetableBuilder() {
           </div>
         </div>
         <p className="mt-3 text-[11px] text-slate-500">
-          Vacant slots are inferred from the selected room&apos;s actual timetable timings and reduced to the smallest valid periods, while short break gaps are ignored and scheduled classes keep their original imported duration.
+          Vacant slots are inferred from the selected room&apos;s actual timetable timings and reduced to the smallest valid periods, while short break gaps under 30 minutes are ignored and scheduled classes keep their original imported duration.
         </p>
       </div>
 
