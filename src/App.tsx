@@ -9200,6 +9200,14 @@ function TimetableBuilder() {
   const getSchedulesForDay = (day: string) => {
     const dayDate = weekDates[day];
     const baseSchedules = contextSchedules.filter(s => s.day_of_week === day);
+    const suppressedSchedules = deduplicateScheduleRows(baseSchedules.filter(schedule =>
+      isScheduleSuppressedForDate(schedule, dayDate, academicCalendars, batchRoomAllocations)
+    ))
+      .map(s => ({
+        ...s,
+        department_name: departments.find(d => idsMatch(d.id, s.department_id))?.name ?? s.department,
+      }))
+      .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     const effectiveSchedules = deduplicateScheduleRows(baseSchedules.filter(schedule =>
       !isScheduleSuppressedForDate(schedule, dayDate, academicCalendars, batchRoomAllocations)
@@ -9210,26 +9218,11 @@ function TimetableBuilder() {
       }))
       .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
-    const hasExamOverride = baseSchedules.some(schedule => isScheduleSuppressedForDate(schedule, dayDate, academicCalendars, batchRoomAllocations));
-    return { schedules: effectiveSchedules, hasExamOverride, date: dayDate };
+    const hasExamOverride = suppressedSchedules.length > 0;
+    return { schedules: effectiveSchedules, suppressedSchedules, hasExamOverride, date: dayDate };
   };
 
-  const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
-    const groupedSchedules = daySchedules.reduce((map, schedule) => {
-      const slotKey = getTimeSlotKey(schedule);
-      const existing = map.get(slotKey) || [];
-      map.set(slotKey, [...existing, schedule]);
-      return map;
-    }, new Map<string, any[]>());
-
-    const groupedScheduledSlots = Array.from(groupedSchedules.entries()).map(([slotKey, slotSchedules]) => ({
-      start_time: slotSchedules[0]?.start_time,
-      end_time: slotSchedules[0]?.end_time,
-      key: slotKey,
-      schedules: slotSchedules,
-      state: slotSchedules.length > 1 ? 'multi' : 'scheduled',
-    }));
-
+  const getDisplaySlotsForDay = (daySchedules: any[], suppressedSchedules: any[]) => {
     const scheduleCoversSlot = (schedule: any, slot: any) => {
       const scheduleStart = timeToMinutes(schedule.start_time);
       const scheduleEnd = timeToMinutes(schedule.end_time);
@@ -9239,16 +9232,23 @@ function TimetableBuilder() {
       return scheduleStart <= slotStart && scheduleEnd >= slotEnd;
     };
 
-    const vacantOrExamSlots = roomTimeSlots
-      .filter(slot => !daySchedules.some(schedule => scheduleCoversSlot(schedule, slot)))
-      .map(slot => ({
-        ...slot,
-        key: getTimeSlotKey(slot),
-        schedules: [],
-        state: hasExamOverride ? 'exam' : 'vacant',
-      }));
-
-    return [...groupedScheduledSlots, ...vacantOrExamSlots]
+    return roomTimeSlots
+      .map(slot => {
+        const coveringSchedules = daySchedules.filter(schedule => scheduleCoversSlot(schedule, slot));
+        const coveringSuppressedSchedules = suppressedSchedules.filter(schedule => scheduleCoversSlot(schedule, slot));
+        return {
+          ...slot,
+          key: getTimeSlotKey(slot),
+          schedules: coveringSchedules,
+          state: coveringSchedules.length > 1
+            ? 'multi'
+            : coveringSchedules.length === 1
+              ? 'scheduled'
+              : coveringSuppressedSchedules.length > 0
+                ? 'exam'
+                : 'vacant',
+        };
+      })
       .sort((a, b) => {
         const startCompare = (a.start_time || '').localeCompare(b.start_time || '');
         if (startCompare !== 0) return startCompare;
@@ -9394,8 +9394,8 @@ function TimetableBuilder() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
         {days.map(day => {
-          const { schedules: daySchedules, hasExamOverride, date } = getSchedulesForDay(day);
-          const displaySlots = getDisplaySlotsForDay(daySchedules, hasExamOverride);
+          const { schedules: daySchedules, suppressedSchedules, hasExamOverride, date } = getSchedulesForDay(day);
+          const displaySlots = getDisplaySlotsForDay(daySchedules, suppressedSchedules);
           const occupiedSlotCount = displaySlots.filter(slot => slot.schedules.length > 0).length;
           return (
             <div key={day} className="space-y-4">
