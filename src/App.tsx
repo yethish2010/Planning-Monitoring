@@ -9071,13 +9071,23 @@ function TimetableBuilder() {
 
   const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
     if (requiresContextFilterForVacancy) {
-      return daySchedules.map((schedule, index) => ({
-        start_time: schedule.start_time,
-        end_time: schedule.end_time,
-        key: `context-${schedule.display_id ?? schedule.id ?? index}`,
-        schedules: [schedule],
-        state: 'scheduled',
-      }));
+      const groupedSlots = new Map<string, any[]>();
+      for (const schedule of daySchedules) {
+        const slotKey = getTimeSlotKey(schedule);
+        const existing = groupedSlots.get(slotKey) || [];
+        existing.push(schedule);
+        groupedSlots.set(slotKey, existing);
+      }
+
+      return Array.from(groupedSlots.entries())
+        .map(([slotKey, schedulesInSlot]) => ({
+          start_time: schedulesInSlot[0]?.start_time,
+          end_time: schedulesInSlot[0]?.end_time,
+          key: `context-${slotKey}`,
+          schedules: schedulesInSlot,
+          state: schedulesInSlot.length > 1 ? 'multi' : 'scheduled',
+        }))
+        .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
     }
 
     const matchedKeys = new Set<string>();
