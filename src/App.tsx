@@ -9124,27 +9124,6 @@ function TimetableBuilder() {
     return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
   }, [contextSchedules]);
 
-  const expandScheduleForDisplay = (schedule: any) => {
-    const scheduleStart = timeToMinutes(schedule.start_time);
-    const scheduleEnd = timeToMinutes(schedule.end_time);
-
-    if (scheduleStart == null || scheduleEnd == null) return [schedule];
-
-    const matchingSlots = roomTimeSlots.filter(slot => {
-      const slotStart = timeToMinutes(slot.start_time);
-      const slotEnd = timeToMinutes(slot.end_time);
-      return slotStart != null && slotEnd != null && slotStart >= scheduleStart && slotEnd <= scheduleEnd;
-    });
-
-    if (matchingSlots.length <= 1) return [schedule];
-
-    return matchingSlots.map((slot, index) => ({
-      ...schedule,
-      ...slot,
-      display_id: `${schedule.id}-slot-${index}`,
-    }));
-  };
-
   const fetchData = async () => {
     try {
       const [sRes, rRes, dRes, cRes, baRes] = await Promise.all([
@@ -9226,7 +9205,6 @@ function TimetableBuilder() {
         ...s,
         department_name: departments.find(d => idsMatch(d.id, s.department_id))?.name ?? s.department,
       }))
-      .flatMap(expandScheduleForDisplay)
       .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     const hasExamOverride = baseSchedules.some(schedule => isScheduleSuppressedForDate(schedule, dayDate, academicCalendars, batchRoomAllocations));
@@ -9234,37 +9212,45 @@ function TimetableBuilder() {
   };
 
   const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
-    const matchedKeys = new Set<string>();
-    const defaultSlots = roomTimeSlots.map(slot => {
-      const slotKey = getTimeSlotKey(slot);
-      const slotSchedules = daySchedules.filter(schedule => {
-        const matchesSlot = schedule.start_time === slot.start_time && schedule.end_time === slot.end_time;
-        if (matchesSlot) {
-          matchedKeys.add(`${slotKey}-${schedule.display_id ?? schedule.id}`);
-        }
-        return matchesSlot;
-      });
+    const groupedSchedules = daySchedules.reduce((map, schedule) => {
+      const slotKey = getTimeSlotKey(schedule);
+      const existing = map.get(slotKey) || [];
+      map.set(slotKey, [...existing, schedule]);
+      return map;
+    }, new Map<string, any[]>());
 
-      return {
+    const groupedScheduledSlots = Array.from(groupedSchedules.entries()).map(([slotKey, slotSchedules]) => ({
+      start_time: slotSchedules[0]?.start_time,
+      end_time: slotSchedules[0]?.end_time,
+      key: slotKey,
+      schedules: slotSchedules,
+      state: slotSchedules.length > 1 ? 'multi' : 'scheduled',
+    }));
+
+    const scheduleCoversSlot = (schedule: any, slot: any) => {
+      const scheduleStart = timeToMinutes(schedule.start_time);
+      const scheduleEnd = timeToMinutes(schedule.end_time);
+      const slotStart = timeToMinutes(slot.start_time);
+      const slotEnd = timeToMinutes(slot.end_time);
+      if (scheduleStart == null || scheduleEnd == null || slotStart == null || slotEnd == null) return false;
+      return scheduleStart <= slotStart && scheduleEnd >= slotEnd;
+    };
+
+    const vacantOrExamSlots = roomTimeSlots
+      .filter(slot => !daySchedules.some(schedule => scheduleCoversSlot(schedule, slot)))
+      .map(slot => ({
         ...slot,
-        key: slotKey,
-        schedules: slotSchedules,
-        state: slotSchedules.length > 1 ? 'multi' : slotSchedules.length === 1 ? 'scheduled' : hasExamOverride ? 'exam' : 'vacant',
-      };
-    });
+        key: getTimeSlotKey(slot),
+        schedules: [],
+        state: hasExamOverride ? 'exam' : 'vacant',
+      }));
 
-    const extraSlots = daySchedules
-      .filter(schedule => !matchedKeys.has(`${getTimeSlotKey(schedule)}-${schedule.display_id ?? schedule.id}`))
-      .map(schedule => ({
-        start_time: schedule.start_time,
-        end_time: schedule.end_time,
-        key: `custom-${schedule.display_id ?? schedule.id}`,
-        schedules: [schedule],
-        state: 'scheduled',
-      }))
-      .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
-
-    return [...defaultSlots, ...extraSlots];
+    return [...groupedScheduledSlots, ...vacantOrExamSlots]
+      .sort((a, b) => {
+        const startCompare = (a.start_time || '').localeCompare(b.start_time || '');
+        if (startCompare !== 0) return startCompare;
+        return (a.end_time || '').localeCompare(b.end_time || '');
+      });
   };
 
   if (loading) return <div className="p-8 text-center text-slate-400 font-medium">Loading Timetable...</div>;
@@ -9390,7 +9376,7 @@ function TimetableBuilder() {
           </div>
         </div>
         <p className="mt-3 text-[11px] text-slate-500">
-          Slots are inferred from the selected room&apos;s actual timetable timings and reduced to the smallest valid periods, so merged sessions like 09:00-11:00 are shown across 09:00-10:00 and 10:00-11:00 instead of as a separate slot.
+          Vacant slots are inferred from the selected room&apos;s actual timetable timings and reduced to the smallest valid periods, while scheduled classes keep their original imported duration.
         </p>
       </div>
 
