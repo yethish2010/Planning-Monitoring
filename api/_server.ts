@@ -1129,22 +1129,27 @@ const normalizeExtractedRoomValue = (value: any) => {
 const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMaps: any[]) => {
   if (!Array.isArray(schedules) || schedules.length === 0) return [];
 
-  const fallbackBySection = new Map<string, string>();
+  const fallbackBySection = new Map<string, { room: string; semester: any; department: any }>();
   for (const item of Array.isArray(sectionRoomMaps) ? sectionRoomMaps : []) {
     const section = normalizeExtractedSectionValue(item?.section);
     const room = normalizeExtractedRoomValue(item?.room);
-    if (section && room && !fallbackBySection.has(section)) {
-      fallbackBySection.set(section, room);
+    const semester = item?.semester || null;
+    const department = item?.department || null;
+    if (section && (room || semester || department) && !fallbackBySection.has(section)) {
+      fallbackBySection.set(section, { room, semester, department });
     }
   }
 
   return schedules.map(schedule => {
     const normalizedSection = normalizeExtractedSectionValue(schedule?.section);
     const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
-    const inheritedRoom = normalizedSection ? fallbackBySection.get(normalizedSection) || "" : "";
+    const inheritedDefaults = normalizedSection ? fallbackBySection.get(normalizedSection) : null;
+    const inheritedRoom = inheritedDefaults?.room || "";
     return {
       ...schedule,
       section: normalizedSection || schedule?.section || null,
+      department: schedule?.department || inheritedDefaults?.department || null,
+      semester: schedule?.semester || inheritedDefaults?.semester || null,
       room: explicitRoom || inheritedRoom || schedule?.room || null,
     };
   });

@@ -1323,7 +1323,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
       'Room can match the canonical Room Number or any Room Alias from Room Management. Use Room Aliases for shared seminar halls with multiple door numbers such as 4015 and 4016.',
-      'For PDF timetable extraction, normal slots inherit the section header Room No automatically. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
+      'Timetable imports link against any matching room in Room Management, even if that room is not currently bookable for ad-hoc bookings. This keeps seminar halls, shared rooms, and internal-use venues linked correctly in schedules.',
+      'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department and Semester when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
       'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
@@ -5877,7 +5878,7 @@ function SchedulingManagement() {
         continue;
       }
 
-      const room = findRoomByImportLabel(rooms.filter(isRoomReservable), roomLabel);
+      const room = findRoomByImportLabel(rooms, roomLabel);
       const dept = findDepartmentForSchedule(row['Department']);
       const importStatus = room
         ? 'Linked'
@@ -5962,7 +5963,7 @@ function SchedulingManagement() {
         let unmatchedRoomCount = 0;
 
         for (const schedule of validSchedules) {
-          const room = findRoomByImportLabel(rooms.filter(isRoomReservable), schedule.room);
+          const room = findRoomByImportLabel(rooms, schedule.room);
           const dept = findDepartmentForSchedule(schedule.department);
 
           const payload = {
@@ -9703,16 +9704,6 @@ function DigitalTwin() {
     };
   };
 
-  const stats = {
-    totalRooms: rooms.length,
-    availableRooms: rooms.filter(r => getRoomLiveStatus(r) === 'Available').length,
-    maintenanceRooms: rooms.filter(r => getRoomLiveStatus(r) === 'Maintenance').length,
-    utilization: Math.round(rooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / (rooms.length || 1)),
-    totalBuildings: buildings.length,
-    totalBlocks: blocks.length,
-    totalSchedules: schedules.length,
-  };
-
   const getHeatmapCardClass = (building: any) => {
     if (!heatmapMode) return '';
     const ratio = getBuilding3DMetrics(building).utilizationRatio;
@@ -9729,6 +9720,48 @@ function DigitalTwin() {
       : selectedBuildingVisibleBlocks;
   const shouldShowBlockLevel = selectedBuildingBlockOptions.length > 0;
   const activeBlock = selectedBlock || (!shouldShowBlockLevel ? selectedBuildingDirectBlock : null);
+  const scopeBuildings = selectedBuilding ? [selectedBuilding] : filteredBuildings;
+  const scopeBlocks = selectedFloor
+    ? (activeBlock ? [activeBlock] : [])
+    : activeBlock
+      ? [activeBlock]
+      : selectedBuilding
+        ? selectedBuildingBlockOptions
+        : scopeBuildings.flatMap(building => getBlocksForBuilding(building.id));
+  const scopeFloors = selectedFloor
+    ? [selectedFloor]
+    : activeBlock
+      ? floors.filter(floor => idsMatch(floor.block_id, activeBlock.id))
+      : selectedBuilding
+        ? floors.filter(floor => getBlocksForBuilding(selectedBuilding.id).some(block => idsMatch(block.id, floor.block_id)))
+        : floors.filter(floor => scopeBlocks.some(block => idsMatch(block.id, floor.block_id)));
+  const scopeRooms = selectedFloor
+    ? rooms.filter(room => idsMatch(room.floor_id, selectedFloor.id) && roomMatchesFilters(room))
+    : activeBlock
+      ? rooms.filter(room =>
+          scopeFloors.some(floor => idsMatch(floor.id, room.floor_id)) &&
+          roomMatchesFilters(room)
+        )
+      : selectedBuilding
+        ? getRoomsForBuilding(selectedBuilding).filter(roomMatchesFilters)
+        : rooms.filter(roomMatchesFilters);
+  const scopeSchedules = deduplicateScheduleRows(schedules).filter(schedule =>
+    scopeRooms.some(room => idsMatch(room.id, schedule.room_id))
+  );
+  const scopeUtilizationRaw = scopeRooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / (scopeRooms.length || 1);
+  const scopeUtilizationDisplay =
+    scopeRooms.some(room => getRoomUsageMetrics(room).totalUsedHours > 0) && scopeUtilizationRaw > 0 && scopeUtilizationRaw < 1
+      ? '<1%'
+      : `${Math.round(scopeUtilizationRaw)}%`;
+  const stats = {
+    totalRooms: scopeRooms.length,
+    availableRooms: scopeRooms.filter(r => getRoomLiveStatus(r) === 'Available').length,
+    maintenanceRooms: scopeRooms.filter(r => getRoomLiveStatus(r) === 'Maintenance').length,
+    utilization: scopeUtilizationDisplay,
+    totalBuildings: scopeBuildings.length,
+    totalBlocks: scopeBlocks.length,
+    totalSchedules: scopeSchedules.length,
+  };
   const getRoomContextCount = (room: any) => new Set(
     getRoomSchedules(room).map(schedule => getScheduleAcademicContextKey(schedule)),
   ).size;
