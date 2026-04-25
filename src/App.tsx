@@ -326,6 +326,32 @@ const normalizeYearOfStudyValue = (value: unknown, fallback = '') => {
   return matchedNumber?.[1] || fallback;
 };
 
+const toRomanNumeral = (value: number) => {
+  const numerals: Record<number, string> = {
+    1: 'I',
+    2: 'II',
+    3: 'III',
+    4: 'IV',
+    5: 'V',
+    6: 'VI',
+    7: 'VII',
+    8: 'VIII',
+  };
+  return numerals[value] || value.toString();
+};
+
+const getYearNumberFromAcademicContext = (yearOfStudy: unknown, semester: unknown) => {
+  const normalizedYear = Number(normalizeYearOfStudyValue(yearOfStudy, ''));
+  if (normalizedYear > 0) return normalizedYear;
+  const semesterNumber = parseSemesterNumber(semester);
+  return semesterNumber ? Math.ceil(semesterNumber / 2) : null;
+};
+
+const getYearDisplayLabel = (yearOfStudy: unknown, semester: unknown) => {
+  const yearNumber = getYearNumberFromAcademicContext(yearOfStudy, semester);
+  return yearNumber ? `${toRomanNumeral(yearNumber)} Year` : '-';
+};
+
 const formatOrdinal = (value: number) => {
   if (Number.isNaN(value)) return '';
   const mod100 = value % 100;
@@ -1371,6 +1397,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department and Semester when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 4, and Roman numeral values like IV Semester. If blank, Odd is used for the derived Department Room Mapping.',
+      'Year is shown automatically in Schedule Records and Timetable View as I Year, II Year, III Year, or IV Year by deriving it from the semester value, so no separate Year column is required in the schedule import sheet.',
       'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
@@ -5617,6 +5644,7 @@ function SchedulingManagement() {
     block_id: '',
     floor_id: '',
     department_id: '',
+    year: '',
     room_id: '',
     day_of_week: '',
   });
@@ -5645,6 +5673,7 @@ function SchedulingManagement() {
   }, []);
 
   const scheduleDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const scheduleYearOptions = ['I Year', 'II Year', 'III Year', 'IV Year'];
 
   const getScheduleRoomLocation = (room: any) => {
     const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
@@ -5713,6 +5742,7 @@ function SchedulingManagement() {
 
   const scheduleMatchesFilters = (schedule: any) => {
     if (scheduleFilters.department_id && !idsMatch(schedule.department_id, scheduleFilters.department_id)) return false;
+    if (scheduleFilters.year && getYearDisplayLabel(schedule?.year_of_study, schedule?.semester) !== scheduleFilters.year) return false;
     if (scheduleFilters.room_id && !idsMatch(schedule.room_id, scheduleFilters.room_id)) return false;
     if (scheduleFilters.day_of_week && schedule.day_of_week !== scheduleFilters.day_of_week) return false;
 
@@ -5737,6 +5767,7 @@ function SchedulingManagement() {
             block_id: '',
             floor_id: '',
             department_id: scheduleFilters.department_id,
+            year: scheduleFilters.year,
             room_id: '',
             day_of_week: scheduleFilters.day_of_week,
           })}
@@ -5815,6 +5846,18 @@ function SchedulingManagement() {
       </div>
 
       <div>
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Year</label>
+        <select
+          value={scheduleFilters.year}
+          onChange={(event) => setScheduleFilters(prev => ({ ...prev, year: event.target.value }))}
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        >
+          <option value="">All years</option>
+          {scheduleYearOptions.map(year => <option key={year} value={year}>{year}</option>)}
+        </select>
+      </div>
+
+      <div>
         <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Room</label>
         <select
           value={scheduleFilters.room_id}
@@ -5840,7 +5883,7 @@ function SchedulingManagement() {
 
       <button
         type="button"
-        onClick={() => setScheduleFilters({ campus_id: '', building_id: '', block_id: '', floor_id: '', department_id: '', room_id: '', day_of_week: '' })}
+        onClick={() => setScheduleFilters({ campus_id: '', building_id: '', block_id: '', floor_id: '', department_id: '', year: '', room_id: '', day_of_week: '' })}
         disabled={!hasActiveScheduleFilters}
         className="px-4 py-2 border border-slate-200 rounded-xl text-slate-700 font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
       >
@@ -5852,6 +5895,12 @@ function SchedulingManagement() {
   const fields = [
     { key: 'schedule_id', label: 'Schedule ID' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
+    {
+      key: 'year_label',
+      label: 'Year',
+      tableOnly: true,
+      render: (schedule: any) => getYearDisplayLabel(schedule?.year_of_study, schedule?.semester),
+    },
     { key: 'section', label: 'Section' },
     { key: 'semester', label: 'Semester' },
     { key: 'course_code', label: 'Course Code' },
@@ -8954,7 +9003,7 @@ function TimetableBuilder() {
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
-  const [timetableContext, setTimetableContext] = useState({ department_id: '', semester: '', section: '' });
+  const [timetableContext, setTimetableContext] = useState({ department_id: '', year: '', semester: '', section: '' });
   const [loading, setLoading] = useState(true);
 
   const timeToMinutes = (time?: string) => {
@@ -8991,29 +9040,42 @@ function TimetableBuilder() {
       .filter(Boolean),
   )).sort(), [roomScopedSchedules]);
 
-  const roomSectionOptions = useMemo(() => Array.from(new Set(
+  const roomYearOptions = useMemo(() => Array.from(new Set(
     roomScopedSchedules
       .filter(schedule =>
         (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
         (!timetableContext.semester || normalizeSemesterValue(schedule.semester, '') === timetableContext.semester),
       )
+      .map(schedule => getYearDisplayLabel(schedule?.year_of_study, schedule?.semester))
+      .filter(year => year && year !== '-'),
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.semester]);
+
+  const roomSectionOptions = useMemo(() => Array.from(new Set(
+    roomScopedSchedules
+      .filter(schedule =>
+        (!timetableContext.department_id || idsMatch(schedule.department_id, timetableContext.department_id)) &&
+        (!timetableContext.year || getYearDisplayLabel(schedule?.year_of_study, schedule?.semester) === timetableContext.year) &&
+        (!timetableContext.semester || normalizeSemesterValue(schedule.semester, '') === timetableContext.semester),
+      )
       .map(schedule => schedule.section?.toString().trim())
       .filter((section): section is string => Boolean(section)),
-  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.semester]);
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })), [roomScopedSchedules, timetableContext.department_id, timetableContext.year, timetableContext.semester]);
 
   useEffect(() => {
     setTimetableContext(current => ({
       department_id: current.department_id && roomDepartmentOptions.some(option => option.value === current.department_id) ? current.department_id : '',
+      year: current.year && roomYearOptions.includes(current.year) ? current.year : '',
       semester: current.semester && roomSemesterOptions.includes(current.semester) ? current.semester : '',
       section: current.section && roomSectionOptions.includes(current.section) ? current.section : '',
     }));
-  }, [roomDepartmentOptions, roomSectionOptions, roomSemesterOptions]);
+  }, [roomDepartmentOptions, roomSectionOptions, roomSemesterOptions, roomYearOptions]);
 
-  const hasContextFilter = Boolean(timetableContext.department_id || timetableContext.semester || timetableContext.section);
+  const hasContextFilter = Boolean(timetableContext.department_id || timetableContext.year || timetableContext.semester || timetableContext.section);
 
   const distinctContextCount = useMemo(() => new Set(
     roomScopedSchedules.map(schedule => [
       schedule.department_id?.toString() || '',
+      getYearDisplayLabel(schedule?.year_of_study, schedule?.semester),
       normalizeSemesterValue(schedule.semester, ''),
       schedule.section?.toString().trim() || '',
     ].join('|')),
@@ -9023,10 +9085,11 @@ function TimetableBuilder() {
 
   const contextSchedules = useMemo(() => roomScopedSchedules.filter(schedule => {
     if (timetableContext.department_id && !idsMatch(schedule.department_id, timetableContext.department_id)) return false;
+    if (timetableContext.year && getYearDisplayLabel(schedule?.year_of_study, schedule?.semester) !== timetableContext.year) return false;
     if (timetableContext.semester && normalizeSemesterValue(schedule.semester, '') !== timetableContext.semester) return false;
     if (timetableContext.section && (schedule.section?.toString().trim() || '') !== timetableContext.section) return false;
     return true;
-  }), [roomScopedSchedules, timetableContext.department_id, timetableContext.section, timetableContext.semester]);
+  }), [roomScopedSchedules, timetableContext.department_id, timetableContext.year, timetableContext.section, timetableContext.semester]);
 
   const roomTimeSlots = useMemo(() => {
     const intervals = contextSchedules
@@ -9112,8 +9175,10 @@ function TimetableBuilder() {
         : findRoomByImportLabel(rData, requestedRoomLabel);
       const firstBookableRoom = rData.find(isRoomReservable);
       const activeRoom = requestedRoom || (selectedRoom ? rData.find((room: any) => idsMatch(room.id, selectedRoom)) : null) || firstBookableRoom;
+      const requestedYear = params.get('year')?.trim() || '';
       setTimetableContext({
         department_id: requestedDepartmentId,
+        year: requestedYear,
         semester: requestedSemester,
         section: requestedSection,
       });
@@ -9245,7 +9310,7 @@ function TimetableBuilder() {
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Department Context</p>
             <select
@@ -9256,6 +9321,19 @@ function TimetableBuilder() {
               <option value="">All Departments</option>
               {roomDepartmentOptions.map(option => (
                 <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Year Context</p>
+            <select
+              value={timetableContext.year}
+              onChange={e => setTimetableContext(prev => ({ ...prev, year: e.target.value, section: '' }))}
+              className="w-full bg-transparent text-sm font-bold text-slate-700 focus:outline-none"
+            >
+              <option value="">All Years</option>
+              {roomYearOptions.map(year => (
+                <option key={year} value={year}>{year}</option>
               ))}
             </select>
           </div>
@@ -9287,7 +9365,7 @@ function TimetableBuilder() {
           </div>
         </div>
         <p className="mt-3 text-[11px] text-slate-500">
-          Vacancy is computed inside the selected academic context. Use these filters when the same room is shared by multiple semesters or sections with different timing patterns.
+          Vacancy is computed inside the selected academic context. Use these filters when the same room is shared by multiple years, semesters, or sections with different timing patterns.
         </p>
       </div>
 
@@ -9320,7 +9398,7 @@ function TimetableBuilder() {
         <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
           <p className="text-sm font-bold text-blue-800">Mixed timetable patterns detected for this room.</p>
           <p className="mt-1 text-xs text-blue-700">
-            This room is used by multiple department, semester, or section contexts. Vacant slots are inferred from the room&apos;s combined timing patterns; select a context above to see more accurate context-specific vacancy.
+            This room is used by multiple department, year, semester, or section contexts. Vacant slots are inferred from the room&apos;s combined timing patterns; select a context above to see more accurate context-specific vacancy.
           </p>
         </div>
       )}
@@ -9416,7 +9494,9 @@ function TimetableBuilder() {
                               {[s.section ? `Section ${s.section}` : '', s.course_code, s.faculty].filter(Boolean).join(' | ')}
                             </p>
                             <div className="flex items-center justify-between pt-2 border-t border-slate-50">
-                              <span className="text-[10px] font-bold text-slate-400">{s.department_name}</span>
+                              <span className="text-[10px] font-bold text-slate-400">
+                                {[s.department_name, getYearDisplayLabel(s?.year_of_study, s?.semester)].filter(value => value && value !== '-').join(' • ')}
+                              </span>
                               <div className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
                                 <Users size={10} />
                                 {s.student_count}
