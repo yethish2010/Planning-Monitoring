@@ -9070,26 +9070,6 @@ function TimetableBuilder() {
   };
 
   const getDisplaySlotsForDay = (daySchedules: any[], hasExamOverride: boolean) => {
-    if (requiresContextFilterForVacancy) {
-      const groupedSlots = new Map<string, any[]>();
-      for (const schedule of daySchedules) {
-        const slotKey = getTimeSlotKey(schedule);
-        const existing = groupedSlots.get(slotKey) || [];
-        existing.push(schedule);
-        groupedSlots.set(slotKey, existing);
-      }
-
-      return Array.from(groupedSlots.entries())
-        .map(([slotKey, schedulesInSlot]) => ({
-          start_time: schedulesInSlot[0]?.start_time,
-          end_time: schedulesInSlot[0]?.end_time,
-          key: `context-${slotKey}`,
-          schedules: schedulesInSlot,
-          state: schedulesInSlot.length > 1 ? 'multi' : 'scheduled',
-        }))
-        .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
-    }
-
     const matchedKeys = new Set<string>();
     const defaultSlots = roomTimeSlots.map(slot => {
       const slotKey = getTimeSlotKey(slot);
@@ -9241,7 +9221,7 @@ function TimetableBuilder() {
         <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
           <p className="text-sm font-bold text-blue-800">Mixed timetable patterns detected for this room.</p>
           <p className="mt-1 text-xs text-blue-700">
-            This room is used by multiple department, semester, or section contexts. Select a context above to see accurate vacant slots; until then, only scheduled classes are shown.
+            This room is used by multiple department, semester, or section contexts. Vacant slots are inferred from the room&apos;s combined timing patterns; select a context above to see more accurate context-specific vacancy.
           </p>
         </div>
       )}
