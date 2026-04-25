@@ -2515,11 +2515,11 @@ function DashboardHome() {
   }, [schoolUsageItems, stats]);
 
   const statCards = [
-    { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/buildings' },
-    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/bookings' },
-    { label: 'Scheduled Rooms', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/timetable' },
-    { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance' },
-    { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings' },
+    { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
+    { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/rooms' },
+    { label: 'Scheduled Rooms', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=Scheduled' },
+    { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance?status=open' },
+    { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings?status=Pending' },
   ];
 
   if (loading) {
@@ -6184,6 +6184,13 @@ function BookingManagement() {
   };
 
   useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedStatus = params.get('status');
+    const allowedStatuses = ['Active', 'Pending', 'HOD Recommended', 'Approved', 'Postponed', 'Rejected', 'Past'];
+    setStatusTab(requestedStatus && allowedStatuses.includes(requestedStatus) ? requestedStatus : 'Active');
+  }, [location.search]);
+
+  useEffect(() => {
     fetchMyBookings();
     Promise.all([
       fetch('/api/rooms', { credentials: 'include' }).then(res => res.json()),
@@ -7270,6 +7277,7 @@ function MaintenanceManagement() {
   const location = useLocation();
   const [rooms, setRooms] = useState<any[]>([]);
   const [roomSearchTerm, setRoomSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   useEffect(() => {
     fetch('/api/rooms').then(res => res.json()).then((roomData) => {
@@ -7278,10 +7286,12 @@ function MaintenanceManagement() {
       const params = new URLSearchParams(location.search);
       const roomId = params.get('roomId');
       const roomLabel = params.get('room');
+      const requestedStatus = params.get('status');
       const linkedRoom = roomId
         ? safeRooms.find(room => idsMatch(room.id, roomId))
         : findRoomByImportLabel(safeRooms, roomLabel);
       setRoomSearchTerm(linkedRoom ? getRoomDisplayLabel(linkedRoom, safeRooms) : roomLabel || '');
+      setStatusFilter(requestedStatus || '');
     });
   }, [location.search]);
 
@@ -7307,7 +7317,40 @@ function MaintenanceManagement() {
     }
   };
 
-  return <GenericCRUD type="Maintenance" fields={fields} apiPath="/api/maintenance" onImport={handleImport} initialSearchTerm={roomSearchTerm} />;
+  const maintenanceMatchesFilter = (item: any) => {
+    if (!statusFilter) return true;
+    if (statusFilter === 'open') return ['Pending', 'In Progress'].includes(item?.status);
+    return item?.status === statusFilter;
+  };
+
+  const maintenanceFilterControls = (
+    <div className="flex flex-col md:flex-row gap-3 items-end">
+      <div className="w-full md:w-64">
+        <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Status</label>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium focus:outline-none focus:border-emerald-500"
+        >
+          <option value="">All statuses</option>
+          <option value="open">Open Issues</option>
+          <option value="Pending">Pending</option>
+          <option value="In Progress">In Progress</option>
+          <option value="Completed">Completed</option>
+        </select>
+      </div>
+      <button
+        type="button"
+        onClick={() => setStatusFilter('')}
+        disabled={!statusFilter}
+        className="px-4 py-3 rounded-2xl border border-slate-200 text-sm font-bold text-slate-600 disabled:opacity-50"
+      >
+        Clear Filter
+      </button>
+    </div>
+  );
+
+  return <GenericCRUD type="Maintenance" fields={fields} apiPath="/api/maintenance" onImport={handleImport} initialSearchTerm={roomSearchTerm} dataFilter={maintenanceMatchesFilter} filterControls={maintenanceFilterControls} />;
 }
 
 function AIAllocation() {
@@ -9428,6 +9471,7 @@ function Building3D({ building, metrics, onClick, isSelected, heatmapMode }: any
 
 function DigitalTwin() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [campuses, setCampuses] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
@@ -9491,6 +9535,27 @@ function DigitalTwin() {
     };
     fetchData();
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedView = params.get('view');
+    const requestedStatus = params.get('status');
+
+    if (requestedView === '3D' || requestedView === '2D') {
+      setViewMode(requestedView);
+    }
+
+    setFilters(current => ({
+      ...current,
+      status: requestedStatus || '',
+    }));
+
+    if (!params.get('buildingId')) {
+      setSelectedBuilding(null);
+      setSelectedBlock(null);
+      setSelectedFloor(null);
+    }
+  }, [location.search]);
 
   const runAiOptimization = async () => {
     setLoadingAi(true);
