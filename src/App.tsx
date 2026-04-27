@@ -5765,6 +5765,7 @@ function SchedulingManagement() {
 
   const scheduleDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const scheduleYearOptions = ['I Year', 'II Year', 'III Year', 'IV Year'];
+  const scheduleImportStatusOptions = ['Linked', 'Unmatched Room', 'Room Missing'];
 
   const getScheduleRoomLocation = (room: any) => {
     const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
@@ -5987,6 +5988,14 @@ function SchedulingManagement() {
     { key: 'schedule_id', label: 'Schedule ID' },
     { key: 'department_id', label: 'Department', type: 'select', options: departments.map(d => ({ value: d.id, label: d.name })) },
     {
+      key: 'year_of_study',
+      label: 'Year',
+      formOnly: true,
+      type: 'select',
+      required: false,
+      options: scheduleYearOptions,
+    },
+    {
       key: 'year_label',
       label: 'Year',
       tableOnly: true,
@@ -6012,7 +6021,16 @@ function SchedulingManagement() {
     { key: 'start_time', label: 'Start Time', type: 'time' },
     { key: 'end_time', label: 'End Time', type: 'time' },
     { key: 'import_status', label: 'Import Status', tableOnly: true },
+    {
+      key: 'import_status',
+      label: 'Import Status',
+      formOnly: true,
+      type: 'select',
+      required: false,
+      options: scheduleImportStatusOptions,
+    },
     { key: 'review_note', label: 'Review Note', tableOnly: true },
+    { key: 'review_note', label: 'Review Note', formOnly: true, required: false, fullWidth: true },
   ];
 
   const findDepartmentForSchedule = (value: unknown) =>
@@ -6020,6 +6038,40 @@ function SchedulingManagement() {
       normalizeLookupValue(department.name) === normalizeLookupValue(value) ||
       normalizeLookupValue(department.department_id) === normalizeLookupValue(value)
     );
+
+  const normalizeScheduleImportStatus = (value: unknown) => {
+    const normalized = normalizeLookupValue(value);
+    if (!normalized) return null;
+    if (normalized === 'linked') return 'Linked';
+    if (normalized === 'unmatched room') return 'Unmatched Room';
+    if (normalized === 'room missing') return 'Room Missing';
+    return null;
+  };
+
+  const prepareScheduleFormData = (item: any) => ({
+    ...item,
+    year_of_study: getYearDisplayLabel(item?.year_of_study, item?.semester) !== '-'
+      ? getYearDisplayLabel(item?.year_of_study, item?.semester)
+      : '',
+    import_status: item?.import_status || '',
+    review_note: item?.review_note || '',
+  });
+
+  const prepareScheduleSubmitData = (data: any) => {
+    const selectedRoom = rooms.find(room => idsMatch(room.id, data.room_id));
+    const normalizedSemester = normalizeSemesterValue(data.semester, '');
+    const derivedYearNumber = getYearNumberFromAcademicContext(data.year_of_study, normalizedSemester);
+    const inferredImportStatus = selectedRoom ? 'Linked' : 'Room Missing';
+
+    return {
+      ...data,
+      room_id: data.room_id || null,
+      semester: normalizedSemester || data.semester,
+      year_of_study: derivedYearNumber ? derivedYearNumber.toString() : null,
+      import_status: normalizeScheduleImportStatus(data.import_status) || inferredImportStatus,
+      review_note: data.review_note?.toString().trim() || null,
+    };
+  };
 
   const ensureAllocationFromSchedule = async (room: any, department: any, semesterValue: unknown) => {
     if (!room?.id || !department?.id || !department?.school_id) return null;
@@ -6055,15 +6107,6 @@ function SchedulingManagement() {
     let linkedCount = 0;
     let unmatchedRoomCount = 0;
     let skippedCount = 0;
-
-    const normalizeScheduleImportStatus = (value: unknown) => {
-      const normalized = normalizeLookupValue(value);
-      if (!normalized) return null;
-      if (normalized === 'linked') return 'Linked';
-      if (normalized === 'unmatched room') return 'Unmatched Room';
-      if (normalized === 'room missing') return 'Room Missing';
-      return null;
-    };
 
     for (const row of data) {
       const scheduleId = row['Schedule ID']?.toString().trim();
@@ -6299,6 +6342,8 @@ function SchedulingManagement() {
         fields={fields}
         apiPath="/api/schedules"
         onImport={handleImport}
+        prepareFormData={prepareScheduleFormData}
+        prepareSubmitData={prepareScheduleSubmitData}
         dataFilter={scheduleMatchesFilters}
         filterControls={scheduleFilterControls}
       />
