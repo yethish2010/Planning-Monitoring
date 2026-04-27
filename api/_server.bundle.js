@@ -499,6 +499,7 @@ await ensureColumn("rooms", "restroom_type", "TEXT");
 await ensureColumn("schedules", "room_label", "TEXT");
 await ensureColumn("schedules", "section", "TEXT");
 await ensureColumn("schedules", "semester", "TEXT");
+await ensureColumn("schedules", "year_of_study", "TEXT");
 await ensureColumn("schedules", "import_status", "TEXT");
 await ensureColumn("schedules", "review_note", "TEXT");
 await ensureColumn("schedules", "source_file", "TEXT");
@@ -914,29 +915,34 @@ var syncBatchAllocationStatuses = async () => {
   }
 };
 var getDayOfWeekForDate = (date) => (/* @__PURE__ */ new Date(`${date}T00:00:00`)).toLocaleDateString("en-US", { weekday: "long" });
+var parseSemesterNumber = (value) => {
+  const normalized = normalizeDuplicateValue(value)?.toString() || "";
+  if (!normalized) return null;
+  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
+  if (numericMatch) return Number(numericMatch);
+  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
+  if (!romanMatch) return null;
+  const romanToNumber = {
+    i: 1,
+    ii: 2,
+    iii: 3,
+    iv: 4,
+    v: 5,
+    vi: 6,
+    vii: 7,
+    viii: 8,
+    ix: 9,
+    x: 10
+  };
+  return romanToNumber[romanMatch[1]] || null;
+};
 var normalizeSemesterKey = (value) => {
   const normalized = normalizeDuplicateValue(value)?.toString() || "";
   if (!normalized) return "";
   if (normalized.includes("odd") || normalized.includes("fall")) return "odd";
   if (normalized.includes("even") || normalized.includes("spring") || normalized.includes("summer")) return "even";
-  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
-  if (romanMatch) {
-    const romanToNumber = {
-      i: 1,
-      ii: 2,
-      iii: 3,
-      iv: 4,
-      v: 5,
-      vi: 6,
-      vii: 7,
-      viii: 8,
-      ix: 9,
-      x: 10
-    };
-    return (romanToNumber[romanMatch[1]] || 0) % 2 === 0 ? "even" : "odd";
-  }
-  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
-  if (numericMatch) return Number(numericMatch) % 2 === 0 ? "even" : "odd";
+  const semesterNumber = parseSemesterNumber(value);
+  if (semesterNumber) return semesterNumber % 2 === 0 ? "even" : "odd";
   return normalized;
 };
 var isExaminationCalendarEvent = (calendar) => {
@@ -944,26 +950,88 @@ var isExaminationCalendarEvent = (calendar) => {
   const title = normalizeDuplicateValue(calendar?.title)?.toString() || "";
   return eventType.includes("exam") || eventType.includes("ciat") || title.includes("exam") || title.includes("ciat");
 };
-var scheduleMatchesCalendarOverride = (schedule, calendar) => {
+var normalizeAcademicContextText = (value) => normalizeDuplicateValue(value)?.toString() || "";
+var normalizeYearOfStudyKey = (value) => {
+  const normalized = value?.toString().trim().toLowerCase() || "";
+  if (!normalized) return "";
+  const numericMatch = normalized.match(/(?:^|\b)(\d+)(?:st|nd|rd|th)?\s*year\b/)?.[1] || normalized.match(/\byear\s*(\d+)\b/)?.[1] || normalized.match(/^(\d+)$/)?.[1];
+  if (numericMatch) return numericMatch;
+  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\s*year\b/)?.[1] || normalized.match(/\byear\s*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/)?.[1] || normalized.match(/^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/)?.[1];
+  if (!romanMatch) return "";
+  const romanToNumber = {
+    i: "1",
+    ii: "2",
+    iii: "3",
+    iv: "4",
+    v: "5",
+    vi: "6",
+    vii: "7",
+    viii: "8",
+    ix: "9",
+    x: "10"
+  };
+  return romanToNumber[romanMatch] || "";
+};
+var allocationMatchesCalendarContext = (allocation, calendar) => {
+  if (calendar?.id && allocation?.academic_calendar_id && allocation.academic_calendar_id.toString() === calendar.id.toString()) return true;
+  if (!allocation?.department_id || !calendar?.department_id) return false;
+  if (allocation.department_id.toString() !== calendar.department_id.toString()) return false;
+  const allocationSemester = normalizeSemesterKey(allocation.semester);
+  const calendarSemester = normalizeSemesterKey(calendar.semester);
+  if (allocationSemester && calendarSemester && allocationSemester !== calendarSemester) return false;
+  if (calendar?.program && normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(calendar.program)) return false;
+  if (calendar?.batch && normalizeAcademicContextText(allocation.batch) !== normalizeAcademicContextText(calendar.batch)) return false;
+  if (calendar?.academic_year && normalizeAcademicContextText(allocation.academic_year) !== normalizeAcademicContextText(calendar.academic_year)) return false;
+  const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
+  const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
+  if (calendarYear && allocationYear && allocationYear !== calendarYear) return false;
+  return true;
+};
+var scheduleMatchesCalendarOverride = (schedule, calendar, activeBatchAllocations = [], date) => {
   if (!schedule?.department_id || !calendar?.department_id) return false;
   if (schedule.department_id.toString() !== calendar.department_id.toString()) return false;
   const scheduleSemester = normalizeSemesterKey(schedule.semester);
   const calendarSemester = normalizeSemesterKey(calendar.semester);
   if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
-  return true;
+  const scheduleYear = normalizeYearOfStudyKey(schedule.year_of_study);
+  const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
+  if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
+  const calendarHasSpecificContext = Boolean(
+    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study
+  );
+  if (!calendarHasSpecificContext) return true;
+  const relevantAllocations = activeBatchAllocations.filter((allocation) => {
+    if (schedule?.room_id != null && allocation?.room_id != null && allocation.room_id.toString() !== schedule.room_id.toString()) return false;
+    if (!allocation?.department_id || allocation.department_id.toString() !== schedule.department_id.toString()) return false;
+    const allocationSemester = normalizeSemesterKey(allocation.semester);
+    if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
+    if (date && allocation?.start_date && allocation?.end_date) {
+      const allocationStart = normalizeIsoDate(allocation.start_date);
+      const allocationEnd = normalizeIsoDate(allocation.end_date);
+      if (allocationStart && allocationEnd && (allocationStart > date || allocationEnd < date)) return false;
+    }
+    return true;
+  });
+  if (relevantAllocations.length === 0) return true;
+  return relevantAllocations.some((allocation) => allocationMatchesCalendarContext(allocation, calendar));
 };
 var filterSchedulesByAcademicCalendar = async (schedules, date) => {
   const normalizedDate = normalizeIsoDate(date);
   if (!normalizedDate || !Array.isArray(schedules) || schedules.length === 0) return schedules;
   const activeExamCalendars = await db.prepare(`
-    SELECT id, department_id, semester, event_type, title, start_date, end_date
+    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, event_type, title, start_date, end_date
     FROM academic_calendars
     WHERE start_date <= ? AND end_date >= ?
   `).all(normalizedDate, normalizedDate);
   const examinationCalendars = activeExamCalendars.filter(isExaminationCalendarEvent);
   if (examinationCalendars.length === 0) return schedules;
+  const activeBatchAllocations = await db.prepare(`
+    SELECT id, academic_calendar_id, room_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
+    FROM batch_room_allocations
+    WHERE start_date <= ? AND end_date >= ? AND status != ?
+  `).all(normalizedDate, normalizedDate, "Released");
   return schedules.filter(
-    (schedule) => !examinationCalendars.some((calendar) => scheduleMatchesCalendarOverride(schedule, calendar))
+    (schedule) => !examinationCalendars.some((calendar) => scheduleMatchesCalendarOverride(schedule, calendar, activeBatchAllocations, normalizedDate))
   );
 };
 var getEffectiveSchedulesForDate = async (date, predicate) => {
@@ -1159,8 +1227,9 @@ var mergeExtractedSchedulesWithHeaderRooms = (schedules, sectionRoomMaps) => {
     const room = normalizeExtractedRoomValue(item?.room);
     const semester = item?.semester || null;
     const department = item?.department || null;
-    if (section && (room || semester || department) && !fallbackBySection.has(section)) {
-      fallbackBySection.set(section, { room, semester, department });
+    const year_of_study = normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null;
+    if (section && (room || semester || department || year_of_study) && !fallbackBySection.has(section)) {
+      fallbackBySection.set(section, { room, semester, department, year_of_study });
     }
   }
   return schedules.map((schedule) => {
@@ -1168,11 +1237,18 @@ var mergeExtractedSchedulesWithHeaderRooms = (schedules, sectionRoomMaps) => {
     const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
     const inheritedDefaults = normalizedSection ? fallbackBySection.get(normalizedSection) : null;
     const inheritedRoom = inheritedDefaults?.room || "";
+    const inheritedYear = inheritedDefaults?.year_of_study || "";
+    const scheduleYear = normalizeYearOfStudyKey(schedule?.year_of_study || schedule?.year);
+    const derivedYearFromSemester = (() => {
+      const semesterNumber = parseSemesterNumber(schedule?.semester || inheritedDefaults?.semester);
+      return semesterNumber ? Math.ceil(semesterNumber / 2).toString() : "";
+    })();
     return {
       ...schedule,
       section: normalizedSection || schedule?.section || null,
       department: schedule?.department || inheritedDefaults?.department || null,
       semester: schedule?.semester || inheritedDefaults?.semester || null,
+      year_of_study: scheduleYear || inheritedYear || derivedYearFromSemester || null,
       room: explicitRoom || inheritedRoom || schedule?.room || null
     };
   });
@@ -1253,11 +1329,13 @@ Return a single JSON object with exactly these keys:
 - sectionRoomMaps: array of objects with fields:
   - section
   - room
+  - year_of_study
   - semester
   - department
 - schedules: array of objects with fields:
   - department (e.g., "Computer Science and Engineering")
   - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
+  - year_of_study (Roman or numeric year if available, e.g., "II", "2", "IV Year")
   - semester (Odd or Even if available, else null)
   - course_code (if available, else null)
   - course_name (the subject name, e.g., "Computer Networks")
@@ -1268,7 +1346,7 @@ Return a single JSON object with exactly these keys:
   - end_time (24h format HH:mm, e.g., "09:55")
   - student_count (estimate or null)
 
-Ensure sectionRoomMaps captures the default Room No from the header of each section timetable.
+Ensure sectionRoomMaps captures the default Room No and academic context from the header of each section timetable.
 Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
 For normal theory slots, use the section header Room No as the room.
 Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
@@ -1279,8 +1357,8 @@ If a slot has multiple subjects or is a lab, create separate entries if needed o
 
 Example response:
 {
-  "sectionRoomMaps": [{"section":"A4","room":"331","semester":"Even","department":"Computer Science and Engineering"}],
-  "schedules": [{"department":"Computer Science and Engineering","section":"A4","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
+  "sectionRoomMaps": [{"section":"A4","room":"331","year_of_study":"II","semester":"Even","department":"Computer Science and Engineering"}],
+  "schedules": [{"department":"Computer Science and Engineering","section":"A4","year_of_study":"II","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
 }` });
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const response = await ai.models.generateContent({
@@ -2008,18 +2086,6 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       currentDate,
       (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
-    const linkedScheduledRooms = await db.prepare(`
-      SELECT DISTINCT room_id
-      FROM schedules
-      WHERE room_id IS NOT NULL
-    `).all();
-    const upcomingApprovedBookedRooms = await db.prepare(`
-      SELECT DISTINCT room_id
-      FROM bookings
-      WHERE status = 'Approved'
-        AND room_id IS NOT NULL
-        AND date >= ?
-    `).all(currentDate);
     const activeBookings = await db.prepare(`
       SELECT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
@@ -2030,7 +2096,7 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
         ...activeBookings.map((item) => item.room_id).filter(Boolean)
       ])).size
     };
-    const availableNow = totalRooms.count - maintenanceRooms.count - currentlyScheduled.count;
+    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - currentlyScheduled.count);
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
       FROM maintenance m 
@@ -2046,10 +2112,8 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      scheduledRooms: (/* @__PURE__ */ new Set([
-        ...linkedScheduledRooms.map((item) => item.room_id).filter(Boolean),
-        ...upcomingApprovedBookedRooms.map((item) => item.room_id).filter(Boolean)
-      ])).size,
+      // Keep this strictly "live now" to align with Digital Twin status filter.
+      scheduledRooms: currentlyScheduled.count,
       recentAlerts
     });
   } catch (err) {
@@ -2275,16 +2339,20 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         roomCount: deptRooms.length
       };
     });
-    const schoolReports = schools.map((school) => {
-      const schoolDepts = deptReports.filter((d) => d.school_id === school.id);
-      const totalUtilization = schoolDepts.reduce((acc, d) => acc + d.avgUtilization, 0);
-      const avgUtilization = schoolDepts.length > 0 ? totalUtilization / schoolDepts.length : 0;
+    const schoolReports = Array.from(new Set(reports.map((report) => report.school).filter(Boolean))).map((schoolName) => {
+      const schoolRooms = reports.filter((report) => report.school === schoolName);
+      const deptCount = new Set(
+        schoolRooms.map((report) => report.department).filter((departmentName) => departmentName && departmentName !== "Unmapped")
+      ).size;
+      const totalUtilization = schoolRooms.reduce((acc, report) => acc + report.utilization, 0);
+      const avgUtilization = schoolRooms.length > 0 ? totalUtilization / schoolRooms.length : 0;
       return {
-        name: school.name,
+        name: schoolName,
         avgUtilization: Math.round(avgUtilization),
-        deptCount: schoolDepts.length
+        deptCount,
+        roomCount: schoolRooms.length
       };
-    });
+    }).sort((a, b) => b.avgUtilization - a.avgUtilization);
     res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports });
   } catch (err) {
     res.status(500).json({ error: err.message });

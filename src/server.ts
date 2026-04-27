@@ -1,4 +1,5 @@
-﻿import express from "express";
+import express from "express";
+import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
@@ -8,7 +9,7 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import * as mammoth from "mammoth";
-import { createDatabaseClient, type DatabaseDialect } from "./_db.ts";
+import { createDatabaseClient, type DatabaseDialect } from "../db.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -29,7 +30,6 @@ const databasePath = process.env.DATABASE_PATH
   : defaultDatabasePath;
 const databaseProvider = process.env.DATABASE_PROVIDER || "";
 const databaseUrl = process.env.DATABASE_URL || "";
-const APP_TIME_ZONE = process.env.APP_TIMEZONE || "Asia/Kolkata";
 const normalizeOrigin = (value?: string | null) => {
   const trimmed = value?.trim();
   if (!trimmed) return "";
@@ -51,24 +51,6 @@ const allowedOrigins = new Set(
     .map(normalizeOrigin)
     .filter(Boolean)
 );
-
-const getCampusDateTimeParts = (value: Date = new Date()) => {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: APP_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(value);
-
-  const readPart = (type: string) => parts.find(part => part.type === type)?.value || "";
-  return {
-    date: `${readPart("year")}-${readPart("month")}-${readPart("day")}`,
-    time: `${readPart("hour")}:${readPart("minute")}`,
-  };
-};
 
 const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
   const idDefinition = dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT";
@@ -137,7 +119,6 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       id ${idDefinition},
       room_id TEXT UNIQUE NOT NULL,
       room_number TEXT NOT NULL,
-      room_aliases TEXT,
       floor_id INTEGER NOT NULL,
       parent_room_id INTEGER,
       room_layout TEXT DEFAULT 'Normal',
@@ -186,51 +167,6 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
 
-    CREATE TABLE IF NOT EXISTS academic_calendars (
-      id ${idDefinition},
-      calendar_id TEXT UNIQUE NOT NULL,
-      school_id INTEGER NOT NULL,
-      department_id INTEGER NOT NULL,
-      program TEXT,
-      batch TEXT,
-      academic_year TEXT,
-      year_of_study TEXT,
-      semester TEXT,
-      event_type TEXT,
-      title TEXT NOT NULL,
-      start_date DATE NOT NULL,
-      end_date DATE NOT NULL,
-      status TEXT DEFAULT 'Upcoming',
-      notes TEXT,
-      FOREIGN KEY(school_id) REFERENCES schools(id),
-      FOREIGN KEY(department_id) REFERENCES departments(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS batch_room_allocations (
-      id ${idDefinition},
-      allocation_id TEXT UNIQUE NOT NULL,
-      academic_calendar_id INTEGER,
-      school_id INTEGER NOT NULL,
-      department_id INTEGER NOT NULL,
-      room_id INTEGER NOT NULL,
-      program TEXT,
-      batch TEXT,
-      academic_year TEXT,
-      year_of_study TEXT,
-      semester TEXT,
-      start_date DATE NOT NULL,
-      end_date DATE NOT NULL,
-      allocation_mode TEXT DEFAULT 'Shared',
-      room_type TEXT,
-      capacity INTEGER,
-      status TEXT DEFAULT 'Planned',
-      notes TEXT,
-      FOREIGN KEY(academic_calendar_id) REFERENCES academic_calendars(id),
-      FOREIGN KEY(school_id) REFERENCES schools(id),
-      FOREIGN KEY(department_id) REFERENCES departments(id),
-      FOREIGN KEY(room_id) REFERENCES rooms(id)
-    );
-
     CREATE TABLE IF NOT EXISTS equipment (
       id ${idDefinition},
       equipment_id TEXT UNIQUE NOT NULL,
@@ -247,20 +183,14 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       id ${idDefinition},
       schedule_id TEXT UNIQUE NOT NULL,
       department_id INTEGER,
-      section TEXT,
       course_code TEXT,
       course_name TEXT,
       faculty TEXT,
       room_id INTEGER,
-      room_label TEXT,
       day_of_week TEXT,
       start_time TEXT,
       end_time TEXT,
       student_count INTEGER,
-      semester TEXT,
-      import_status TEXT,
-      review_note TEXT,
-      source_file TEXT,
       FOREIGN KEY(department_id) REFERENCES departments(id),
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
@@ -358,25 +288,16 @@ await ensureColumn("blocks", "planned_floor_count", "INTEGER DEFAULT 0");
 await ensureColumn("blocks", "first_floor_number", "INTEGER DEFAULT 0");
 await ensureColumn("rooms", "parent_room_id", "INTEGER");
 await ensureColumn("rooms", "room_layout", "TEXT DEFAULT 'Normal'");
-await ensureColumn("rooms", "room_aliases", "TEXT");
 await ensureColumn("rooms", "sub_room_count", "INTEGER");
 await ensureColumn("rooms", "room_section_name", "TEXT");
 await ensureColumn("rooms", "usage_category", "TEXT");
 await ensureColumn("rooms", "is_bookable", "INTEGER DEFAULT 1");
 await ensureColumn("rooms", "lab_name", "TEXT");
 await ensureColumn("rooms", "restroom_type", "TEXT");
-await ensureColumn("schedules", "room_label", "TEXT");
-await ensureColumn("schedules", "section", "TEXT");
-await ensureColumn("schedules", "semester", "TEXT");
-await ensureColumn("schedules", "year_of_study", "TEXT");
-await ensureColumn("schedules", "import_status", "TEXT");
-await ensureColumn("schedules", "review_note", "TEXT");
-await ensureColumn("schedules", "source_file", "TEXT");
 await ensureColumn("users", "responsibilities", "TEXT");
 await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
-await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
 
 const normalizeRoomTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase();
@@ -559,19 +480,6 @@ const BOOKABLE_ROOM_TYPE_VALUES = [
   "Gym",
 ];
 const BOOKABLE_USAGE_CATEGORY_VALUES = ["Teaching", "Lab Work", "Multipurpose", "Meeting"];
-const normalizeRoomAliases = (value: any) => Array.from(new Set(
-  value?.toString()
-    .split(/[\n,;|/]+/)
-    .map((alias: string) => alias.trim())
-    .filter(Boolean) || []
-)).join(", ");
-
-const getRoomAliasTokens = (value: any) =>
-  normalizeRoomAliases(value)
-    .split(",")
-    .map((alias: string) => normalizeDuplicateValue(alias))
-    .filter(Boolean);
-
 const isReservableRoomRecord = (room: any) => {
   if (!room) return false;
   if (room.status && room.status !== "Available") return false;
@@ -585,7 +493,6 @@ const isReservableRoomRecord = (room: any) => {
 const normalizeRoomPayload = (payload: any) => {
   const nextPayload = { ...payload };
   nextPayload.room_type = normalizeRoomTypeValue(nextPayload.room_type);
-  nextPayload.room_aliases = normalizeRoomAliases(nextPayload.room_aliases) || null;
   nextPayload.lab_name = nextPayload.lab_name?.toString().trim() || nextPayload.room_section_name?.toString().trim() || null;
   nextPayload.restroom_type = normalizeRestroomTypeValue(nextPayload.restroom_type) || null;
   nextPayload.parent_room_id = nextPayload.parent_room_id ? Number(nextPayload.parent_room_id) : null;
@@ -680,348 +587,6 @@ const getBookableRoomError = async (roomId: any) => {
     return `Room ${room.room_number} cannot be booked because its room type or usage category is not bookable.`;
   }
   return null;
-};
-
-const getCurrentIndiaDate = () =>
-  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
-
-const normalizeIsoDate = (value: any) => {
-  const trimmed = value?.toString().trim();
-  if (!trimmed) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) return "";
-  return parsed.toISOString().slice(0, 10);
-};
-
-const deriveAcademicCalendarStatus = (startDate: string, endDate: string) => {
-  const today = getCurrentIndiaDate();
-  if (endDate && endDate < today) return "Completed";
-  if (startDate && startDate > today) return "Upcoming";
-  return "Active";
-};
-
-const deriveBatchAllocationStatus = (startDate: string, endDate: string, requestedStatus?: string | null) => {
-  const normalizedRequested = requestedStatus?.toString().trim().toLowerCase() || "";
-  if (normalizedRequested === "released") return "Released";
-  const today = getCurrentIndiaDate();
-  if (endDate && endDate < today) return "Released";
-  if (startDate && startDate > today) return "Planned";
-  return "Active";
-};
-
-const normalizeAcademicCalendarPayload = async (payload: any) => {
-  const nextPayload = { ...payload };
-  const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
-  const department = departmentId
-    ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
-    : null;
-
-  if (!department) {
-    throw new Error("Please select a valid department.");
-  }
-
-  const startDate = normalizeIsoDate(nextPayload.start_date);
-  const endDate = normalizeIsoDate(nextPayload.end_date);
-  if (!startDate || !endDate) {
-    throw new Error("Start date and end date are required.");
-  }
-  if (startDate > endDate) {
-    throw new Error("Academic calendar start date cannot be after the end date.");
-  }
-
-  nextPayload.department_id = department.id;
-  nextPayload.school_id = department.school_id;
-  nextPayload.program = nextPayload.program?.toString().trim() || null;
-  nextPayload.batch = nextPayload.batch?.toString().trim() || null;
-  nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
-  nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
-  nextPayload.semester = nextPayload.semester?.toString().trim() || null;
-  nextPayload.event_type = nextPayload.event_type?.toString().trim() || "Semester Period";
-  nextPayload.title = nextPayload.title?.toString().trim() || `${nextPayload.program || "Academic"} ${nextPayload.semester || "Period"}`;
-  nextPayload.start_date = startDate;
-  nextPayload.end_date = endDate;
-  nextPayload.status = deriveAcademicCalendarStatus(startDate, endDate);
-  nextPayload.notes = nextPayload.notes?.toString().trim() || null;
-  return nextPayload;
-};
-
-const normalizeBatchRoomAllocationPayload = async (payload: any) => {
-  const nextPayload = { ...payload };
-  const calendarId = nextPayload.academic_calendar_id ? Number(nextPayload.academic_calendar_id) : null;
-  const linkedCalendar = calendarId
-    ? await db.prepare(`
-      SELECT id, school_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date
-      FROM academic_calendars
-      WHERE id = ?
-    `).get(calendarId) as any
-    : null;
-
-  if (calendarId && !linkedCalendar) {
-    throw new Error("Please select a valid academic calendar.");
-  }
-
-  const departmentId = Number(nextPayload.department_id || linkedCalendar?.department_id || 0) || null;
-  const department = departmentId
-    ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
-    : null;
-  if (!department) {
-    throw new Error("Please select a valid department.");
-  }
-
-  const roomId = nextPayload.room_id ? Number(nextPayload.room_id) : null;
-  const room = roomId
-    ? await db.prepare("SELECT id, room_number, room_type, capacity FROM rooms WHERE id = ?").get(roomId) as any
-    : null;
-  if (!room) {
-    throw new Error("Please select a valid room.");
-  }
-
-  const startDate = normalizeIsoDate(nextPayload.start_date || linkedCalendar?.start_date);
-  const endDate = normalizeIsoDate(nextPayload.end_date || linkedCalendar?.end_date);
-  if (!startDate || !endDate) {
-    throw new Error("Allocation start date and end date are required.");
-  }
-  if (startDate > endDate) {
-    throw new Error("Allocation start date cannot be after the end date.");
-  }
-
-  nextPayload.academic_calendar_id = linkedCalendar?.id || null;
-  nextPayload.department_id = department.id;
-  nextPayload.school_id = department.school_id;
-  nextPayload.room_id = room.id;
-  nextPayload.program = nextPayload.program?.toString().trim() || linkedCalendar?.program || null;
-  nextPayload.batch = nextPayload.batch?.toString().trim() || linkedCalendar?.batch || null;
-  nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || linkedCalendar?.academic_year || null;
-  nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || linkedCalendar?.year_of_study || null;
-  nextPayload.semester = nextPayload.semester?.toString().trim() || linkedCalendar?.semester || null;
-  nextPayload.start_date = startDate;
-  nextPayload.end_date = endDate;
-  nextPayload.allocation_mode = ["exclusive", "shared"].includes((nextPayload.allocation_mode || "").toString().trim().toLowerCase())
-    ? ((nextPayload.allocation_mode || "").toString().trim().toLowerCase() === "exclusive" ? "Exclusive" : "Shared")
-    : "Shared";
-  nextPayload.room_type = room.room_type;
-  nextPayload.capacity = parseInt(nextPayload.capacity, 10) || 0;
-  nextPayload.status = deriveBatchAllocationStatus(startDate, endDate, nextPayload.status);
-  nextPayload.notes = nextPayload.notes?.toString().trim() || null;
-
-  if (nextPayload.capacity <= 0) {
-    throw new Error("Required capacity must be greater than zero.");
-  }
-  if (nextPayload.capacity > room.capacity) {
-    throw new Error(`Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextPayload.capacity}.`);
-  }
-
-  return nextPayload;
-};
-
-const getBatchAllocationOverlapError = async (allocation: any, excludeId?: string | number) => {
-  if (!allocation?.room_id || !allocation?.start_date || !allocation?.end_date) return null;
-  const room = await db.prepare("SELECT room_number FROM rooms WHERE id = ?").get(allocation.room_id) as any;
-  const existingAllocations = await db.prepare(`
-    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status, allocation_mode
-    FROM batch_room_allocations
-    WHERE room_id = ?
-    ${excludeId ? "AND id != ?" : ""}
-  `).all(allocation.room_id, ...(excludeId ? [excludeId] : [])) as any[];
-
-  const conflictingAllocation = existingAllocations.find(existing => {
-    if ((existing.status || "").toString().trim().toLowerCase() === "released") return false;
-    const existingStart = normalizeIsoDate(existing.start_date);
-    const existingEnd = normalizeIsoDate(existing.end_date);
-    const overlaps = !(existingEnd < allocation.start_date || existingStart > allocation.end_date);
-    if (!overlaps) return false;
-    const existingMode = (existing.allocation_mode || "Shared").toString().trim().toLowerCase();
-    const nextMode = (allocation.allocation_mode || "Shared").toString().trim().toLowerCase();
-    return existingMode !== "shared" || nextMode !== "shared";
-  });
-
-  if (!conflictingAllocation) return null;
-  return `Room ${room?.room_number || allocation.room_id} already has an overlapping Exclusive batch allocation. Shared allocations can overlap across batches or departments, but any overlap involving Exclusive is blocked.`;
-};
-
-const syncBatchAllocationStatuses = async () => {
-  const allocations = await db.prepare("SELECT id, start_date, end_date, status FROM batch_room_allocations").all() as any[];
-  for (const allocation of allocations) {
-    const nextStatus = deriveBatchAllocationStatus(normalizeIsoDate(allocation.start_date), normalizeIsoDate(allocation.end_date), allocation.status);
-    if (nextStatus !== allocation.status) {
-      await db.prepare("UPDATE batch_room_allocations SET status = ? WHERE id = ?").run(nextStatus, allocation.id);
-    }
-  }
-};
-
-const getDayOfWeekForDate = (date: string) =>
-  new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { weekday: "long" });
-
-const parseSemesterNumber = (value: any) => {
-  const normalized = normalizeDuplicateValue(value)?.toString() || "";
-  if (!normalized) return null;
-
-  const numericMatch = normalized.match(/(?:semester|sem)?\s*(\d+)/)?.[1];
-  if (numericMatch) return Number(numericMatch);
-
-  const romanMatch = normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/);
-  if (!romanMatch) return null;
-
-  const romanToNumber: Record<string, number> = {
-    i: 1,
-    ii: 2,
-    iii: 3,
-    iv: 4,
-    v: 5,
-    vi: 6,
-    vii: 7,
-    viii: 8,
-    ix: 9,
-    x: 10,
-  };
-  return romanToNumber[romanMatch[1]] || null;
-};
-
-const normalizeSemesterKey = (value: any) => {
-  const normalized = normalizeDuplicateValue(value)?.toString() || "";
-  if (!normalized) return "";
-  if (normalized.includes("odd") || normalized.includes("fall")) return "odd";
-  if (normalized.includes("even") || normalized.includes("spring") || normalized.includes("summer")) return "even";
-  const semesterNumber = parseSemesterNumber(value);
-  if (semesterNumber) return semesterNumber % 2 === 0 ? "even" : "odd";
-  return normalized;
-};
-
-const isExaminationCalendarEvent = (calendar: any) => {
-  const eventType = normalizeDuplicateValue(calendar?.event_type)?.toString() || "";
-  const title = normalizeDuplicateValue(calendar?.title)?.toString() || "";
-  return eventType.includes("exam") || eventType.includes("ciat") || title.includes("exam") || title.includes("ciat");
-};
-
-const normalizeAcademicContextText = (value: any) =>
-  normalizeDuplicateValue(value)?.toString() || "";
-
-const normalizeYearOfStudyKey = (value: any) => {
-  const normalized = value?.toString().trim().toLowerCase() || "";
-  if (!normalized) return "";
-  const numericMatch =
-    normalized.match(/(?:^|\b)(\d+)(?:st|nd|rd|th)?\s*year\b/)?.[1] ||
-    normalized.match(/\byear\s*(\d+)\b/)?.[1] ||
-    normalized.match(/^(\d+)$/)?.[1];
-  if (numericMatch) return numericMatch;
-
-  const romanMatch =
-    normalized.match(/\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\s*year\b/)?.[1] ||
-    normalized.match(/\byear\s*(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/)?.[1] ||
-    normalized.match(/^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/)?.[1];
-  if (!romanMatch) return "";
-
-  const romanToNumber: Record<string, string> = {
-    i: "1",
-    ii: "2",
-    iii: "3",
-    iv: "4",
-    v: "5",
-    vi: "6",
-    vii: "7",
-    viii: "8",
-    ix: "9",
-    x: "10",
-  };
-  return romanToNumber[romanMatch] || "";
-};
-
-const allocationMatchesCalendarContext = (allocation: any, calendar: any) => {
-  if (calendar?.id && allocation?.academic_calendar_id && allocation.academic_calendar_id.toString() === calendar.id.toString()) return true;
-  if (!allocation?.department_id || !calendar?.department_id) return false;
-  if (allocation.department_id.toString() !== calendar.department_id.toString()) return false;
-
-  const allocationSemester = normalizeSemesterKey(allocation.semester);
-  const calendarSemester = normalizeSemesterKey(calendar.semester);
-  if (allocationSemester && calendarSemester && allocationSemester !== calendarSemester) return false;
-
-  if (calendar?.program && normalizeAcademicContextText(allocation.program) !== normalizeAcademicContextText(calendar.program)) return false;
-  if (calendar?.batch && normalizeAcademicContextText(allocation.batch) !== normalizeAcademicContextText(calendar.batch)) return false;
-  if (calendar?.academic_year && normalizeAcademicContextText(allocation.academic_year) !== normalizeAcademicContextText(calendar.academic_year)) return false;
-
-  const allocationYear = normalizeYearOfStudyKey(allocation.year_of_study);
-  const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
-  if (calendarYear && allocationYear && allocationYear !== calendarYear) return false;
-
-  return true;
-};
-
-const scheduleMatchesCalendarOverride = (schedule: any, calendar: any, activeBatchAllocations: any[] = [], date?: string) => {
-  if (!schedule?.department_id || !calendar?.department_id) return false;
-  if (schedule.department_id.toString() !== calendar.department_id.toString()) return false;
-
-  const scheduleSemester = normalizeSemesterKey(schedule.semester);
-  const calendarSemester = normalizeSemesterKey(calendar.semester);
-  if (scheduleSemester && calendarSemester && scheduleSemester !== calendarSemester) return false;
-
-  const scheduleYear = normalizeYearOfStudyKey(schedule.year_of_study);
-  const calendarYear = normalizeYearOfStudyKey(calendar.year_of_study);
-  if (calendarYear && scheduleYear && calendarYear !== scheduleYear) return false;
-
-  const calendarHasSpecificContext = Boolean(
-    calendar?.program || calendar?.batch || calendar?.academic_year || calendar?.year_of_study,
-  );
-  if (!calendarHasSpecificContext) return true;
-
-  const relevantAllocations = activeBatchAllocations.filter((allocation: any) => {
-    if (schedule?.room_id != null && allocation?.room_id != null && allocation.room_id.toString() !== schedule.room_id.toString()) return false;
-    if (!allocation?.department_id || allocation.department_id.toString() !== schedule.department_id.toString()) return false;
-
-    const allocationSemester = normalizeSemesterKey(allocation.semester);
-    if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
-
-    if (date && allocation?.start_date && allocation?.end_date) {
-      const allocationStart = normalizeIsoDate(allocation.start_date);
-      const allocationEnd = normalizeIsoDate(allocation.end_date);
-      if (allocationStart && allocationEnd && (allocationStart > date || allocationEnd < date)) return false;
-    }
-
-    return true;
-  });
-
-  if (relevantAllocations.length === 0) return true;
-  return relevantAllocations.some((allocation: any) => allocationMatchesCalendarContext(allocation, calendar));
-
-};
-
-const filterSchedulesByAcademicCalendar = async (schedules: any[], date: string) => {
-  const normalizedDate = normalizeIsoDate(date);
-  if (!normalizedDate || !Array.isArray(schedules) || schedules.length === 0) return schedules;
-
-  const activeExamCalendars = await db.prepare(`
-    SELECT id, department_id, program, batch, academic_year, year_of_study, semester, event_type, title, start_date, end_date
-    FROM academic_calendars
-    WHERE start_date <= ? AND end_date >= ?
-  `).all(normalizedDate, normalizedDate) as any[];
-
-  const examinationCalendars = activeExamCalendars.filter(isExaminationCalendarEvent);
-  if (examinationCalendars.length === 0) return schedules;
-
-  const activeBatchAllocations = await db.prepare(`
-    SELECT id, academic_calendar_id, room_id, department_id, program, batch, academic_year, year_of_study, semester, start_date, end_date, status
-    FROM batch_room_allocations
-    WHERE start_date <= ? AND end_date >= ? AND status != ?
-  `).all(normalizedDate, normalizedDate, "Released") as any[];
-
-  return schedules.filter(schedule =>
-    !examinationCalendars.some(calendar => scheduleMatchesCalendarOverride(schedule, calendar, activeBatchAllocations, normalizedDate))
-  );
-};
-
-const getEffectiveSchedulesForDate = async (
-  date: string,
-  predicate?: (schedule: any) => boolean,
-) => {
-  const normalizedDate = normalizeIsoDate(date);
-  if (!normalizedDate) return [] as any[];
-
-  const dayOfWeek = getDayOfWeekForDate(normalizedDate);
-  const daySchedules = await db.prepare(`SELECT * FROM schedules WHERE day_of_week = ?`).all(dayOfWeek) as any[];
-  const deduplicatedSchedules = deduplicateSchedules(daySchedules).kept;
-  const filteredSchedules = predicate ? deduplicatedSchedules.filter(predicate) : deduplicatedSchedules;
-  return filterSchedulesByAcademicCalendar(filteredSchedules, normalizedDate);
 };
 
 const ensureNotificationsTable = async () => {
@@ -1155,10 +720,16 @@ const markAllNotificationsRead = async (user: any, notificationIds?: number[]) =
 
   if (visibleNotificationIds.length === 0) return;
 
-  const insertSql = `
-    INSERT OR IGNORE INTO notification_reads (notification_id, user_id, read_at)
-    VALUES (?, ?, CURRENT_TIMESTAMP)
-  `;
+  const insertSql = db.dialect === "postgres"
+    ? `
+      INSERT INTO notification_reads (notification_id, user_id, read_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT (notification_id, user_id) DO NOTHING
+    `
+    : `
+      INSERT OR IGNORE INTO notification_reads (notification_id, user_id, read_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+    `;
 
   await db.transaction(async (transactionDb) => {
     const insertRead = transactionDb.prepare(insertSql);
@@ -1223,59 +794,6 @@ const parseAIJsonResponse = (text: string) => {
     cleanText = cleanText.split("```")[1].split("```")[0];
   }
   return JSON.parse(cleanText);
-};
-
-const normalizeExtractedSectionValue = (value: any) => {
-  const raw = value?.toString().trim();
-  if (!raw) return "";
-  const match = raw.match(/section[\s:-]*([a-z0-9]+)/i) || raw.match(/^([a-z]+\d+)$/i);
-  return (match?.[1] || raw).toUpperCase();
-};
-
-const normalizeExtractedRoomValue = (value: any) => {
-  const raw = value?.toString().trim();
-  if (!raw) return "";
-  const directMatch =
-    raw.match(/(?:room|r)\s*\.?\s*no\.?\s*[:\-]?\s*([a-z0-9-]+)/i) ||
-    raw.match(/\b([a-z]?\d{3,4}[a-z]?)\b/i);
-  return directMatch?.[1]?.toUpperCase() || raw;
-};
-
-const mergeExtractedSchedulesWithHeaderRooms = (schedules: any[], sectionRoomMaps: any[]) => {
-  if (!Array.isArray(schedules) || schedules.length === 0) return [];
-
-  const fallbackBySection = new Map<string, { room: string; semester: any; department: any; year_of_study: any }>();
-  for (const item of Array.isArray(sectionRoomMaps) ? sectionRoomMaps : []) {
-    const section = normalizeExtractedSectionValue(item?.section);
-    const room = normalizeExtractedRoomValue(item?.room);
-    const semester = item?.semester || null;
-    const department = item?.department || null;
-    const year_of_study = normalizeYearOfStudyKey(item?.year_of_study || item?.year) || null;
-    if (section && (room || semester || department || year_of_study) && !fallbackBySection.has(section)) {
-      fallbackBySection.set(section, { room, semester, department, year_of_study });
-    }
-  }
-
-  return schedules.map(schedule => {
-    const normalizedSection = normalizeExtractedSectionValue(schedule?.section);
-    const explicitRoom = normalizeExtractedRoomValue(schedule?.room);
-    const inheritedDefaults = normalizedSection ? fallbackBySection.get(normalizedSection) : null;
-    const inheritedRoom = inheritedDefaults?.room || "";
-    const inheritedYear = inheritedDefaults?.year_of_study || "";
-    const scheduleYear = normalizeYearOfStudyKey(schedule?.year_of_study || schedule?.year);
-    const derivedYearFromSemester = (() => {
-      const semesterNumber = parseSemesterNumber(schedule?.semester || inheritedDefaults?.semester);
-      return semesterNumber ? Math.ceil(semesterNumber / 2).toString() : "";
-    })();
-    return {
-      ...schedule,
-      section: normalizedSection || schedule?.section || null,
-      department: schedule?.department || inheritedDefaults?.department || null,
-      semester: schedule?.semester || inheritedDefaults?.semester || null,
-      year_of_study: scheduleYear || inheritedYear || derivedYearFromSemester || null,
-      room: explicitRoom || inheritedRoom || schedule?.room || null,
-    };
-  });
 };
 
 // --- AUTH ROUTES ---
@@ -1360,41 +878,23 @@ app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {
 The document contains multiple sections (A1, A2, etc.).
 Extract info for ALL sections.
 
-Return a single JSON object with exactly these keys:
-- sectionRoomMaps: array of objects with fields:
-  - section
-  - room
-  - year_of_study
-  - semester
-  - department
-- schedules: array of objects with fields:
-  - department (e.g., "Computer Science and Engineering")
-  - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
-  - year_of_study (Roman or numeric year if available, e.g., "II", "2", "IV Year")
-  - semester (Odd or Even if available, else null)
-  - course_code (if available, else null)
-  - course_name (the subject name, e.g., "Computer Networks")
-  - faculty (the teacher's name)
-  - room (the room number, e.g., "322")
-  - day_of_week (Full name: Monday, Tuesday, etc.)
-  - start_time (24h format HH:mm, e.g., "09:00")
-  - end_time (24h format HH:mm, e.g., "09:55")
-  - student_count (estimate or null)
+Return a JSON array of objects with these fields:
+- department (e.g., "Computer Science and Engineering")
+- semester (Odd or Even if available, else null)
+- course_code (if available, else null)
+- course_name (the subject name, e.g., "Computer Networks")
+- faculty (the teacher's name)
+- room (the room number, e.g., "322")
+- day_of_week (Full name: Monday, Tuesday, etc.)
+- start_time (24h format HH:mm, e.g., "09:00")
+- end_time (24h format HH:mm, e.g., "09:55")
+- student_count (estimate or null)
 
-Ensure sectionRoomMaps captures the default Room No and academic context from the header of each section timetable.
-Ensure you capture the Section mentioned in the header of each timetable and repeat it for every extracted row from that section.
-For normal theory slots, use the section header Room No as the room.
-Only use a different room when that specific slot explicitly overrides it with text like (R.No.610) or Room No: 610 inside the timetable grid.
+Ensure you capture the Room No mentioned in the header of each timetable.
 Only extract actual class sessions.
 Ignore labels and non-course cells such as "Reading Period", "Reading Periods", "Period", "Periods", "Break", "Lunch", "Tea Break", "Library", section titles, room headings, and plain time-slot labels.
 The course_name must always be the real subject title.
-If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.
-
-Example response:
-{
-  "sectionRoomMaps": [{"section":"A4","room":"331","year_of_study":"II","semester":"Even","department":"Computer Science and Engineering"}],
-  "schedules": [{"department":"Computer Science and Engineering","section":"A4","year_of_study":"II","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
-}` });
+If a slot has multiple subjects or is a lab, create separate entries if needed or one entry with combined info.` });
 
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const response = await ai.models.generateContent({
@@ -1402,22 +902,8 @@ Example response:
       contents: [{ parts }],
       config: { responseMimeType: "application/json" },
     });
-    const extractedPayload = parseAIJsonResponse(await getAIResponseText(response));
-    const schedules = Array.isArray(extractedPayload)
-      ? extractedPayload
-      : Array.isArray(extractedPayload?.schedules)
-        ? extractedPayload.schedules
-        : [];
-    const sectionRoomMaps = Array.isArray(extractedPayload?.sectionRoomMaps)
-      ? extractedPayload.sectionRoomMaps
-      : Array.isArray(extractedPayload?.section_room_maps)
-        ? extractedPayload.section_room_maps
-        : [];
-    const enrichedSchedules = mergeExtractedSchedulesWithHeaderRooms(
-      schedules,
-      sectionRoomMaps,
-    );
-    res.json({ schedules: enrichedSchedules });
+    const schedules = parseAIJsonResponse(await getAIResponseText(response));
+    res.json({ schedules: Array.isArray(schedules) ? schedules : [] });
   } catch (err: any) {
     const errorMessage = err?.message || "";
     const leakedKey = /reported as leaked|leaked/i.test(errorMessage);
@@ -1515,21 +1001,13 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
   department_allocations: [
     { fields: ["room_id", "department_id", "semester"], label: "Room allocation for this department and semester" },
   ],
-  academic_calendars: [
-    { fields: ["calendar_id"], label: "Calendar ID" },
-    { fields: ["department_id", "program", "batch", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" },
-  ],
-  batch_room_allocations: [
-    { fields: ["allocation_id"], label: "Allocation ID" },
-    { fields: ["room_id", "department_id", "program", "batch", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" },
-  ],
   equipment: [
     { fields: ["equipment_id"], label: "Equipment ID" },
     { fields: ["room_id", "name"], label: "Equipment name in this room" },
   ],
   schedules: [
     { fields: ["schedule_id"], label: "Schedule ID" },
-    { fields: ["room_id", "section", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room and section" },
+    { fields: ["room_id", "day_of_week", "start_time", "end_time"], label: "Schedule slot for this room" },
   ],
   bookings: [
     { fields: ["request_id"], label: "Request ID" },
@@ -1542,91 +1020,6 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
 const normalizeDuplicateValue = (value: any) =>
   typeof value === "string" ? value.trim().toLowerCase() : value;
 
-const idsEqual = (left: any, right: any) =>
-  left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
-
-const shouldUseCaseInsensitiveTextComparison = (fieldName: string, value: any) => {
-  if (typeof value !== "string") return false;
-  const normalizedField = fieldName.toLowerCase();
-  if (normalizedField === "date" || normalizedField.endsWith("_date")) return false;
-  return true;
-};
-
-const getScheduleIdentityVariants = (schedule: any) => {
-  const day = normalizeDuplicateValue(schedule?.day_of_week)?.toString() || "";
-  const start = normalizeDuplicateValue(schedule?.start_time)?.toString() || "";
-  const end = normalizeDuplicateValue(schedule?.end_time)?.toString() || "";
-  const section = normalizeDuplicateValue(schedule?.section)?.toString() || "";
-  const variants: string[] = [];
-
-  if (schedule?.room_id !== undefined && schedule?.room_id !== null && schedule.room_id !== "") {
-    variants.push(`room|${schedule.room_id.toString()}|${section}|${day}|${start}|${end}`);
-  }
-
-  const normalizedRoomLabel = normalizeDuplicateValue(schedule?.room_label)?.toString() || "";
-  if (normalizedRoomLabel) {
-    variants.push(`label|${normalizedRoomLabel}|${section}|${day}|${start}|${end}`);
-  }
-
-  if (variants.length === 0) {
-    const scheduleId = normalizeDuplicateValue(schedule?.schedule_id)?.toString() || "";
-    if (scheduleId) variants.push(`schedule|${scheduleId}`);
-  }
-
-  return variants;
-};
-
-const schedulesConflict = (left: any, right: any) => {
-  const leftVariants = getScheduleIdentityVariants(left);
-  const rightVariants = new Set(getScheduleIdentityVariants(right));
-  return leftVariants.some(variant => rightVariants.has(variant));
-};
-
-const deduplicateSchedules = (rows: any[]) => {
-  const seen = new Set<string>();
-  const kept: any[] = [];
-  const duplicates: any[] = [];
-  const prioritizedRows = [...rows].sort((a, b) => {
-    const score = (row: any) =>
-      (row?.room_id ? 4 : 0) +
-      (row?.room_label ? 2 : 0) +
-      (row?.course_name ? 1 : 0) +
-      (row?.faculty ? 1 : 0);
-    const scoreDiff = score(b) - score(a);
-    if (scoreDiff !== 0) return scoreDiff;
-    return Number(a?.id || 0) - Number(b?.id || 0);
-  });
-
-  for (const row of prioritizedRows) {
-    const variants = getScheduleIdentityVariants(row);
-    const hasConflict = variants.some(variant => seen.has(variant));
-    if (hasConflict) {
-      duplicates.push(row);
-      continue;
-    }
-
-    variants.forEach(variant => seen.add(variant));
-    kept.push(row);
-  }
-
-  kept.sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
-  duplicates.sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0));
-  return { kept, duplicates };
-};
-
-const cleanupDuplicateSchedules = async () => {
-  const scheduleRows = await db.prepare("SELECT * FROM schedules").all() as any[];
-  const { duplicates } = deduplicateSchedules(scheduleRows);
-
-  for (const duplicate of duplicates) {
-    await db.prepare("DELETE FROM schedules WHERE id = ?").run(duplicate.id);
-  }
-
-  if (duplicates.length > 0) {
-    console.log(`Removed ${duplicates.length} duplicate schedule record(s).`);
-  }
-};
-
 const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: string | number) => {
   const rules = duplicateRules[tableName] || [];
 
@@ -1634,11 +1027,9 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
     if (rule.fields.some(field => data[field] == null || data[field] === "")) continue;
 
     const whereClause = rule.fields
-      .map(field => shouldUseCaseInsensitiveTextComparison(field, data[field]) ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`)
+      .map(field => typeof data[field] === "string" ? `LOWER(TRIM(${field})) = ?` : `${field} = ?`)
       .join(" AND ");
-    const values = rule.fields.map(field =>
-      shouldUseCaseInsensitiveTextComparison(field, data[field]) ? normalizeDuplicateValue(data[field]) : data[field]
-    );
+    const values = rule.fields.map(field => normalizeDuplicateValue(data[field]));
     const query = `SELECT id FROM ${tableName} WHERE ${whereClause}${excludeId ? " AND id != ?" : ""}`;
     const existing = await db.prepare(query).get(...values, ...(excludeId ? [excludeId] : []));
 
@@ -1647,57 +1038,8 @@ const checkDuplicateRecord = async (tableName: string, data: any, excludeId?: st
     }
   }
 
-  if (tableName === "schedules" && data?.day_of_week && data?.start_time && data?.end_time) {
-    const candidates = await db.prepare(`
-      SELECT id, schedule_id, room_id, room_label, section, day_of_week, start_time, end_time
-      FROM schedules
-      WHERE LOWER(TRIM(day_of_week)) = ?
-      AND LOWER(TRIM(start_time)) = ?
-      AND LOWER(TRIM(end_time)) = ?
-      ${excludeId ? "AND id != ?" : ""}
-    `).all(
-      normalizeDuplicateValue(data.day_of_week),
-      normalizeDuplicateValue(data.start_time),
-      normalizeDuplicateValue(data.end_time),
-      ...(excludeId ? [excludeId] : [])
-    ) as any[];
-
-    const conflictingSchedule = candidates.find(candidate => schedulesConflict(candidate, data));
-    if (conflictingSchedule) {
-      return "Schedule slot for this room already exists. Duplicate records are not allowed.";
-    }
-  }
-
-  if (tableName === "rooms") {
-    const candidateTokens = Array.from(new Set([
-      normalizeDuplicateValue(data.room_number),
-      ...getRoomAliasTokens(data.room_aliases),
-    ].filter(Boolean)));
-
-    if (candidateTokens.length > 0) {
-      const roomCandidates = await db.prepare(`SELECT id, room_number, room_aliases FROM rooms ${excludeId ? "WHERE id != ?" : ""}`).all(
-        ...(excludeId ? [excludeId] : [])
-      ) as any[];
-
-      const conflictingRoom = roomCandidates.find(room => {
-        const existingTokens = new Set([
-          normalizeDuplicateValue(room.room_number),
-          ...getRoomAliasTokens(room.room_aliases),
-        ].filter(Boolean));
-        return candidateTokens.some(token => existingTokens.has(token));
-      });
-
-      if (conflictingRoom) {
-        return "Room number or alias already exists. Shared venue labels must be unique across Room Management.";
-      }
-    }
-  }
-
   return null;
 };
-
-await cleanupDuplicateSchedules();
-await syncBatchAllocationStatuses();
 
 const isPastDateTime = (date: string, time: string) => {
   const value = new Date(`${date}T${time}`);
@@ -1802,19 +1144,7 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         return res.json(bookings.filter((booking: any) => booking.faculty_name === user.name));
       }
 
-      if (tableName === "batch_room_allocations") {
-        await syncBatchAllocationStatuses();
-      }
-
       const items = await db.prepare(`SELECT * FROM ${tableName}`).all();
-      if (tableName === "schedules") {
-        const deduplicatedItems = deduplicateSchedules(items as any[]).kept;
-        const requestedDate = normalizeIsoDate(req.query.date);
-        if (requestedDate) {
-          return res.json(await filterSchedulesByAcademicCalendar(deduplicatedItems, requestedDate));
-        }
-        return res.json(deduplicatedItems);
-      }
       res.json(items);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1837,26 +1167,19 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         req.body.status = "Pending";
       }
     }
+    if (tableName === "rooms") {
+      req.body = normalizeRoomPayload(req.body);
+    }
+    const fields = Object.keys(req.body);
+    const placeholders = fields.map(() => "?").join(", ");
+    const values = Object.values(req.body);
+
+    if (tableName === "users" && req.body.password) {
+      const passIdx = fields.indexOf("password");
+      values[passIdx] = bcrypt.hashSync(req.body.password, 10);
+    }
 
     try {
-      if (tableName === "academic_calendars") {
-        req.body = await normalizeAcademicCalendarPayload(req.body);
-      }
-      if (tableName === "batch_room_allocations") {
-        req.body = await normalizeBatchRoomAllocationPayload(req.body);
-      }
-      if (tableName === "rooms") {
-        req.body = normalizeRoomPayload(req.body);
-      }
-      const fields = Object.keys(req.body);
-      const placeholders = fields.map(() => "?").join(", ");
-      const values = Object.values(req.body);
-
-      if (tableName === "users" && req.body.password) {
-        const passIdx = fields.indexOf("password");
-        values[passIdx] = bcrypt.hashSync(req.body.password, 10);
-      }
-
       const duplicateError = await checkDuplicateRecord(tableName, req.body);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
@@ -1878,13 +1201,6 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
         req.body.room_type = room.room_type;
         const roomTypeIndex = fields.indexOf("room_type");
         if (roomTypeIndex >= 0) values[roomTypeIndex] = req.body.room_type;
-      }
-
-      if (tableName === "batch_room_allocations") {
-        const bookableError = await getBookableRoomError(req.body.room_id);
-        if (bookableError) return res.status(400).json({ error: bookableError });
-        const overlapError = await getBatchAllocationOverlapError(req.body);
-        if (overlapError) return res.status(400).json({ error: overlapError });
       }
 
       if (tableName === "schedules") {
@@ -1972,21 +1288,12 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
     if (tableName === "rooms") {
       req.body = normalizeRoomPayload(req.body);
     }
+    let fields = Object.keys(req.body);
+    let setClause = fields.map(f => `${f} = ?`).join(", ");
+    let values = [...Object.values(req.body), req.params.id];
 
     try {
       const existingItem = await db.prepare(`SELECT * FROM ${tableName} WHERE ${idField} = ?`).get(req.params.id) as any;
-      if (!existingItem) {
-        return res.status(404).json({ error: `${tableName} record not found.` });
-      }
-      if (tableName === "academic_calendars") {
-        req.body = await normalizeAcademicCalendarPayload({ ...existingItem, ...req.body });
-      }
-      if (tableName === "batch_room_allocations") {
-        req.body = await normalizeBatchRoomAllocationPayload({ ...existingItem, ...req.body });
-      }
-      let fields = Object.keys(req.body);
-      let setClause = fields.map(f => `${f} = ?`).join(", ");
-      let values = [...Object.values(req.body), req.params.id];
       const duplicateError = await checkDuplicateRecord(tableName, { ...existingItem, ...req.body }, req.params.id);
       if (duplicateError) {
         return res.status(400).json({ error: duplicateError });
@@ -2007,14 +1314,6 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
           return res.status(400).json({ error: `Room ${room.room_number} capacity is ${room.capacity}, but required capacity is ${nextAllocation.capacity}.` });
         }
         req.body.room_type = room.room_type;
-      }
-
-      if (tableName === "batch_room_allocations") {
-        const nextAllocation = { ...existingItem, ...req.body };
-        const bookableError = await getBookableRoomError(nextAllocation.room_id);
-        if (bookableError) return res.status(400).json({ error: bookableError });
-        const overlapError = await getBatchAllocationOverlapError(nextAllocation, req.params.id);
-        if (overlapError) return res.status(400).json({ error: overlapError });
       }
 
       if (tableName === "schedules") {
@@ -2154,8 +1453,6 @@ createCrudRoutes("rooms");
 createCrudRoutes("schools");
 createCrudRoutes("departments");
 createCrudRoutes("department_allocations");
-createCrudRoutes("academic_calendars");
-createCrudRoutes("batch_room_allocations");
 createCrudRoutes("equipment");
 createCrudRoutes("schedules");
 createCrudRoutes("bookings");
@@ -2164,10 +1461,10 @@ createCrudRoutes("maintenance");
     try {
       const items = await db.prepare(`SELECT * FROM rooms`).all() as any[];
       
-      const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
-      const activeSchedules = await getEffectiveSchedulesForDate(currentDate, schedule =>
-        schedule.start_time <= currentTime && schedule.end_time > currentTime
-      );
+      const now = new Date();
+      const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+      const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+      const currentDate = now.toISOString().split('T')[0];
 
       const enrichedItems = [];
       for (const room of items) {
@@ -2176,7 +1473,10 @@ createCrudRoutes("maintenance");
           continue;
         }
 
-        const schedule = activeSchedules.find(item => idsEqual(item.room_id, room.id));
+        const schedule = await db.prepare(`
+          SELECT * FROM schedules 
+          WHERE room = ? AND day_of_week = ? AND start_time <= ? AND end_time > ?
+        `).get(room.room_number, dayOfWeek, currentTime, currentTime);
 
         if (schedule) {
           enrichedItems.push({ ...room, status: 'Occupied (Scheduled)' });
@@ -2206,7 +1506,9 @@ createCrudRoutes("maintenance");
     try {
       const { roomId } = req.params;
       const { date } = req.query;
-      const schedules = await getEffectiveSchedulesForDate(date as string, schedule => idsEqual(schedule.room_id, roomId));
+      const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
+      
+      const schedules = await db.prepare(`SELECT * FROM schedules WHERE room_id = ? AND day_of_week = ?`).all(roomId, dayOfWeek);
       const bookings = await db.prepare(`SELECT * FROM bookings WHERE room_id = ? AND date = ? AND status = 'Approved'`).all(roomId, date);
       
       res.json({ schedules, bookings });
@@ -2226,22 +1528,22 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get() as any;
     
     // Calculate currently scheduled rooms
-    const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
-    const activeSchedules = await getEffectiveSchedulesForDate(currentDate, schedule =>
-      schedule.start_time <= currentTime && schedule.end_time > currentTime
-    );
-    const activeBookings = await db.prepare(`
-      SELECT room_id FROM bookings 
-      WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-    `).all(currentDate, currentTime, currentTime) as any[];
-    const currentlyScheduled = {
-      count: new Set([
-        ...activeSchedules.map(item => item.room_id).filter(Boolean),
-        ...activeBookings.map(item => item.room_id).filter(Boolean),
-      ]).size,
-    };
+    const now = new Date();
+    const dayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+    const currentDate = now.toISOString().split('T')[0];
 
-    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - currentlyScheduled.count);
+    const currentlyScheduled = await db.prepare(`
+      SELECT COUNT(DISTINCT room_id) as count FROM (
+        SELECT room_id FROM schedules 
+        WHERE day_of_week = ? AND start_time <= ? AND end_time > ?
+        UNION
+        SELECT room_id FROM bookings 
+        WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+      )
+    `).get(dayOfWeek, currentTime, currentTime, currentDate, currentTime, currentTime) as any;
+
+    const availableNow = totalRooms.count - maintenanceRooms.count - currentlyScheduled.count;
 
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
@@ -2259,7 +1561,6 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow: availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      // Keep this strictly "live now" to align with Digital Twin status filter.
       scheduledRooms: currentlyScheduled.count,
       recentAlerts
     });
@@ -2287,6 +1588,7 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Past search times are not allowed." });
   }
 
+  const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
   const requestedStart = time as string;
   
   // Calculate end time
@@ -2304,9 +1606,11 @@ app.get("/api/rooms/vacant", authenticate, async (req, res) => {
   );
 
   // Filter out rooms that have schedules
-  const busySchedules = await getEffectiveSchedulesForDate(date as string, schedule =>
-    !(schedule.end_time <= requestedStart || schedule.start_time >= requestedEnd)
-  );
+  const busySchedules = await db.prepare(`
+    SELECT room_id FROM schedules 
+    WHERE day_of_week = ? 
+    AND NOT (end_time <= ? OR start_time >= ?)
+  `).all(dayOfWeek, requestedStart, requestedEnd) as any[];
 
   // Filter out rooms that have bookings
   const busyBookings = await db.prepare(`
@@ -2347,19 +1651,23 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
     return res.status(400).json({ error: "Strength must be a valid positive number." });
   }
 
+  const dayOfWeek = new Date(date as string).toLocaleDateString('en-US', { weekday: 'long' });
+
   try {
     // 1. Get all reservable rooms using the same normalized rules as room management.
     const allRoomsRaw = await db.prepare("SELECT * FROM rooms WHERE status = 'Available' AND COALESCE(is_bookable, 1) != 0").all() as any[];
     const allRooms = allRoomsRaw.filter(isReservableRoomRecord);
     
     // 2. Get busy rooms from schedules
-    const busyInSchedules = await getEffectiveSchedulesForDate(date as string, schedule =>
-      (
-        (schedule.start_time < endTime && schedule.end_time > startTime) ||
-        (schedule.start_time < startTime && schedule.end_time > endTime) ||
-        (schedule.start_time >= startTime && schedule.start_time < endTime)
+    const busyInSchedules = await db.prepare(`
+      SELECT DISTINCT room_id FROM schedules 
+      WHERE day_of_week = ? 
+      AND (
+        (start_time < ? AND end_time > ?) OR
+        (start_time < ? AND end_time > ?) OR
+        (start_time >= ? AND start_time < ?)
       )
-    );
+    `).all(dayOfWeek, endTime, startTime, startTime, endTime, startTime, endTime) as any[];
     const busyRoomIdsSchedules = new Set(busyInSchedules.map(s => s.room_id));
 
     // 3. Get busy rooms from bookings
@@ -2437,19 +1745,18 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       return (h2 + m2 / 60) - (h1 + m1 / 60);
     };
 
-    const latestAllocationByRoom = new Map<string, any>();
+    const latestAllocationByRoom = new Map<number, any>();
     allocations.forEach((allocation) => {
-      const roomKey = allocation.room_id?.toString();
-      if (roomKey && !latestAllocationByRoom.has(roomKey)) {
-        latestAllocationByRoom.set(roomKey, allocation);
+      if (!latestAllocationByRoom.has(allocation.room_id)) {
+        latestAllocationByRoom.set(allocation.room_id, allocation);
       }
     });
 
     const reports = rooms.map(room => {
-      const roomSchedules = schedules.filter(s => idsEqual(s.room_id, room.id));
-      const roomBookings = bookings.filter(b => idsEqual(b.room_id, room.id));
-      const allRoomBookings = allBookings.filter(b => idsEqual(b.room_id, room.id));
-      const allocation = latestAllocationByRoom.get(room.id?.toString());
+      const roomSchedules = schedules.filter(s => s.room_id === room.id);
+      const roomBookings = bookings.filter(b => b.room_id === room.id);
+      const allRoomBookings = allBookings.filter(b => b.room_id === room.id);
+      const allocation = latestAllocationByRoom.get(room.id);
       const inferredDepartmentCounts = new Map<number, number>();
       [...roomSchedules, ...allRoomBookings].forEach((entry: any) => {
         if (!entry.department_id) return;
@@ -2461,7 +1768,7 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       const department = departments.find(dept => dept.id === resolvedDepartmentId);
       const resolvedSchoolId = allocation?.school_id || department?.school_id || null;
       const school = schools.find(item => item.id === resolvedSchoolId);
-      const maintenanceIssues = maintenance.filter(item => idsEqual(item.room_id, room.id) && item.status !== "Completed").length;
+      const maintenanceIssues = maintenance.filter(item => item.room_id === room.id && item.status !== "Completed").length;
 
       const scheduledHours = roomSchedules.reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
       const bookedHours = roomBookings.reduce((acc, b) => {
@@ -2542,24 +1849,18 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       };
     });
 
-    // Aggregate by School (room-weighted, only schools that actually have mapped rooms)
-    const schoolReports = Array.from(new Set(reports.map(report => report.school).filter(Boolean))).map((schoolName) => {
-      const schoolRooms = reports.filter(report => report.school === schoolName);
-      const deptCount = new Set(
-        schoolRooms
-          .map(report => report.department)
-          .filter((departmentName) => departmentName && departmentName !== "Unmapped")
-      ).size;
-      const totalUtilization = schoolRooms.reduce((acc, report) => acc + report.utilization, 0);
-      const avgUtilization = schoolRooms.length > 0 ? totalUtilization / schoolRooms.length : 0;
+    // Aggregate by School
+    const schoolReports = schools.map(school => {
+      const schoolDepts = deptReports.filter(d => d.school_id === school.id);
+      const totalUtilization = schoolDepts.reduce((acc, d) => acc + d.avgUtilization, 0);
+      const avgUtilization = schoolDepts.length > 0 ? totalUtilization / schoolDepts.length : 0;
 
       return {
-        name: schoolName,
+        name: school.name,
         avgUtilization: Math.round(avgUtilization),
-        deptCount,
-        roomCount: schoolRooms.length,
+        deptCount: schoolDepts.length
       };
-    }).sort((a, b) => b.avgUtilization - a.avgUtilization);
+    });
 
     res.json({ roomReports: reports, deptReports, schoolReports, buildingReports, bookingStatusReports });
   } catch (err: any) {
@@ -2583,8 +1884,8 @@ app.get("/api/analytics/utilization-trends", authenticate, async (req, res) => {
     };
 
     const data = rooms.map(room => {
-      const sHours = schedules.filter(s => idsEqual(s.room_id, room.id)).reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
-      const bHours = bookings.filter(b => idsEqual(b.room_id, room.id)).reduce((acc, b) => acc + calculateHours(b.start_time, b.end_time), 0);
+      const sHours = schedules.filter(s => s.room_id === room.id).reduce((acc, s) => acc + calculateHours(s.start_time, s.end_time), 0);
+      const bHours = bookings.filter(b => b.room_id === room.id).reduce((acc, b) => acc + calculateHours(b.start_time, b.end_time), 0);
       const total = sHours + bHours;
       const utilization = Math.min(100, Math.round((total / 72) * 100)); // 72h week
       return { name: room.room_number, utilization };
@@ -2688,12 +1989,11 @@ async function healInfrastructureHierarchy() {
   };
 }
 
-app.get('/api/health', (_req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({
-    ok: true,
+    status: "ok",
+    service: "smart-campus-api",
     database: db.dialect,
-    geminiConfigured: Boolean(GEMINI_API_KEY),
-    timestamp: new Date().toISOString(),
   });
 });
 
@@ -2706,9 +2006,8 @@ app.get('/api/health/heal', authenticate, async (req, res) => {
   }
 });
 
-export async function startServer() {
+async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

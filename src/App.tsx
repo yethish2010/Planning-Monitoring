@@ -8339,6 +8339,7 @@ function AnalyticsDashboard() {
 
 function ReportGeneration() {
   const [utilizationData, setUtilizationData] = useState<any>(null);
+  const [reportBookings, setReportBookings] = useState<any[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
   const [loading, setLoading] = useState(true);
@@ -8360,8 +8361,8 @@ function ReportGeneration() {
   const methodologyData = [
     { 
       title: "Room Utilization Rate (RUR)", 
-      formula: "(Hours Scheduled / Total Available Hours) × 100", 
-      description: "Measures the time-based usage of a room against a standard 40-hour academic week.",
+      formula: "((Scheduled Hours + Approved Booking Hours) / Total Available Hours) × 100", 
+      description: "Measures the time-based usage of a room against a standard 72-hour academic week (12h × 6 days).",
       target: "75% - 85%"
     },
     { 
@@ -8386,11 +8387,17 @@ function ReportGeneration() {
 
   const fetchUtilization = async () => {
     try {
-      const res = await fetch('/api/reports/utilization', { credentials: 'include' });
-      const data = await res.json();
+      const [reportRes, bookingRes] = await Promise.all([
+        fetch('/api/reports/utilization', { credentials: 'include' }),
+        fetch('/api/bookings', { credentials: 'include' }),
+      ]);
+      const data = await reportRes.json();
+      const bookingData = await bookingRes.json();
       setUtilizationData(data);
+      setReportBookings(Array.isArray(bookingData) ? bookingData : []);
     } catch (err) {
       console.error(err);
+      setReportBookings([]);
     } finally {
       setLoading(false);
     }
@@ -8454,9 +8461,16 @@ function ReportGeneration() {
       return true;
     });
   };
+  const matchesReportFilterValue = (value: unknown, expected: string) =>
+    !expected || value?.toString().trim().toLowerCase() === expected.trim().toLowerCase();
+  const roomMetaById = new Map<string, any>(roomReports.map((room: any) => [room.room_id?.toString(), room]));
+  const roomMetaByNumber = new Map<string, any>(roomReports.map((room: any) => [room.room_number?.toString(), room]));
+  const getBookingRoomMeta = (booking: any) =>
+    roomMetaById.get(booking.room_id?.toString()) || roomMetaByNumber.get(booking.room_number?.toString());
+  const shouldApplyBookingDateScope = Boolean(filters.dateFrom || filters.dateTo) && (filters.reportType === 'booking_approvals' || !!filters.bookingStatus);
   const filteredRoomReports = roomReports.filter((room: any) => {
     const bookingDates = filters.bookingStatus === 'Approved' ? room.approvedBookingDates : room.bookingDates;
-    if (!dateMatches(bookingDates || [])) return false;
+    if (shouldApplyBookingDateScope && !dateMatches(bookingDates || [])) return false;
     if (filters.building && room.building !== filters.building) return false;
     if (filters.block && room.block !== filters.block) return false;
     if (filters.floor && room.floor_number?.toString() !== filters.floor) return false;
@@ -8469,6 +8483,19 @@ function ReportGeneration() {
     if (filters.reportType === 'maintenance_impact' && room.maintenanceIssues <= 0) return false;
     if (filters.reportType === 'department_allocation' && room.department === 'Unmapped') return false;
     if (filters.reportType === 'booking_approvals' && !(room.bookingStatuses || []).length) return false;
+    return true;
+  });
+  const filteredReportBookings = reportBookings.filter((booking: any) => {
+    const roomMeta = getBookingRoomMeta(booking);
+    const bookingDate = booking.date?.toString();
+    if (filters.dateFrom && (!bookingDate || bookingDate < filters.dateFrom)) return false;
+    if (filters.dateTo && (!bookingDate || bookingDate > filters.dateTo)) return false;
+    if (filters.bookingStatus && !matchesReportFilterValue(booking.status, filters.bookingStatus)) return false;
+    if (filters.building && !matchesReportFilterValue(roomMeta?.building, filters.building)) return false;
+    if (filters.block && !matchesReportFilterValue(roomMeta?.block, filters.block)) return false;
+    if (filters.floor && roomMeta?.floor_number?.toString() !== filters.floor) return false;
+    if (filters.department && !matchesReportFilterValue(booking.department_name || roomMeta?.department, filters.department)) return false;
+    if (filters.roomType && !matchesReportFilterValue(booking.room_type || roomMeta?.room_type, filters.roomType)) return false;
     return true;
   });
   const buildingOptions = Array.from(new Set(roomReports.map((room: any) => room.building).filter(Boolean))).sort();
@@ -8515,8 +8542,10 @@ function ReportGeneration() {
   }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
   const departmentSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.department))).map(department => {
     const departmentRooms = filteredRoomReports.filter((room: any) => room.department === department);
+    const schools = Array.from(new Set(departmentRooms.map((room: any) => room.school).filter(Boolean)));
     return {
       name: department,
+      school: schools.join(', ') || 'Unmapped',
       roomCount: departmentRooms.length,
       totalCapacity: departmentRooms.reduce((acc: number, room: any) => acc + Number(room.capacity || 0), 0),
       avgUtilization: Math.round(departmentRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (departmentRooms.length || 1))
@@ -8524,7 +8553,7 @@ function ReportGeneration() {
   }).sort((a: any, b: any) => b.roomCount - a.roomCount);
   const bookingStatusSummary = bookingStatusOptions.map(status => ({
     name: status,
-    count: filteredRoomReports.filter((room: any) => (room.bookingStatuses || []).includes(status)).length
+    count: filteredReportBookings.filter((booking: any) => booking.status === status).length
   })).filter(item => item.count > 0);
   const avgFilteredUtilization = Math.round(filteredRoomReports.reduce((acc: number, room: any) => acc + room.utilization, 0) / (filteredRoomReports.length || 1));
   const mostUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => b.utilization - a.utilization)[0];
@@ -8784,7 +8813,7 @@ function ReportGeneration() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {deptReports.map((dept: any) => (
+                    {departmentSummary.map((dept: any) => (
                       <tr key={dept.name} className="hover:bg-slate-50/50 transition-colors group">
                         <td className="py-5 text-sm font-bold text-slate-700">{dept.name}</td>
                         <td className="py-5 text-sm text-slate-500">{dept.school}</td>
@@ -8800,6 +8829,13 @@ function ReportGeneration() {
                         </td>
                       </tr>
                     ))}
+                    {departmentSummary.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="py-8 text-center text-sm text-slate-400 italic">
+                          No department utilization data matches the selected filters.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -9668,6 +9704,12 @@ function TimetableBuilder() {
 function Building3D({ building, metrics, onClick, isSelected, heatmapMode }: any) {
   const meshRef = useRef<THREE.Mesh>(null);
   const buildingHeight = Math.max((metrics?.floorCount || 1) * 0.5, 1);
+
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor = 'default';
+    };
+  }, []);
   
   // Calculate building color based on heatmap or status
   const getBuildingColor = () => {
@@ -9766,6 +9808,18 @@ function DigitalTwin() {
     minCapacity: ''
   });
 
+  const open2DView = () => {
+    setViewMode('2D');
+  };
+
+  const open3DView = () => {
+    // Always enter 3D from campus scope to avoid UI lockups in deep hierarchy.
+    setSelectedBuilding(null);
+    setSelectedBlock(null);
+    setSelectedFloor(null);
+    setViewMode('3D');
+  };
+
   useEffect(() => {
     const fetchData = async () => {
       const [cRes, bRes, blRes, fRes, rRes, mRes, sRes, bkRes, eRes, aRes, baRes, dRes, acRes] = await Promise.all([
@@ -9810,6 +9864,11 @@ function DigitalTwin() {
     const requestedStatus = params.get('status');
 
     if (requestedView === '3D' || requestedView === '2D') {
+      if (requestedView === '3D') {
+        setSelectedBuilding(null);
+        setSelectedBlock(null);
+        setSelectedFloor(null);
+      }
       setViewMode(requestedView);
     }
 
@@ -10160,7 +10219,7 @@ function DigitalTwin() {
         <div className="flex items-center gap-4">
           <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
             <button 
-              onClick={() => setViewMode('2D')}
+              onClick={open2DView}
               className={cn(
                 "px-4 py-2 rounded-lg text-xs font-bold transition-all",
                 viewMode === '2D' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
@@ -10169,7 +10228,7 @@ function DigitalTwin() {
               2D View
             </button>
             <button 
-              onClick={() => setViewMode('3D')}
+              onClick={open3DView}
               className={cn(
                 "px-4 py-2 rounded-lg text-xs font-bold transition-all",
                 viewMode === '3D' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
