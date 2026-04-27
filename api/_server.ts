@@ -2234,14 +2234,18 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       SELECT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
     `).all(currentDate, currentTime, currentTime) as any[];
-    const currentlyScheduled = {
-      count: new Set([
-        ...activeSchedules.map(item => item.room_id).filter(Boolean),
-        ...activeBookings.map(item => item.room_id).filter(Boolean),
-      ]).size,
-    };
+    const activeScheduleRoomIds = new Set(
+      activeSchedules.map(item => item.room_id).filter(Boolean)
+    );
+    const activeBookingRoomIds = new Set(
+      activeBookings.map(item => item.room_id).filter(Boolean)
+    );
+    const occupiedRoomIds = new Set([
+      ...activeScheduleRoomIds,
+      ...activeBookingRoomIds,
+    ]);
 
-    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - currentlyScheduled.count);
+    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - occupiedRoomIds.size);
 
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
@@ -2259,8 +2263,10 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow: availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      // Keep this strictly "live now" to align with Digital Twin status filter.
-      scheduledRooms: currentlyScheduled.count,
+      // Keep this strictly "live now" and aligned with status filters in Digital Twin.
+      scheduledRooms: activeScheduleRoomIds.size,
+      bookedRooms: activeBookingRoomIds.size,
+      occupiedRooms: occupiedRoomIds.size,
       recentAlerts
     });
   } catch (err: any) {

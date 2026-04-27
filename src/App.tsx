@@ -2617,16 +2617,25 @@ function DashboardHome() {
 
   useEffect(() => {
     const fetchData = async () => {
+      const fetchJson = async <T,>(url: string, fallback: T): Promise<T> => {
+        try {
+          const response = await fetch(url, { credentials: 'include' });
+          if (!response.ok) throw new Error(`${url} responded with ${response.status}`);
+          return await response.json();
+        } catch (error) {
+          console.error(`Dashboard fetch failed for ${url}:`, error);
+          return fallback;
+        }
+      };
+
       try {
-        const [sRes, uRes, reportRes] = await Promise.all([
-          fetch('/api/dashboard/stats', { credentials: 'include' }),
-          fetch('/api/analytics/utilization-trends', { credentials: 'include' }),
-          fetch('/api/reports/utilization', { credentials: 'include' })
+        const [statsData, utilizationData, reportData] = await Promise.all([
+          fetchJson('/api/dashboard/stats', {}),
+          fetchJson('/api/analytics/utilization-trends', []),
+          fetchJson('/api/reports/utilization', {})
         ]);
-        setStats(await sRes.json());
-        const utilizationData = await uRes.json();
+        setStats(statsData || {});
         setUtilizationTrend(Array.isArray(utilizationData) ? utilizationData : []);
-        const reportData = await reportRes.json();
         setSchoolUsage(Array.isArray(reportData?.schoolReports) ? reportData.schoolReports : []);
       } catch (err) {
         console.error(err);
@@ -2816,7 +2825,10 @@ function DashboardHome() {
             <p className="text-sm text-slate-400 leading-relaxed mb-6 relative z-10">
               {insightMessage}
             </p>
-            <button className="w-full py-3 bg-emerald-500 text-white rounded-2xl font-bold text-sm hover:bg-emerald-600 transition-all relative z-10">
+            <button
+              onClick={() => navigate('/analytics')}
+              className="w-full py-3 bg-emerald-500 text-white rounded-2xl font-bold text-sm hover:bg-emerald-600 transition-all relative z-10"
+            >
               View Analysis
             </button>
           </div>
