@@ -831,16 +831,79 @@ const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   return parentLabel ? `${room.room_number} inside ${parentLabel}` : room.room_number;
 };
 
-const findRoomByImportLabel = (rooms: any[], value: unknown) => {
+const findRoomsByImportLabel = (rooms: any[], value: unknown) => {
   const normalizedValue = normalizeLookupValue(value);
-  if (!normalizedValue) return null;
+  if (!normalizedValue) {
+    return { normalizedValue, matchType: 'none', matches: [] as any[] };
+  }
 
-  return rooms.find(room =>
-    normalizeLookupValue(room.room_id) === normalizedValue ||
-    normalizeLookupValue(room.room_number) === normalizedValue ||
-    getRoomAliasList(room).some(alias => normalizeLookupValue(alias) === normalizedValue) ||
-    normalizeLookupValue(getRoomDisplayLabel(room, rooms)) === normalizedValue
-  ) || null;
+  const uniqueById = (items: any[]) => {
+    const seen = new Set<string>();
+    return items.filter((item: any) => {
+      const key = item?.id?.toString() || '';
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const byRoomId = uniqueById(rooms.filter(room => normalizeLookupValue(room.room_id) === normalizedValue));
+  if (byRoomId.length > 0) return { normalizedValue, matchType: 'room_id', matches: byRoomId };
+
+  const byRoomNumber = uniqueById(rooms.filter(room => normalizeLookupValue(room.room_number) === normalizedValue));
+  if (byRoomNumber.length > 0) return { normalizedValue, matchType: 'room_number', matches: byRoomNumber };
+
+  const byDisplayLabel = uniqueById(rooms.filter(room => normalizeLookupValue(getRoomDisplayLabel(room, rooms)) === normalizedValue));
+  if (byDisplayLabel.length > 0) return { normalizedValue, matchType: 'display_label', matches: byDisplayLabel };
+
+  const byAlias = uniqueById(
+    rooms.filter(room => getRoomAliasList(room).some(alias => normalizeLookupValue(alias) === normalizedValue))
+  );
+  if (byAlias.length > 0) return { normalizedValue, matchType: 'alias', matches: byAlias };
+
+  return { normalizedValue, matchType: 'none', matches: [] as any[] };
+};
+
+const resolveRoomForImport = (rooms: any[], value: unknown) => {
+  const { normalizedValue, matchType, matches } = findRoomsByImportLabel(rooms, value);
+
+  if (!normalizedValue) {
+    return {
+      room: null as any,
+      reason: 'missing' as const,
+      note: 'Room value is empty in the import row.',
+    };
+  }
+
+  if (matches.length === 1) {
+    return {
+      room: matches[0],
+      reason: 'linked' as const,
+      note: null as string | null,
+      matchType,
+    };
+  }
+
+  if (matches.length > 1) {
+    return {
+      room: null as any,
+      reason: 'ambiguous' as const,
+      note: `Multiple rooms match "${value?.toString().trim()}" (${matchType}). Use a unique Room ID or canonical Room Number to avoid cross-block mixing.`,
+      matchType,
+    };
+  }
+
+  return {
+    room: null as any,
+    reason: 'unmatched' as const,
+    note: `Room label "${value?.toString().trim()}" did not match any room in Room Management.`,
+    matchType,
+  };
+};
+
+const findRoomByImportLabel = (rooms: any[], value: unknown) => {
+  const resolution = resolveRoomForImport(rooms, value);
+  return resolution.room || null;
 };
 
 const getImportValue = (row: any, labels: string[]) => {
@@ -1480,7 +1543,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
     instructions: [
       'Department and Room are used to automatically create/update Department Room Mapping while importing timetable rows.',
-      'Room can match the canonical Room Number or any Room Alias from Room Management. Use Room Aliases for shared seminar halls with multiple door numbers such as 4015 and 4016.',
+      'Room can match the canonical Room Number or a Room Alias from Room Management only when that label maps to one unique room. If a label matches multiple rooms (for example across blocks), the row is kept as Unmatched Room for manual review.',
       'Timetable imports link against any matching room in Room Management, even if that room is not currently bookable for ad-hoc bookings. This keeps seminar halls, shared rooms, and internal-use venues linked correctly in schedules.',
       'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department, Semester, and Year when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
@@ -6118,6 +6181,7 @@ function SchedulingManagement() {
     let importedCount = 0;
     let linkedCount = 0;
     let unmatchedRoomCount = 0;
+    let ambiguousRoomCount = 0;
     let skippedCount = 0;
 
     for (const row of data) {
@@ -6134,7 +6198,8 @@ function SchedulingManagement() {
         continue;
       }
 
-      const room = findRoomByImportLabel(rooms, roomLabel);
+      const roomResolution = resolveRoomForImport(rooms, roomLabel);
+      const room = roomResolution.room;
       const dept = findDepartmentForSchedule(row['Department']);
       const inferredImportStatus = room
         ? 'Linked'
@@ -6142,6 +6207,10 @@ function SchedulingManagement() {
           ? 'Unmatched Room'
           : 'Room Missing';
       const importStatus = normalizeScheduleImportStatus(getImportValue(row, ['Import Status'])) || inferredImportStatus;
+      const normalizedImportStatus = room ? importStatus : (roomLabel ? 'Unmatched Room' : 'Room Missing');
+      const reviewNote = room
+        ? (row['Review Note'] || null)
+        : (row['Review Note'] || roomResolution.note || 'Room label from import did not match a unique room in Room Management.');
       
       const payload = {
         schedule_id: scheduleId,
@@ -6158,22 +6227,28 @@ function SchedulingManagement() {
         start_time: startTime,
         end_time: endTime,
         semester: normalizeSemesterValue(getImportValue(row, ['Semester', 'Term'])),
-        import_status: importStatus,
-        review_note: row['Review Note'] || null,
+        import_status: normalizedImportStatus,
+        review_note: reviewNote,
         source_file: row['Source File'] || null,
       };
 
       await upsertImportRecord('/api/schedules', payload, [['schedule_id'], ['room_id', 'section', 'day_of_week', 'start_time', 'end_time'], ['room_label', 'section', 'day_of_week', 'start_time', 'end_time']]);
       importedCount += 1;
       if (room) linkedCount += 1;
-      else unmatchedRoomCount += 1;
+      else {
+        unmatchedRoomCount += 1;
+        if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
+      }
       await ensureAllocationFromSchedule(room, dept, getImportValue(row, ['Semester', 'Term']));
     }
     setRefreshKey(prev => prev + 1);
     await refreshSchedulingLookups();
 
+    const ambiguousText = ambiguousRoomCount > 0
+      ? `, ${ambiguousRoomCount} ambiguous labels kept unmatched`
+      : '';
     return {
-      message: `Schedule import complete. Imported/updated ${importedCount} rows (${linkedCount} linked to rooms, ${unmatchedRoomCount} kept for review). Skipped ${skippedCount} non-schedule rows.`,
+      message: `Schedule import complete. Imported/updated ${importedCount} rows (${linkedCount} linked to rooms, ${unmatchedRoomCount} kept for review${ambiguousText}). Skipped ${skippedCount} non-schedule rows.`,
     };
   };
 
@@ -6220,10 +6295,15 @@ function SchedulingManagement() {
         let importedCount = 0;
         let linkedCount = 0;
         let unmatchedRoomCount = 0;
+        let ambiguousRoomCount = 0;
 
         for (const schedule of validSchedules) {
-          const room = findRoomByImportLabel(rooms, schedule.room);
+          const roomResolution = resolveRoomForImport(rooms, schedule.room);
+          const room = roomResolution.room;
           const dept = findDepartmentForSchedule(schedule.department);
+          const reviewNote = room
+            ? null
+            : roomResolution.note || 'Room label from AI import did not match a unique room in Room Management.';
 
           const payload = {
             schedule_id: `SCH-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
@@ -6241,7 +6321,7 @@ function SchedulingManagement() {
             year_of_study: normalizeYearOfStudyValue(schedule.year_of_study, getYearNumberFromAcademicContext('', schedule.semester)?.toString() || ''),
             semester: normalizeSemesterValue(schedule.semester),
             import_status: room ? 'Linked' : 'Unmatched Room',
-            review_note: room ? null : 'Room label from AI import did not match any canonical room or room alias in Room Management.',
+            review_note: reviewNote,
             source_file: file.name,
           };
 
@@ -6256,6 +6336,7 @@ function SchedulingManagement() {
             await ensureAllocationFromSchedule(room, dept, schedule.semester);
           } else {
             unmatchedRoomCount += 1;
+            if (roomResolution.reason === 'ambiguous') ambiguousRoomCount += 1;
           }
         }
         setRefreshKey(prev => prev + 1);
@@ -6265,7 +6346,10 @@ function SchedulingManagement() {
           throw new Error('Timetable was read, but no usable schedule rows were extracted from the file.');
         }
 
-        alert(`Successfully extracted and imported ${importedCount} schedule entries (${linkedCount} linked to rooms, ${unmatchedRoomCount} kept for review).`);
+        const ambiguousText = ambiguousRoomCount > 0
+          ? `, ${ambiguousRoomCount} ambiguous labels kept unmatched`
+          : '';
+        alert(`Successfully extracted and imported ${importedCount} schedule entries (${linkedCount} linked to rooms, ${unmatchedRoomCount} kept for review${ambiguousText}).`);
       }
     } catch (err: any) {
       console.error(err);
