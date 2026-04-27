@@ -1443,11 +1443,12 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Schedule: {
-    headers: ['Schedule ID', 'Department', 'Section', 'Semester', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time'],
+    headers: ['Schedule ID', 'Department', 'Year', 'Section', 'Semester', 'Course Code', 'Course Name', 'Faculty', 'Room', 'Day', 'Start Time', 'End Time', 'Import Status', 'Review Note'],
     exampleRows: [
       {
         'Schedule ID': 'SCHD-001',
         Department: 'Computer Science and Engineering',
+        Year: 'II Year',
         Section: 'A2',
         Semester: 'Odd',
         'Course Code': 'CSE301',
@@ -1457,10 +1458,13 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Day: 'Monday',
         'Start Time': '09:00',
         'End Time': '10:00',
+        'Import Status': 'Linked',
+        'Review Note': '',
       },
       {
         'Schedule ID': 'SCHD-002',
         Department: 'Computer Science and Engineering',
+        Year: 'III Year',
         Section: 'A4',
         Semester: 'VI Semester',
         'Course Code': 'CSE602',
@@ -1470,6 +1474,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Day: 'Thursday',
         'Start Time': '09:00',
         'End Time': '09:55',
+        'Import Status': 'Linked',
+        'Review Note': 'Imported from timetable PDF',
       },
     ],
     instructions: [
@@ -1479,7 +1485,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       'For PDF timetable extraction, normal slots inherit the section header Room No automatically. The same section header also supplies Department, Semester, and Year when Gemini omits them. Only slots that explicitly mention another room such as (R.No.610) override that default room.',
       'Use Section for timetable groups like A1, A2, A10. Different sections can use the same room and time slot, so Section is part of schedule identity during import.',
       'Semester accepts Odd/Even, numeric values like 6, and Roman numeral values like VI Semester. If blank, Odd is used for the derived Department Room Mapping.',
-      'Year is shown automatically in Schedule Records and Timetable View as I Year, II Year, III Year, or IV Year. Explicit Year values like II Year or 2 Year are normalized during extraction/import, and if Year is omitted it is still derived from Semester, so no separate Year column is required in the schedule import sheet.',
+      'Year can be provided explicitly as I Year / II Year / III Year / IV Year (or 1 / 2 / 3 / 4). If omitted, it is derived from Semester during import.',
+      'Import Status and Review Note columns are optional in Excel. If Import Status is blank, the app auto-sets Linked / Unmatched Room / Room Missing from room matching.',
       'Department, Semester, and Section are also used by Timetable View, Room Bookings schedule review, and Digital Twin links to preserve the correct mixed-room academic context. Fill them consistently for accurate vacancy display.',
       'All workbook sheets are scanned during import. Rows without a matching room are imported as Unmatched Room schedules and can be fixed later after adding the missing room.',
       'Rows without a matching department still import as schedules but cannot create department mapping.',
@@ -6049,6 +6056,15 @@ function SchedulingManagement() {
     let unmatchedRoomCount = 0;
     let skippedCount = 0;
 
+    const normalizeScheduleImportStatus = (value: unknown) => {
+      const normalized = normalizeLookupValue(value);
+      if (!normalized) return null;
+      if (normalized === 'linked') return 'Linked';
+      if (normalized === 'unmatched room') return 'Unmatched Room';
+      if (normalized === 'room missing') return 'Room Missing';
+      return null;
+    };
+
     for (const row of data) {
       const scheduleId = row['Schedule ID']?.toString().trim();
       const courseName = row['Course Name']?.toString().trim();
@@ -6065,15 +6081,18 @@ function SchedulingManagement() {
 
       const room = findRoomByImportLabel(rooms, roomLabel);
       const dept = findDepartmentForSchedule(row['Department']);
-      const importStatus = room
+      const inferredImportStatus = room
         ? 'Linked'
         : roomLabel
           ? 'Unmatched Room'
           : 'Room Missing';
+      const importStatus = normalizeScheduleImportStatus(getImportValue(row, ['Import Status'])) || inferredImportStatus;
       
       const payload = {
         schedule_id: scheduleId,
         department_id: dept?.id,
+        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year', 'Year / Semester'])) ||
+          normalizeYearOfStudyValue(getImportValue(row, ['Semester', 'Term'])),
         section: section || null,
         course_code: row['Course Code'],
         course_name: courseName,
