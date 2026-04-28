@@ -8670,10 +8670,14 @@ function ReportGeneration() {
     reportType: 'room_utilization',
     dateFrom: '',
     dateTo: '',
+    campus: '',
     building: '',
     block: '',
     floor: '',
     department: '',
+    year: '',
+    semester: '',
+    section: '',
     roomType: '',
     bookingStatus: '',
     flag: ''
@@ -8795,10 +8799,14 @@ function ReportGeneration() {
   const filteredRoomReports = roomReports.filter((room: any) => {
     const bookingDates = filters.bookingStatus === 'Approved' ? room.approvedBookingDates : room.bookingDates;
     if (shouldApplyBookingDateScope && !dateMatches(bookingDates || [])) return false;
+    if (filters.campus && room.campus !== filters.campus) return false;
     if (filters.building && room.building !== filters.building) return false;
     if (filters.block && room.block !== filters.block) return false;
     if (filters.floor && room.floor_number?.toString() !== filters.floor) return false;
     if (filters.department && room.department !== filters.department) return false;
+    if (filters.year && !(room.yearTags || []).includes(filters.year)) return false;
+    if (filters.semester && !(room.semesterTags || []).includes(filters.semester)) return false;
+    if (filters.section && !(room.sectionTags || []).includes(filters.section)) return false;
     if (filters.roomType && room.room_type !== filters.roomType) return false;
     if (filters.bookingStatus && !(room.bookingStatuses || []).includes(filters.bookingStatus)) return false;
     if (filters.flag && !(room.flags || []).includes(filters.flag)) return false;
@@ -8815,23 +8823,37 @@ function ReportGeneration() {
     if (filters.dateFrom && (!bookingDate || bookingDate < filters.dateFrom)) return false;
     if (filters.dateTo && (!bookingDate || bookingDate > filters.dateTo)) return false;
     if (filters.bookingStatus && !matchesReportFilterValue(booking.status, filters.bookingStatus)) return false;
+    if (filters.campus && !matchesReportFilterValue(roomMeta?.campus, filters.campus)) return false;
     if (filters.building && !matchesReportFilterValue(roomMeta?.building, filters.building)) return false;
     if (filters.block && !matchesReportFilterValue(roomMeta?.block, filters.block)) return false;
     if (filters.floor && roomMeta?.floor_number?.toString() !== filters.floor) return false;
     if (filters.department && !matchesReportFilterValue(booking.department_name || roomMeta?.department, filters.department)) return false;
+    if (filters.year && !(roomMeta?.yearTags || []).includes(filters.year)) return false;
+    if (filters.semester && !(roomMeta?.semesterTags || []).includes(filters.semester)) return false;
+    if (filters.section && !(roomMeta?.sectionTags || []).includes(filters.section)) return false;
     if (filters.roomType && !matchesReportFilterValue(booking.room_type || roomMeta?.room_type, filters.roomType)) return false;
     return true;
   });
+  const campusOptions = Array.from(new Set(roomReports.map((room: any) => room.campus).filter(Boolean))).sort();
   const buildingOptions = Array.from(new Set(roomReports.map((room: any) => room.building).filter(Boolean))).sort();
   const blockOptions = Array.from(new Set(roomReports
-    .filter((room: any) => !filters.building || room.building === filters.building)
+    .filter((room: any) => (!filters.campus || room.campus === filters.campus) && (!filters.building || room.building === filters.building))
     .map((room: any) => room.block)
     .filter(Boolean))).sort();
   const floorOptions = Array.from(new Set(roomReports
-    .filter((room: any) => (!filters.building || room.building === filters.building) && (!filters.block || room.block === filters.block))
+    .filter((room: any) =>
+      (!filters.campus || room.campus === filters.campus) &&
+      (!filters.building || room.building === filters.building) &&
+      (!filters.block || room.block === filters.block))
     .map((room: any) => room.floor_number)
     .filter((floor: any) => floor !== undefined && floor !== null)))
     .sort((a: any, b: any) => Number(a) - Number(b));
+  const yearOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.yearTags || [])))
+    .sort((a: any, b: any) => Number(a) - Number(b));
+  const semesterOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.semesterTags || [])))
+    .sort((a: any, b: any) => a.localeCompare(b));
+  const sectionOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.sectionTags || [])))
+    .sort((a: any, b: any) => a.localeCompare(b));
   const departmentOptions = Array.from(new Set([
     ...deptReports.map((department: any) => department.name),
     ...roomReports.map((room: any) => room.department)
@@ -8864,6 +8886,59 @@ function ReportGeneration() {
       maintenanceIssues: buildingRooms.reduce((acc: number, room: any) => acc + room.maintenanceIssues, 0)
     };
   }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
+  const campusSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.campus).filter(Boolean))).map(campus => {
+    const campusRooms = filteredRoomReports.filter((room: any) => room.campus === campus);
+    return {
+      name: campus,
+      roomCount: campusRooms.length,
+      buildingCount: new Set(campusRooms.map((room: any) => room.building).filter(Boolean)).size,
+      avgUtilization: Math.round(campusRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (campusRooms.length || 1)),
+    };
+  }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
+  const roomTypeSummary = Array.from(new Set(filteredRoomReports.map((room: any) => getRoomTypeDisplay(room)).filter(Boolean))).map(type => {
+    const typeRooms = filteredRoomReports.filter((room: any) => getRoomTypeDisplay(room) === type);
+    return {
+      name: type,
+      roomCount: typeRooms.length,
+      avgUtilization: Math.round(typeRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (typeRooms.length || 1)),
+    };
+  }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
+  const usageCategorySummary = Array.from(new Set(filteredRoomReports
+    .map((room: any) => room.usage_category || normalizeUsageCategoryValue('', room.room_type) || 'Unspecified')
+    .filter(Boolean))).map(category => {
+      const usageRooms = filteredRoomReports.filter((room: any) =>
+        (room.usage_category || normalizeUsageCategoryValue('', room.room_type) || 'Unspecified') === category
+      );
+      return {
+        name: category,
+        roomCount: usageRooms.length,
+        avgUtilization: Math.round(usageRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (usageRooms.length || 1)),
+      };
+    }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
+  const yearSummary = yearOptions.map((year: any) => {
+    const yearRooms = filteredRoomReports.filter((room: any) => (room.yearTags || []).includes(year));
+    return {
+      name: `Year ${year}`,
+      roomCount: yearRooms.length,
+      avgUtilization: Math.round(yearRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (yearRooms.length || 1)),
+    };
+  });
+  const semesterSummary = semesterOptions.map((semester: any) => {
+    const semesterRooms = filteredRoomReports.filter((room: any) => (room.semesterTags || []).includes(semester));
+    return {
+      name: semester,
+      roomCount: semesterRooms.length,
+      avgUtilization: Math.round(semesterRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (semesterRooms.length || 1)),
+    };
+  });
+  const sectionSummary = sectionOptions.map((section: any) => {
+    const sectionRooms = filteredRoomReports.filter((room: any) => (room.sectionTags || []).includes(section));
+    return {
+      name: section,
+      roomCount: sectionRooms.length,
+      avgUtilization: Math.round(sectionRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (sectionRooms.length || 1)),
+    };
+  }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
   const departmentSummary = Array.from(new Set(filteredRoomReports.map((room: any) => room.department))).map(department => {
     const departmentRooms = filteredRoomReports.filter((room: any) => room.department === department);
     const schools = Array.from(new Set(departmentRooms.map((room: any) => room.school).filter(Boolean)));
@@ -8883,13 +8958,17 @@ function ReportGeneration() {
   const mostUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => b.utilization - a.utilization)[0];
   const leastUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => a.utilization - b.utilization)[0];
   const exportUtilizationReport = () => {
-    const worksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
+    const roomWorksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
+      Campus: room.campus || '',
       Building: room.building,
       Block: room.block,
       Floor: getFloorName(room.floor_number),
       Department: room.department,
       School: room.school,
+      Years: (room.yearTags || []).map((year: string) => `Year ${year}`).join(', '),
+      Semesters: (room.semesterTags || []).join(', '),
+      Sections: (room.sectionTags || []).join(', '),
       Type: getRoomTypeDisplay(room),
       Layout: room.room_layout || 'Normal',
       RoomAliases: getRoomAliasList(room).join(', '),
@@ -8909,8 +8988,69 @@ function ReportGeneration() {
       'Booking Statuses': (room.bookingStatuses || []).join(', '),
       Flags: (room.flags || []).join(', ')
     })));
+    const campusWorksheet = XLSX.utils.json_to_sheet(campusSummary.map((campus: any) => ({
+      Campus: campus.name,
+      Buildings: campus.buildingCount,
+      Rooms: campus.roomCount,
+      'Avg Utilization': `${campus.avgUtilization}%`,
+    })));
+    const schoolWorksheet = XLSX.utils.json_to_sheet(schoolSummary.map((school: any) => ({
+      School: school.name,
+      Departments: school.deptCount,
+      Rooms: school.roomCount,
+      'Total Capacity': school.totalCapacity,
+      'Avg Utilization': `${school.avgUtilization}%`,
+      'Unmapped Rooms': school.unmappedRooms,
+    })));
+    const buildingWorksheet = XLSX.utils.json_to_sheet(buildingSummary.map((building: any) => ({
+      Building: building.name,
+      Rooms: building.roomCount,
+      'Maintenance Issues': building.maintenanceIssues,
+      'Avg Utilization': `${building.avgUtilization}%`,
+    })));
+    const departmentWorksheet = XLSX.utils.json_to_sheet(departmentSummary.map((department: any) => ({
+      Department: department.name,
+      School: department.school,
+      Rooms: department.roomCount,
+      'Total Capacity': department.totalCapacity,
+      'Avg Utilization': `${department.avgUtilization}%`,
+    })));
+    const roomTypeWorksheet = XLSX.utils.json_to_sheet(roomTypeSummary.map((type: any) => ({
+      'Room Type': type.name,
+      Rooms: type.roomCount,
+      'Avg Utilization': `${type.avgUtilization}%`,
+    })));
+    const usageWorksheet = XLSX.utils.json_to_sheet(usageCategorySummary.map((usage: any) => ({
+      'Usage Category': usage.name,
+      Rooms: usage.roomCount,
+      'Avg Utilization': `${usage.avgUtilization}%`,
+    })));
+    const yearWorksheet = XLSX.utils.json_to_sheet(yearSummary.map((year: any) => ({
+      Year: year.name,
+      Rooms: year.roomCount,
+      'Avg Utilization': `${year.avgUtilization}%`,
+    })));
+    const semesterWorksheet = XLSX.utils.json_to_sheet(semesterSummary.map((semester: any) => ({
+      Semester: semester.name,
+      Rooms: semester.roomCount,
+      'Avg Utilization': `${semester.avgUtilization}%`,
+    })));
+    const sectionWorksheet = XLSX.utils.json_to_sheet(sectionSummary.map((section: any) => ({
+      Section: section.name,
+      Rooms: section.roomCount,
+      'Avg Utilization': `${section.avgUtilization}%`,
+    })));
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Utilization Report');
+    XLSX.utils.book_append_sheet(workbook, roomWorksheet, 'Room Utilization');
+    XLSX.utils.book_append_sheet(workbook, campusWorksheet, 'Campus Summary');
+    XLSX.utils.book_append_sheet(workbook, schoolWorksheet, 'School Summary');
+    XLSX.utils.book_append_sheet(workbook, buildingWorksheet, 'Building Summary');
+    XLSX.utils.book_append_sheet(workbook, departmentWorksheet, 'Department Summary');
+    XLSX.utils.book_append_sheet(workbook, roomTypeWorksheet, 'Room Type Summary');
+    XLSX.utils.book_append_sheet(workbook, usageWorksheet, 'Usage Category Summary');
+    XLSX.utils.book_append_sheet(workbook, yearWorksheet, 'Year Summary');
+    XLSX.utils.book_append_sheet(workbook, semesterWorksheet, 'Semester Summary');
+    XLSX.utils.book_append_sheet(workbook, sectionWorksheet, 'Section Summary');
     XLSX.writeFile(workbook, 'utilization-report.xlsx');
   };
   const exportSchoolSummaryReport = () => {
@@ -8929,11 +9069,15 @@ function ReportGeneration() {
   const exportRawUsageData = () => {
     const worksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
+      Campus: room.campus || '',
       Building: room.building,
       Block: room.block || '',
       Floor: getFloorName(room.floor_number),
       Department: room.department,
       School: room.school,
+      Years: (room.yearTags || []).map((year: string) => `Year ${year}`).join(', '),
+      Semesters: (room.semesterTags || []).join(', '),
+      Sections: (room.sectionTags || []).join(', '),
       Type: getRoomTypeDisplay(room),
       Layout: room.room_layout || 'Normal',
       RoomAliases: getRoomAliasList(room).join(', '),
@@ -9008,8 +9152,14 @@ function ReportGeneration() {
         <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <select value={filters.reportType} onChange={e => setFilters({ ...filters, reportType: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="room_utilization">Room Utilization</option>
+            <option value="campus_utilization">Campus Utilization</option>
             <option value="building_utilization">Building Utilization</option>
             <option value="department_allocation">Department Allocation</option>
+            <option value="room_type_utilization">Room Type Utilization</option>
+            <option value="usage_category_utilization">Usage Category Utilization</option>
+            <option value="year_utilization">Year-wise Utilization</option>
+            <option value="semester_utilization">Semester-wise Utilization</option>
+            <option value="section_utilization">Section-wise Utilization</option>
             <option value="booking_approvals">Booking Approvals</option>
             <option value="maintenance_impact">Maintenance Impact</option>
             <option value="underused">Underused Rooms</option>
@@ -9017,6 +9167,10 @@ function ReportGeneration() {
           </select>
           <input type="date" value={filters.dateFrom} onChange={e => setFilters({ ...filters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
           <input type="date" value={filters.dateTo} onChange={e => setFilters({ ...filters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
+          <select value={filters.campus} onChange={e => setFilters({ ...filters, campus: e.target.value, building: '', block: '', floor: '' })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
+            <option value="">All Campuses</option>
+            {campusOptions.map((campus: any) => <option key={campus} value={campus}>{campus}</option>)}
+          </select>
           <select value={filters.building} onChange={e => setFilters({ ...filters, building: e.target.value, block: '', floor: '' })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Buildings</option>
             {buildingOptions.map((building: any) => <option key={building} value={building}>{building}</option>)}
@@ -9032,6 +9186,18 @@ function ReportGeneration() {
           <select value={filters.department} onChange={e => setFilters({ ...filters, department: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Departments</option>
             {departmentOptions.map((department: any) => <option key={department} value={department}>{department}</option>)}
+          </select>
+          <select value={filters.year} onChange={e => setFilters({ ...filters, year: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
+            <option value="">All Years</option>
+            {yearOptions.map((year: any) => <option key={year} value={year}>{`Year ${year}`}</option>)}
+          </select>
+          <select value={filters.semester} onChange={e => setFilters({ ...filters, semester: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
+            <option value="">All Semesters</option>
+            {semesterOptions.map((semester: any) => <option key={semester} value={semester}>{semester}</option>)}
+          </select>
+          <select value={filters.section} onChange={e => setFilters({ ...filters, section: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
+            <option value="">All Sections</option>
+            {sectionOptions.map((section: any) => <option key={section} value={section}>{section}</option>)}
           </select>
           <select value={filters.roomType} onChange={e => setFilters({ ...filters, roomType: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Room Types</option>
@@ -9193,6 +9359,34 @@ function ReportGeneration() {
               </div>
             )}
 
+            {filters.reportType === 'campus_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Campus Utilization Summary</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Campus</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Buildings</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {campusSummary.map((campus: any) => (
+                        <tr key={campus.name} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{campus.name}</td>
+                          <td className="py-4 text-sm text-slate-500">{campus.buildingCount}</td>
+                          <td className="py-4 text-sm text-slate-500">{campus.roomCount}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{campus.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {filters.reportType === 'department_allocation' && (
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-800 mb-6">Department Allocation Summary</h3>
@@ -9213,6 +9407,136 @@ function ReportGeneration() {
                           <td className="py-4 text-sm text-slate-500">{department.roomCount}</td>
                           <td className="py-4 text-sm text-slate-500">{department.totalCapacity}</td>
                           <td className="py-4 text-sm font-bold text-slate-700 text-right">{department.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'room_type_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Room Type Utilization Summary</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room Type</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {roomTypeSummary.map((item: any) => (
+                        <tr key={item.name} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.name}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomCount}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'usage_category_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Usage Category Utilization Summary</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Usage Category</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {usageCategorySummary.map((item: any) => (
+                        <tr key={item.name} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.name}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomCount}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'year_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Year-wise Utilization Summary</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Year</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {yearSummary.map((item: any) => (
+                        <tr key={item.name} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.name}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomCount}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'semester_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Semester-wise Utilization Summary</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {semesterSummary.map((item: any) => (
+                        <tr key={item.name} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.name}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomCount}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.avgUtilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'section_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Section-wise Utilization Summary</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Section</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Avg Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {sectionSummary.map((item: any) => (
+                        <tr key={item.name} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.name}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomCount}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.avgUtilization}%</td>
                         </tr>
                       ))}
                     </tbody>

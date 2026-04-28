@@ -2720,12 +2720,13 @@ app.get("/api/events/search-rooms", authenticate, async (req, res) => {
 app.get("/api/reports/utilization", authenticate, async (req, res) => {
   try {
     const rooms = await db.prepare(`
-      SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number
+      SELECT r.*, pr.room_number as parent_room_number, bld.name as building_name, b.name as block_name, f.floor_number, c.name as campus_name
       FROM rooms r
       LEFT JOIN rooms pr ON r.parent_room_id = pr.id
       JOIN floors f ON r.floor_id = f.id
       JOIN blocks b ON f.block_id = b.id
       JOIN buildings bld ON b.building_id = bld.id
+      JOIN campuses c ON bld.campus_id = c.id
     `).all() as any[];
     const schedules = await db.prepare("SELECT * FROM schedules").all() as any[];
     const bookings = await db.prepare("SELECT * FROM bookings WHERE status = 'Approved'").all() as any[];
@@ -2781,10 +2782,29 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
       const totalUsedHours = scheduledHours + bookedHours;
       const availableHours = 72; // Assuming 12h * 6 days
       const utilization = (totalUsedHours / availableHours) * 100;
+      const yearTags = Array.from(new Set(roomSchedules
+        .map(schedule => {
+          const normalizedYear = normalizeYearOfStudyKey(schedule?.year_of_study);
+          if (normalizedYear) return normalizedYear;
+          const semesterNumber = parseSemesterNumber(schedule?.semester);
+          return semesterNumber ? Math.ceil(semesterNumber / 2).toString() : "";
+        })
+        .filter(Boolean)))
+        .sort((a, b) => Number(a) - Number(b));
+      const semesterTags = Array.from(new Set(roomSchedules
+        .map(schedule => normalizeSemesterKey(schedule?.semester))
+        .filter(Boolean)))
+        .map(tag => tag === "odd" ? "Odd" : tag === "even" ? "Even" : tag)
+        .sort((a, b) => a.localeCompare(b));
+      const sectionTags = Array.from(new Set(roomSchedules
+        .map(schedule => schedule?.section?.toString().trim())
+        .filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b));
 
       return {
         room_id: room.id,
         room_number: room.room_number,
+        campus: room.campus_name,
         building: room.building_name,
         block: room.block_name,
         floor_number: room.floor_number,
@@ -2811,6 +2831,10 @@ app.get("/api/reports/utilization", authenticate, async (req, res) => {
         bookingStatuses: Array.from(new Set(allRoomBookings.map(booking => booking.status).filter(Boolean))),
         bookingDates: allRoomBookings.map(booking => booking.date).filter(Boolean),
         approvedBookingDates: roomBookings.map(booking => booking.date).filter(Boolean),
+        scheduleCount: roomSchedules.length,
+        yearTags,
+        semesterTags,
+        sectionTags,
         flags: [
           utilization < 20 ? "Underused" : null,
           utilization > 80 ? "Overused" : null,
