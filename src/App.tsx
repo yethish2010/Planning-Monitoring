@@ -8736,6 +8736,32 @@ function ReportGeneration() {
     bookingStatus: '',
     flag: ''
   });
+  const REPORT_TYPE_OPTIONS = [
+    { value: 'room_utilization', label: 'Room Utilization' },
+    { value: 'campus_utilization', label: 'Campus Utilization' },
+    { value: 'building_utilization', label: 'Building Utilization' },
+    { value: 'department_allocation', label: 'Department Allocation' },
+    { value: 'room_type_utilization', label: 'Room Type Utilization' },
+    { value: 'usage_category_utilization', label: 'Usage Category Utilization' },
+    { value: 'year_utilization', label: 'Year-wise Utilization' },
+    { value: 'semester_utilization', label: 'Semester-wise Utilization' },
+    { value: 'section_utilization', label: 'Section-wise Utilization' },
+    { value: 'booking_approvals', label: 'Booking Approvals' },
+    { value: 'maintenance_impact', label: 'Maintenance Impact' },
+    { value: 'underused', label: 'Underused Rooms' },
+    { value: 'overused', label: 'Overused Rooms' },
+    { value: 'time_band_utilization', label: 'Time Band Utilization' },
+    { value: 'department_roomtype_demand', label: 'Department vs Room-Type Demand' },
+    { value: 'clash_overlap', label: 'Clash / Overlap Report' },
+    { value: 'vacancy_opportunity', label: 'Vacancy Opportunity Report' },
+    { value: 'capacity_mismatch', label: 'Capacity Mismatch Report' },
+    { value: 'exam_impact', label: 'Exam Impact Report' },
+    { value: 'booking_lifecycle', label: 'Booking Lead-Time & Cancellation' },
+    { value: 'no_show_risk', label: 'No-Show / Unused Booking Risk' },
+    { value: 'shared_room_conflict', label: 'Shared Room Conflict Risk' },
+    { value: 'semester_peak_forecast', label: 'Semester Peak Load Forecast' },
+  ];
+  const [individualReportType, setIndividualReportType] = useState('room_utilization');
 
   const methodologyData = [
     { 
@@ -9649,6 +9675,267 @@ function ReportGeneration() {
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Raw Usage Data');
     XLSX.writeFile(workbook, 'raw-usage-data.xlsx');
   };
+  const exportRowsToWorkbook = (rows: any[], fileName: string, sheetName: string) => {
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    XLSX.writeFile(workbook, fileName);
+  };
+  const exportReportByType = (reportType: string) => {
+    const roomDetailRows = filteredRoomReports.map((room: any) => ({
+      Room: room.room_number,
+      Campus: room.campus || '',
+      Building: room.building,
+      Block: room.block || '',
+      Floor: getFloorName(room.floor_number),
+      Department: room.department,
+      School: room.school,
+      Type: getRoomTypeDisplay(room),
+      Layout: room.room_layout || 'Normal',
+      Utilization: `${room.utilization}%`,
+      ScheduledHours: room.scheduledHours,
+      BookedHours: room.bookedHours,
+      Capacity: room.capacity,
+      Status: room.status,
+      Flags: (room.flags || []).join(', '),
+    }));
+
+    const reportConfigs: Record<string, { fileName: string; sheetName: string; rows: any[] }> = {
+      room_utilization: {
+        fileName: 'room-utilization-report.xlsx',
+        sheetName: 'Room Utilization',
+        rows: roomDetailRows,
+      },
+      campus_utilization: {
+        fileName: 'campus-utilization-report.xlsx',
+        sheetName: 'Campus Utilization',
+        rows: campusSummary.map((campus: any) => ({
+          Campus: campus.name,
+          Buildings: campus.buildingCount,
+          Rooms: campus.roomCount,
+          AvgUtilization: `${campus.avgUtilization}%`,
+        })),
+      },
+      building_utilization: {
+        fileName: 'building-utilization-report.xlsx',
+        sheetName: 'Building Utilization',
+        rows: buildingSummary.map((building: any) => ({
+          Building: building.name,
+          Rooms: building.roomCount,
+          MaintenanceIssues: building.maintenanceIssues,
+          AvgUtilization: `${building.avgUtilization}%`,
+        })),
+      },
+      department_allocation: {
+        fileName: 'department-allocation-report.xlsx',
+        sheetName: 'Department Allocation',
+        rows: departmentSummary.map((department: any) => ({
+          Department: department.name,
+          School: department.school,
+          Rooms: department.roomCount,
+          TotalCapacity: department.totalCapacity,
+          AvgUtilization: `${department.avgUtilization}%`,
+        })),
+      },
+      room_type_utilization: {
+        fileName: 'room-type-utilization-report.xlsx',
+        sheetName: 'Room Type Utilization',
+        rows: roomTypeSummary.map((item: any) => ({
+          RoomType: item.name,
+          Rooms: item.roomCount,
+          AvgUtilization: `${item.avgUtilization}%`,
+        })),
+      },
+      usage_category_utilization: {
+        fileName: 'usage-category-utilization-report.xlsx',
+        sheetName: 'Usage Category Utilization',
+        rows: usageCategorySummary.map((item: any) => ({
+          UsageCategory: item.name,
+          Rooms: item.roomCount,
+          AvgUtilization: `${item.avgUtilization}%`,
+        })),
+      },
+      year_utilization: {
+        fileName: 'year-utilization-report.xlsx',
+        sheetName: 'Year Utilization',
+        rows: yearSummary.map((item: any) => ({
+          Year: item.name,
+          Rooms: item.roomCount,
+          AvgUtilization: `${item.avgUtilization}%`,
+        })),
+      },
+      semester_utilization: {
+        fileName: 'semester-utilization-report.xlsx',
+        sheetName: 'Semester Utilization',
+        rows: semesterSummary.map((item: any) => ({
+          Semester: item.name,
+          Rooms: item.roomCount,
+          AvgUtilization: `${item.avgUtilization}%`,
+        })),
+      },
+      section_utilization: {
+        fileName: 'section-utilization-report.xlsx',
+        sheetName: 'Section Utilization',
+        rows: sectionSummary.map((item: any) => ({
+          Section: item.name,
+          Rooms: item.roomCount,
+          AvgUtilization: `${item.avgUtilization}%`,
+        })),
+      },
+      booking_approvals: {
+        fileName: 'booking-approvals-report.xlsx',
+        sheetName: 'Booking Approvals',
+        rows: bookingStatusSummary.map((status: any) => ({
+          Status: status.name,
+          Count: status.count,
+        })),
+      },
+      maintenance_impact: {
+        fileName: 'maintenance-impact-report.xlsx',
+        sheetName: 'Maintenance Impact',
+        rows: roomDetailRows,
+      },
+      underused: {
+        fileName: 'underused-rooms-report.xlsx',
+        sheetName: 'Underused Rooms',
+        rows: roomDetailRows,
+      },
+      overused: {
+        fileName: 'overused-rooms-report.xlsx',
+        sheetName: 'Overused Rooms',
+        rows: roomDetailRows,
+      },
+      time_band_utilization: {
+        fileName: 'time-band-utilization-report.xlsx',
+        sheetName: 'Time Band Utilization',
+        rows: roomTimeBandUtilization.map((item: any) => ({
+          TimeBand: item.band,
+          ScheduledHours: item.scheduledHours,
+          BookedHours: item.bookedHours,
+          Utilization: `${item.utilization}%`,
+        })),
+      },
+      department_roomtype_demand: {
+        fileName: 'department-roomtype-demand-report.xlsx',
+        sheetName: 'Department RoomType Demand',
+        rows: departmentRoomTypeDemand.map((item: any) => ({
+          Department: item.department,
+          TotalDemand: item.totalDemand,
+          ...item.roomTypeCounts,
+        })),
+      },
+      clash_overlap: {
+        fileName: 'clash-overlap-report.xlsx',
+        sheetName: 'Clash Overlap',
+        rows: overlapConflictReport.map((item: any) => ({
+          Source: item.source,
+          Room: item.room,
+          DayOrDate: item.day,
+          EntryA: `${item.startA} - ${item.endA} | ${item.courseA}`,
+          EntryB: `${item.startB} - ${item.endB} | ${item.courseB}`,
+        })),
+      },
+      vacancy_opportunity: {
+        fileName: 'vacancy-opportunity-report.xlsx',
+        sheetName: 'Vacancy Opportunity',
+        rows: vacancyOpportunityReport.map((item: any) => ({
+          Room: item.room,
+          Building: item.building,
+          Department: item.department,
+          IdleHoursPerWeek: item.idleHours,
+          Utilization: `${item.utilization}%`,
+          Opportunity: item.opportunity,
+        })),
+      },
+      capacity_mismatch: {
+        fileName: 'capacity-mismatch-report.xlsx',
+        sheetName: 'Capacity Mismatch',
+        rows: capacityMismatchReport.map((item: any) => ({
+          Date: item.date,
+          Room: item.room,
+          Department: item.department,
+          Event: item.event,
+          Students: item.studentCount,
+          Capacity: item.roomCapacity,
+          OccupancyPercent: `${item.occupancyPercent}%`,
+          MismatchType: item.mismatchType,
+        })),
+      },
+      exam_impact: {
+        fileName: 'exam-impact-report.xlsx',
+        sheetName: 'Exam Impact',
+        rows: examImpactReport.map((item: any) => ({
+          ExamWindow: item.title,
+          Department: item.department,
+          Semester: item.semester,
+          StartDate: item.startDate,
+          EndDate: item.endDate,
+          Days: item.days,
+          AffectedWeeklyClasses: item.affectedWeeklyClasses,
+          EstimatedBlockedSessions: item.estimatedBlockedSessions,
+        })),
+      },
+      booking_lifecycle: {
+        fileName: 'booking-lifecycle-report.xlsx',
+        sheetName: 'Booking Lifecycle',
+        rows: [{
+          TotalRequests: bookingLifecycleReport.totalRequests,
+          Approvals: bookingLifecycleReport.approvals,
+          Cancellations: bookingLifecycleReport.cancellations,
+          CancellationRate: `${bookingLifecycleReport.cancellationRate}%`,
+          AverageLeadDays: bookingLifecycleReport.averageLeadDays ?? 'N/A',
+          LeadTimeCapturedCount: bookingLifecycleReport.leadTimeCapturedCount,
+        }],
+      },
+      no_show_risk: {
+        fileName: 'no-show-risk-report.xlsx',
+        sheetName: 'No Show Risk',
+        rows: noShowRiskReport.map((item: any) => ({
+          Booking: item.bookingId,
+          Date: item.date,
+          Room: item.room,
+          Department: item.department,
+          Event: item.event,
+          Students: item.studentCount,
+          Capacity: item.roomCapacity,
+          OccupancyPercent: `${item.occupancyPercent}%`,
+          RiskScore: item.riskScore,
+        })),
+      },
+      shared_room_conflict: {
+        fileName: 'shared-room-conflict-risk-report.xlsx',
+        sheetName: 'Shared Room Conflict',
+        rows: sharedRoomConflictRiskReport.map((item: any) => ({
+          Room: item.room,
+          Building: item.building,
+          RoomLayout: item.roomLayout,
+          Aliases: item.aliases,
+          Departments: item.departments,
+          Sections: item.sections,
+          Overlaps: item.overlaps,
+          RiskScore: item.riskScore,
+        })),
+      },
+      semester_peak_forecast: {
+        fileName: 'semester-peak-forecast-report.xlsx',
+        sheetName: 'Semester Peak Forecast',
+        rows: semesterPeakLoadForecast.map((item: any) => ({
+          Semester: item.semester,
+          Day: item.day,
+          PeakBand: item.peakBand,
+          PeakSlots: item.peakSlots,
+          TotalClasses: item.totalClasses,
+        })),
+      },
+    };
+    const config = reportConfigs[reportType];
+    if (!config) {
+      alert('Selected report type is not available for individual export.');
+      return;
+    }
+    exportRowsToWorkbook(config.rows, config.fileName, config.sheetName);
+  };
+  const exportCurrentReport = () => exportReportByType(filters.reportType);
   const selectedSchoolRooms = selectedSchool
     ? filteredRoomReports.filter((room: any) => room.school === selectedSchool.name)
     : [];
@@ -9688,39 +9975,28 @@ function ReportGeneration() {
             <h3 className="text-sm font-bold text-slate-800">Report Filters</h3>
             <p className="text-xs text-slate-500">Generate focused utilization reports by type, date, location, department, room type, booking status, or issue flag.</p>
           </div>
-          <button
-            onClick={exportUtilizationReport}
-            className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-xs font-bold flex items-center gap-2"
-          >
-            <FileSpreadsheet size={16} />
-            Export Excel
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={exportCurrentReport}
+              className="px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-xl text-xs font-bold flex items-center gap-2"
+            >
+              <FileSpreadsheet size={16} />
+              Export Current Report
+            </button>
+            <button
+              onClick={exportUtilizationReport}
+              className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-xs font-bold flex items-center gap-2"
+            >
+              <FileSpreadsheet size={16} />
+              Export Full Workbook
+            </button>
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <select value={filters.reportType} onChange={e => setFilters({ ...filters, reportType: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
-            <option value="room_utilization">Room Utilization</option>
-            <option value="campus_utilization">Campus Utilization</option>
-            <option value="building_utilization">Building Utilization</option>
-            <option value="department_allocation">Department Allocation</option>
-            <option value="room_type_utilization">Room Type Utilization</option>
-            <option value="usage_category_utilization">Usage Category Utilization</option>
-            <option value="year_utilization">Year-wise Utilization</option>
-            <option value="semester_utilization">Semester-wise Utilization</option>
-            <option value="section_utilization">Section-wise Utilization</option>
-            <option value="booking_approvals">Booking Approvals</option>
-            <option value="maintenance_impact">Maintenance Impact</option>
-            <option value="underused">Underused Rooms</option>
-            <option value="overused">Overused Rooms</option>
-            <option value="time_band_utilization">Time Band Utilization</option>
-            <option value="department_roomtype_demand">Department vs Room-Type Demand</option>
-            <option value="clash_overlap">Clash / Overlap Report</option>
-            <option value="vacancy_opportunity">Vacancy Opportunity Report</option>
-            <option value="capacity_mismatch">Capacity Mismatch Report</option>
-            <option value="exam_impact">Exam Impact Report</option>
-            <option value="booking_lifecycle">Booking Lead-Time & Cancellation</option>
-            <option value="no_show_risk">No-Show / Unused Booking Risk</option>
-            <option value="shared_room_conflict">Shared Room Conflict Risk</option>
-            <option value="semester_peak_forecast">Semester Peak Load Forecast</option>
+            {REPORT_TYPE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
           <input type="date" value={filters.dateFrom} onChange={e => setFilters({ ...filters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
           <input type="date" value={filters.dateTo} onChange={e => setFilters({ ...filters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
@@ -10548,6 +10824,25 @@ function ReportGeneration() {
             <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
               <h3 className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">Export Reports</h3>
               <div className="space-y-3">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-3">
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Individual Report</p>
+                  <select
+                    value={individualReportType}
+                    onChange={e => setIndividualReportType(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500"
+                  >
+                    {REPORT_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => exportReportByType(individualReportType)}
+                    className="w-full px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-xl text-xs font-bold flex items-center justify-center gap-2"
+                  >
+                    <FileSpreadsheet size={16} />
+                    Download Selected Report
+                  </button>
+                </div>
                 <button onClick={exportSchoolSummaryReport} className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
                   <div className="flex items-center gap-4">
                     <div className="p-2 bg-white rounded-lg shadow-sm">
