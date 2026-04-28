@@ -2880,7 +2880,7 @@ function DashboardHome() {
   const statCards = [
     { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
     { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/rooms' },
-    { label: 'Scheduled Rooms', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=Scheduled' },
+    { label: 'Scheduled Today', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=Scheduled' },
     { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance?status=open' },
     { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings?status=Pending' },
   ];
@@ -3081,7 +3081,7 @@ function DashboardHome() {
                   <p className="text-xl font-black text-emerald-700 mt-1">{stats?.availableNow || 0}</p>
                 </div>
                 <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Scheduled</p>
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Scheduled Today</p>
                   <p className="text-xl font-black text-indigo-700 mt-1">{stats?.scheduledRooms || 0}</p>
                 </div>
                 <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
@@ -9804,7 +9804,7 @@ function ReportGeneration() {
 
   const exportReportByType = (reportType: string) => {
     const reportConfigs = buildUtilizationReportConfigs();
-    const config = reportConfigs[reportType];
+    const config = reportConfigs[reportType as keyof typeof reportConfigs];
     if (!config) {
       alert('Selected report type is not available for individual export.');
       return;
@@ -9827,7 +9827,7 @@ function ReportGeneration() {
       'Sheet Name': string;
       'Total Rows': number;
     }> = orderedReportTypes.map((reportType, index) => {
-      const report = reportConfigs[reportType];
+      const report = reportConfigs[reportType as keyof typeof reportConfigs];
       return {
         'S. No': index + 1,
         'Report Type': reportType,
@@ -9846,7 +9846,7 @@ function ReportGeneration() {
     });
 
     const completeDataRows = orderedReportTypes.flatMap((reportType) => {
-      const report = reportConfigs[reportType];
+      const report = reportConfigs[reportType as keyof typeof reportConfigs];
       const reportName = reportLabels.get(reportType) || report.sheetName;
       return report.rows.map((row: any, rowIndex: number) => {
         const entries = Object.entries(row || {});
@@ -9872,7 +9872,7 @@ function ReportGeneration() {
     XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Overall Summary');
     XLSX.utils.book_append_sheet(workbook, completeDataWorksheet, 'Complete Data');
     orderedReportTypes.forEach((reportType) => {
-      const report = reportConfigs[reportType];
+      const report = reportConfigs[reportType as keyof typeof reportConfigs];
       const dynamicColumns = reportType === 'department_roomtype_demand' && report.rows.length > 0
         ? Array.from(new Set(report.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
         : undefined;
