@@ -8761,6 +8761,32 @@ function ReportGeneration() {
     { value: 'shared_room_conflict', label: 'Shared Room Conflict Risk' },
     { value: 'semester_peak_forecast', label: 'Semester Peak Load Forecast' },
   ];
+  const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
+    room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
+    school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
+    building_utilization: ['Building', 'Rooms', 'MaintenanceIssues', 'AvgUtilization'],
+    department_allocation: ['Department', 'School', 'Rooms', 'TotalCapacity', 'AvgUtilization'],
+    room_type_utilization: ['RoomType', 'Rooms', 'AvgUtilization'],
+    usage_category_utilization: ['UsageCategory', 'Rooms', 'AvgUtilization'],
+    year_utilization: ['Year', 'Rooms', 'AvgUtilization'],
+    semester_utilization: ['Semester', 'Rooms', 'AvgUtilization'],
+    section_utilization: ['Section', 'Rooms', 'AvgUtilization'],
+    booking_approvals: ['Status', 'Count'],
+    maintenance_impact: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    underused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    overused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    time_band_utilization: ['TimeBand', 'ScheduledHours', 'BookedHours', 'Utilization'],
+    department_roomtype_demand: ['Department', 'TotalDemand'],
+    clash_overlap: ['Source', 'Room', 'DayOrDate', 'EntryA', 'EntryB'],
+    vacancy_opportunity: ['Room', 'Building', 'Department', 'IdleHoursPerWeek', 'Utilization', 'Opportunity'],
+    capacity_mismatch: ['Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'MismatchType'],
+    exam_impact: ['ExamWindow', 'Department', 'Semester', 'StartDate', 'EndDate', 'Days', 'AffectedWeeklyClasses', 'EstimatedBlockedSessions'],
+    booking_lifecycle: ['TotalRequests', 'Approvals', 'Cancellations', 'CancellationRate', 'AverageLeadDays', 'LeadTimeCapturedCount'],
+    no_show_risk: ['Booking', 'Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'RiskScore'],
+    shared_room_conflict: ['Room', 'Building', 'RoomLayout', 'Aliases', 'Departments', 'Sections', 'Overlaps', 'RiskScore'],
+    semester_peak_forecast: ['Semester', 'Day', 'PeakBand', 'PeakSlots', 'TotalClasses'],
+  };
   const [individualReportType, setIndividualReportType] = useState('room_utilization');
 
   const methodologyData = [
@@ -9428,214 +9454,44 @@ function ReportGeneration() {
       reportDayOrder.indexOf(a.day) - reportDayOrder.indexOf(b.day)
     );
   })();
-  const exportUtilizationReport = () => {
-    const roomWorksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
-      Room: room.room_number,
-      Campus: room.campus || '',
-      Building: room.building,
-      Block: room.block,
-      Floor: getFloorName(room.floor_number),
-      Department: room.department,
-      School: room.school,
-      Years: (room.yearTags || []).map((year: string) => `Year ${year}`).join(', '),
-      Semesters: (room.semesterTags || []).join(', '),
-      Sections: (room.sectionTags || []).join(', '),
-      Type: getRoomTypeDisplay(room),
-      SubRoomType: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
-      Layout: room.room_layout || 'Normal',
-      RoomAliases: getRoomAliasList(room).join(', '),
-      ParentRoom: room.parent_room_number || '',
-      SubRoomCount: room.sub_room_count ?? '',
-      SubRoomName: room.room_section_name || '',
-      UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
-      IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
-      'Lab Name': room.lab_name || '',
-      'Sub Lab Name': (
-        normalizeRoomTypeValue(room.room_type) === 'Lab' &&
-        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
-      ) ? (room.lab_name || '') : '',
-      'Restroom For': room.restroom_type || '',
-      Capacity: room.capacity,
-      Status: room.status,
-      Utilization: `${room.utilization}%`,
-      'Scheduled Hours': room.scheduledHours,
-      'Booked Hours': room.bookedHours,
-      'Maintenance Issues': room.maintenanceIssues,
-      'Booking Statuses': (room.bookingStatuses || []).join(', '),
-      Flags: (room.flags || []).join(', ')
-    })));
-    const campusWorksheet = XLSX.utils.json_to_sheet(campusSummary.map((campus: any) => ({
-      Campus: campus.name,
-      Buildings: campus.buildingCount,
-      Rooms: campus.roomCount,
-      'Avg Utilization': `${campus.avgUtilization}%`,
-    })));
-    const schoolWorksheet = XLSX.utils.json_to_sheet(schoolSummary.map((school: any) => ({
-      School: school.name,
-      Departments: school.deptCount,
-      Rooms: school.roomCount,
-      'Total Capacity': school.totalCapacity,
-      'Avg Utilization': `${school.avgUtilization}%`,
-      'Unmapped Rooms': school.unmappedRooms,
-    })));
-    const buildingWorksheet = XLSX.utils.json_to_sheet(buildingSummary.map((building: any) => ({
-      Building: building.name,
-      Rooms: building.roomCount,
-      'Maintenance Issues': building.maintenanceIssues,
-      'Avg Utilization': `${building.avgUtilization}%`,
-    })));
-    const departmentWorksheet = XLSX.utils.json_to_sheet(departmentSummary.map((department: any) => ({
-      Department: department.name,
-      School: department.school,
-      Rooms: department.roomCount,
-      'Total Capacity': department.totalCapacity,
-      'Avg Utilization': `${department.avgUtilization}%`,
-    })));
-    const roomTypeWorksheet = XLSX.utils.json_to_sheet(roomTypeSummary.map((type: any) => ({
-      'Room Type': type.name,
-      Rooms: type.roomCount,
-      'Avg Utilization': `${type.avgUtilization}%`,
-    })));
-    const usageWorksheet = XLSX.utils.json_to_sheet(usageCategorySummary.map((usage: any) => ({
-      'Usage Category': usage.name,
-      Rooms: usage.roomCount,
-      'Avg Utilization': `${usage.avgUtilization}%`,
-    })));
-    const yearWorksheet = XLSX.utils.json_to_sheet(yearSummary.map((year: any) => ({
-      Year: year.name,
-      Rooms: year.roomCount,
-      'Avg Utilization': `${year.avgUtilization}%`,
-    })));
-    const semesterWorksheet = XLSX.utils.json_to_sheet(semesterSummary.map((semester: any) => ({
-      Semester: semester.name,
-      Rooms: semester.roomCount,
-      'Avg Utilization': `${semester.avgUtilization}%`,
-    })));
-    const sectionWorksheet = XLSX.utils.json_to_sheet(sectionSummary.map((section: any) => ({
-      Section: section.name,
-      Rooms: section.roomCount,
-      'Avg Utilization': `${section.avgUtilization}%`,
-    })));
-    const timeBandWorksheet = XLSX.utils.json_to_sheet(roomTimeBandUtilization.map((item: any) => ({
-      TimeBand: item.band,
-      ScheduledHours: item.scheduledHours,
-      BookedHours: item.bookedHours,
-      Utilization: `${item.utilization}%`,
-    })));
-    const demandWorksheet = XLSX.utils.json_to_sheet(departmentRoomTypeDemand.map((item: any) => ({
-      Department: item.department,
-      TotalDemand: item.totalDemand,
-      ...item.roomTypeCounts,
-    })));
-    const overlapWorksheet = XLSX.utils.json_to_sheet(overlapConflictReport.map((item: any) => ({
-      Source: item.source,
-      Room: item.room,
-      DayOrDate: item.day,
-      EntryA: `${item.startA} - ${item.endA} | ${item.courseA}`,
-      EntryB: `${item.startB} - ${item.endB} | ${item.courseB}`,
-    })));
-    const vacancyWorksheet = XLSX.utils.json_to_sheet(vacancyOpportunityReport.map((item: any) => ({
-      Room: item.room,
-      Building: item.building,
-      Department: item.department,
-      IdleHoursPerWeek: item.idleHours,
-      Utilization: `${item.utilization}%`,
-      Opportunity: item.opportunity,
-    })));
-    const mismatchWorksheet = XLSX.utils.json_to_sheet(capacityMismatchReport.map((item: any) => ({
-      Date: item.date,
-      Room: item.room,
-      Department: item.department,
-      Event: item.event,
-      Students: item.studentCount,
-      Capacity: item.roomCapacity,
-      OccupancyPercent: `${item.occupancyPercent}%`,
-      MismatchType: item.mismatchType,
-    })));
-    const examImpactWorksheet = XLSX.utils.json_to_sheet(examImpactReport.map((item: any) => ({
-      ExamWindow: item.title,
-      Department: item.department,
-      Semester: item.semester,
-      StartDate: item.startDate,
-      EndDate: item.endDate,
-      Days: item.days,
-      AffectedWeeklyClasses: item.affectedWeeklyClasses,
-      EstimatedBlockedSessions: item.estimatedBlockedSessions,
-    })));
-    const lifecycleWorksheet = XLSX.utils.json_to_sheet([bookingLifecycleReport].map((item: any) => ({
-      TotalRequests: item.totalRequests,
-      Approvals: item.approvals,
-      Cancellations: item.cancellations,
-      CancellationRate: `${item.cancellationRate}%`,
-      AverageLeadDays: item.averageLeadDays ?? 'N/A',
-      LeadTimeCapturedCount: item.leadTimeCapturedCount,
-    })));
-    const noShowWorksheet = XLSX.utils.json_to_sheet(noShowRiskReport.map((item: any) => ({
-      Booking: item.bookingId,
-      Date: item.date,
-      Room: item.room,
-      Department: item.department,
-      Event: item.event,
-      Students: item.studentCount,
-      Capacity: item.roomCapacity,
-      OccupancyPercent: `${item.occupancyPercent}%`,
-      RiskScore: item.riskScore,
-    })));
-    const sharedRiskWorksheet = XLSX.utils.json_to_sheet(sharedRoomConflictRiskReport.map((item: any) => ({
-      Room: item.room,
-      Building: item.building,
-      RoomLayout: item.roomLayout,
-      Aliases: item.aliases,
-      Departments: item.departments,
-      Sections: item.sections,
-      Overlaps: item.overlaps,
-      RiskScore: item.riskScore,
-    })));
-    const peakForecastWorksheet = XLSX.utils.json_to_sheet(semesterPeakLoadForecast.map((item: any) => ({
-      Semester: item.semester,
-      Day: item.day,
-      PeakBand: item.peakBand,
-      PeakSlots: item.peakSlots,
-      TotalClasses: item.totalClasses,
-    })));
+  const buildWorksheetFromRows = (rows: any[], columns?: string[]) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const resolvedColumns = (columns && columns.length > 0)
+      ? columns
+      : (safeRows[0] ? Object.keys(safeRows[0]) : []);
+    if (resolvedColumns.length === 0) {
+      return XLSX.utils.aoa_to_sheet([['No data available']]);
+    }
+    const orderedRows = safeRows.map((row: any) => resolvedColumns.reduce((acc: any, column) => {
+      acc[column] = row?.[column] ?? '';
+      return acc;
+    }, {}));
+    return XLSX.utils.json_to_sheet(orderedRows, { header: resolvedColumns });
+  };
+  const buildWorkbookFromReportConfigs = (reportConfigs: Record<string, { fileName: string; sheetName: string; rows: any[] }>, reportOrder: string[], fileName: string) => {
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, roomWorksheet, 'Room Utilization');
-    XLSX.utils.book_append_sheet(workbook, campusWorksheet, 'Campus Summary');
-    XLSX.utils.book_append_sheet(workbook, schoolWorksheet, 'School Summary');
-    XLSX.utils.book_append_sheet(workbook, buildingWorksheet, 'Building Summary');
-    XLSX.utils.book_append_sheet(workbook, departmentWorksheet, 'Department Summary');
-    XLSX.utils.book_append_sheet(workbook, roomTypeWorksheet, 'Room Type Summary');
-    XLSX.utils.book_append_sheet(workbook, usageWorksheet, 'Usage Category Summary');
-    XLSX.utils.book_append_sheet(workbook, yearWorksheet, 'Year Summary');
-    XLSX.utils.book_append_sheet(workbook, semesterWorksheet, 'Semester Summary');
-    XLSX.utils.book_append_sheet(workbook, sectionWorksheet, 'Section Summary');
-    XLSX.utils.book_append_sheet(workbook, timeBandWorksheet, 'Time Band Utilization');
-    XLSX.utils.book_append_sheet(workbook, demandWorksheet, 'Dept RoomType Demand');
-    XLSX.utils.book_append_sheet(workbook, overlapWorksheet, 'Clash Overlap');
-    XLSX.utils.book_append_sheet(workbook, vacancyWorksheet, 'Vacancy Opportunity');
-    XLSX.utils.book_append_sheet(workbook, mismatchWorksheet, 'Capacity Mismatch');
-    XLSX.utils.book_append_sheet(workbook, examImpactWorksheet, 'Exam Impact');
-    XLSX.utils.book_append_sheet(workbook, lifecycleWorksheet, 'Booking Lifecycle');
-    XLSX.utils.book_append_sheet(workbook, noShowWorksheet, 'No Show Risk');
-    XLSX.utils.book_append_sheet(workbook, sharedRiskWorksheet, 'Shared Room Risk');
-    XLSX.utils.book_append_sheet(workbook, peakForecastWorksheet, 'Semester Peak Forecast');
-    XLSX.writeFile(workbook, 'utilization-report.xlsx');
+    reportOrder.forEach((reportType) => {
+      const config = reportConfigs[reportType];
+      if (!config) return;
+      const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
+        ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {}))))
+        : undefined;
+      const worksheet = buildWorksheetFromRows(config.rows, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
+      XLSX.utils.book_append_sheet(workbook, worksheet, config.sheetName);
+    });
+    XLSX.writeFile(workbook, fileName);
+  };
+  const exportUtilizationReport = () => {
+    const reportConfigs = buildUtilizationReportConfigs();
+    buildWorkbookFromReportConfigs(reportConfigs, Object.keys(reportConfigs), 'utilization-report.xlsx');
   };
   const exportSchoolSummaryReport = () => {
-    const worksheet = XLSX.utils.json_to_sheet(schoolSummary.map((school: any) => ({
-      School: school.name,
-      Departments: school.deptCount,
-      Rooms: school.roomCount,
-      'Total Capacity': school.totalCapacity,
-      'Avg Utilization': `${school.avgUtilization}%`,
-      'Unmapped Rooms': school.unmappedRooms,
-    })));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'School Summary');
-    XLSX.writeFile(workbook, 'school-utilization-summary.xlsx');
+    const reportConfigs = buildUtilizationReportConfigs();
+    const config = reportConfigs.school_utilization;
+    exportRowsToWorkbook(config.rows, config.fileName, config.sheetName, REPORT_EXPORT_COLUMNS.school_utilization);
   };
   const exportRawUsageData = () => {
-    const worksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
+    const rows = filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
       Campus: room.campus || '',
       Building: room.building,
@@ -9670,14 +9526,18 @@ function ReportGeneration() {
       BookingStatuses: (room.bookingStatuses || []).join(', '),
       BookingDates: (room.bookingDates || []).join(', '),
       Flags: (room.flags || []).join(', '),
-    })));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Raw Usage Data');
-    XLSX.writeFile(workbook, 'raw-usage-data.xlsx');
+    }));
+    const rawUsageColumns = [
+      'Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Years', 'Semesters', 'Sections',
+      'Type', 'SubRoomType', 'Layout', 'RoomAliases', 'ParentRoom', 'SubRoomCount', 'SubRoomName', 'UsageCategory',
+      'IsBookable', 'LabName', 'SubLabName', 'RestroomFor', 'Capacity', 'Status', 'Utilization', 'ScheduledHours',
+      'BookedHours', 'MaintenanceIssues', 'BookingStatuses', 'BookingDates', 'Flags'
+    ];
+    exportRowsToWorkbook(rows, 'raw-usage-data.xlsx', 'Raw Usage Data', rawUsageColumns);
   };
-  const exportRowsToWorkbook = (rows: any[], fileName: string, sheetName: string) => {
+  const exportRowsToWorkbook = (rows: any[], fileName: string, sheetName: string, columns?: string[]) => {
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const worksheet = buildWorksheetFromRows(rows, columns);
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
     XLSX.writeFile(workbook, fileName);
   };
@@ -9714,6 +9574,18 @@ function ReportGeneration() {
           Buildings: campus.buildingCount,
           Rooms: campus.roomCount,
           AvgUtilization: `${campus.avgUtilization}%`,
+        })),
+      },
+      school_utilization: {
+        fileName: 'school-utilization-summary.xlsx',
+        sheetName: 'School Summary',
+        rows: schoolSummary.map((school: any) => ({
+          School: school.name,
+          Departments: school.deptCount,
+          Rooms: school.roomCount,
+          TotalCapacity: school.totalCapacity,
+          AvgUtilization: `${school.avgUtilization}%`,
+          UnmappedRooms: school.unmappedRooms,
         })),
       },
       building_utilization: {
@@ -9937,12 +9809,17 @@ function ReportGeneration() {
       alert('Selected report type is not available for individual export.');
       return;
     }
-    exportRowsToWorkbook(config.rows, config.fileName, config.sheetName);
+    const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
+      ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {}))))
+      : undefined;
+    exportRowsToWorkbook(config.rows, config.fileName, config.sheetName, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
   };
   const exportComprehensiveWorkbook = () => {
     const reportConfigs = buildUtilizationReportConfigs();
     const reportLabels = new Map(REPORT_TYPE_OPTIONS.map((option) => [option.value, option.label]));
-    const orderedReportTypes = REPORT_TYPE_OPTIONS.map((option) => option.value).filter((key) => !!reportConfigs[key]);
+    const reportTypesFromFilters = REPORT_TYPE_OPTIONS.map((option) => option.value).filter((key) => !!reportConfigs[key]);
+    const additionalReportTypes = Object.keys(reportConfigs).filter((key) => !reportTypesFromFilters.includes(key));
+    const orderedReportTypes = [...reportTypesFromFilters, ...additionalReportTypes];
     const reportSummaryRows = orderedReportTypes.map((reportType, index) => {
       const report = reportConfigs[reportType];
       return {
@@ -9964,7 +9841,7 @@ function ReportGeneration() {
 
     const completeDataRows = orderedReportTypes.flatMap((reportType) => {
       const report = reportConfigs[reportType];
-      const reportName = reportLabels.get(reportType) || reportType;
+      const reportName = reportLabels.get(reportType) || report.sheetName;
       return report.rows.map((row: any, rowIndex: number) => {
         const entries = Object.entries(row || {});
         const primaryEntry = entries[0] || ['', ''];
@@ -9984,13 +9861,16 @@ function ReportGeneration() {
     });
 
     const workbook = XLSX.utils.book_new();
-    const summaryWorksheet = XLSX.utils.json_to_sheet(reportSummaryRows);
-    const completeDataWorksheet = XLSX.utils.json_to_sheet(completeDataRows);
+    const summaryWorksheet = buildWorksheetFromRows(reportSummaryRows, ['S. No', 'Report Type', 'Report Name', 'Sheet Name', 'Total Rows']);
+    const completeDataWorksheet = buildWorksheetFromRows(completeDataRows, ['Report Type', 'Report Name', 'Sheet Name', 'Row No', 'Primary Field', 'Primary Value', 'Secondary Field', 'Secondary Value', 'Row JSON']);
     XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Overall Summary');
     XLSX.utils.book_append_sheet(workbook, completeDataWorksheet, 'Complete Data');
     orderedReportTypes.forEach((reportType) => {
       const report = reportConfigs[reportType];
-      const worksheet = XLSX.utils.json_to_sheet(report.rows);
+      const dynamicColumns = reportType === 'department_roomtype_demand' && report.rows.length > 0
+        ? Array.from(new Set(report.rows.flatMap((row: any) => Object.keys(row || {}))))
+        : undefined;
+      const worksheet = buildWorksheetFromRows(report.rows, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
       XLSX.utils.book_append_sheet(workbook, worksheet, report.sheetName);
     });
     XLSX.writeFile(workbook, 'comprehensive-utilization-workbook.xlsx');
