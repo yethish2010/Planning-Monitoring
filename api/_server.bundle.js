@@ -1266,6 +1266,65 @@ var normalizeDigitalTwinOptimizationResponse = (payload, fallback) => {
     source: "ai"
   };
 };
+var composeUtilizationOptimizationFallback = (snapshot) => {
+  const rows = Array.isArray(snapshot) ? snapshot : [];
+  const underused = rows.filter((row) => Number(row?.util) < 40).sort((a, b) => Number(a?.util || 0) - Number(b?.util || 0)).slice(0, 8);
+  if (!underused.length) {
+    return [
+      {
+        title: "Maintain Balanced Usage",
+        suggestion: "Current utilization distribution is relatively balanced. Continue monitoring weekly and rotate low-demand sessions across buildings to prevent clustering.",
+        impact: "Medium"
+      },
+      {
+        title: "Reserve Flexible Rooms",
+        suggestion: "Keep a small pool of multi-purpose rooms available for ad-hoc events and overflow labs to improve response time for urgent requests.",
+        impact: "Medium"
+      },
+      {
+        title: "Track Booking-to-Use Variance",
+        suggestion: "Compare approved bookings against actual usage and tighten approval windows where repeated no-shows are observed.",
+        impact: "Low"
+      }
+    ];
+  }
+  const lowestRooms = underused.slice(0, 3).map((row) => row?.room).filter(Boolean).join(", ");
+  const lowDept = underused.reduce((acc, row) => {
+    const key = row?.dept?.toString?.().trim() || "Unmapped";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const focusDept = Object.entries(lowDept).sort((a, b) => b[1] - a[1])[0]?.[0] || "target departments";
+  return [
+    {
+      title: "Rebalance Underused Rooms",
+      suggestion: `Prioritize timetable reallocation for low-usage rooms (${lowestRooms || "identified rooms"}) by moving repeat sessions from overloaded spaces into these rooms.`,
+      impact: "High"
+    },
+    {
+      title: "Department Scheduling Window",
+      suggestion: `Introduce a focused scheduling review with ${focusDept} to spread class timings across the day and reduce concentration in peak slots.`,
+      impact: "High"
+    },
+    {
+      title: "Demand-Based Room Pooling",
+      suggestion: "Convert chronically underused rooms into a shared pool for electives, tutorials, and seminar overflow with weekly utilization tracking.",
+      impact: "Medium"
+    }
+  ];
+};
+var normalizeUtilizationOptimizationResponse = (payload, fallback) => {
+  const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : Array.isArray(payload) ? payload : [];
+  const normalized = suggestions.map((item) => ({
+    title: item?.title?.toString?.().trim() || "",
+    suggestion: item?.suggestion?.toString?.().trim() || "",
+    impact: item?.impact?.toString?.().trim() || "Medium"
+  })).filter((item) => item.title && item.suggestion).map((item) => ({
+    ...item,
+    impact: ["High", "Medium", "Low"].includes(item.impact) ? item.impact : "Medium"
+  }));
+  return normalized.length ? normalized.slice(0, 6) : fallback;
+};
 var normalizeExtractedSectionValue = (value) => {
   const raw = value?.toString().trim();
   if (!raw) return "";
@@ -1425,6 +1484,50 @@ Rules:
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+app.post("/api/ai/utilization-optimization", authenticate, async (req, res) => {
+  try {
+    const snapshot = Array.isArray(req.body?.snapshot) ? req.body.snapshot : [];
+    const fallbackSuggestions = composeUtilizationOptimizationFallback(snapshot);
+    if (!GEMINI_API_KEY) {
+      return res.json({ suggestions: fallbackSuggestions, source: "fallback" });
+    }
+    try {
+      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const prompt = `You are a campus infrastructure optimization assistant.
+Analyze the underutilized room snapshot below and return only JSON.
+
+Required JSON format:
+{
+  "suggestions": [
+    { "title": "...", "suggestion": "...", "impact": "High|Medium|Low" }
+  ]
+}
+
+Rules:
+- Provide 3 to 5 specific suggestions.
+- Focus on timetable balancing, sharing strategy, and actionable utilization improvements.
+- Keep each suggestion concise and operational.
+- Do not include markdown or explanation outside JSON.
+
+Snapshot:
+${JSON.stringify(snapshot)}`;
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" }
+      });
+      const raw = await getAIResponseText(response);
+      const parsed = parseAIJsonResponse(raw);
+      const suggestions = normalizeUtilizationOptimizationResponse(parsed, fallbackSuggestions);
+      return res.json({ suggestions, source: "ai" });
+    } catch (aiErr) {
+      console.error("Utilization AI fallback:", aiErr?.message || aiErr);
+      return res.json({ suggestions: fallbackSuggestions, source: "fallback" });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Failed to generate utilization optimization suggestions." });
   }
 });
 app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {

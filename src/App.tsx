@@ -8661,6 +8661,7 @@ function ReportGeneration() {
   const [utilizationData, setUtilizationData] = useState<any>(null);
   const [reportBookings, setReportBookings] = useState<any[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [suggestionError, setSuggestionError] = useState('');
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
   const [loading, setLoading] = useState(true);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
@@ -8730,6 +8731,7 @@ function ReportGeneration() {
   const generateSuggestions = async () => {
     if (!utilizationData) return;
     setIsGeneratingSuggestions(true);
+    setSuggestionError('');
     try {
       // Summarize data to avoid token limits
       const summarizedData = filteredRoomReports.map((r: any) => ({
@@ -8738,24 +8740,26 @@ function ReportGeneration() {
         dept: r.department
       })).sort((a: any, b: any) => a.util - b.util).slice(0, 20); // Focus on bottom 20 underutilized rooms
 
-      const ai = getGenAIClient();
-      const prompt = `
-        As an Infrastructure Optimization Expert, analyze the following campus room utilization data (bottom 20 underutilized rooms) and provide 3-5 specific, actionable suggestions to maximize utilization.
-        
-        Data: ${JSON.stringify(summarizedData)}
-        
-        Format your response as a JSON array of objects: [{ "title": "...", "suggestion": "...", "impact": "High/Medium/Low" }]
-      `;
-
-      const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+      const response = await fetch('/api/ai/utilization-optimization', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshot: summarizedData }),
       });
 
-      const suggestions = parseAIResponse(await getAIResponseText(result));
-      setSuggestions(suggestions);
-    } catch (err) {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Unable to generate AI optimization suggestions right now.');
+      }
+
+      const nextSuggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+      setSuggestions(nextSuggestions);
+      if (!nextSuggestions.length) {
+        setSuggestionError('No AI suggestions were returned for the current filter context.');
+      }
+    } catch (err: any) {
       console.error(err);
+      setSuggestionError(err?.message || 'Failed to generate AI suggestions.');
     } finally {
       setIsGeneratingSuggestions(false);
     }
@@ -9309,6 +9313,11 @@ function ReportGeneration() {
               </div>
               
               <div className="space-y-4 relative z-10">
+                {suggestionError && (
+                  <div className="p-4 bg-rose-500/10 border border-rose-400/30 rounded-xl text-xs text-rose-200 font-medium">
+                    {suggestionError}
+                  </div>
+                )}
                 {suggestions.length > 0 ? suggestions.map((s, i) => (
                   <div key={i} className="p-5 bg-white/5 rounded-2xl border border-white/10 hover:bg-white/10 transition-all group">
                     <div className="flex justify-between items-start mb-3">
