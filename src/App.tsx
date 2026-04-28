@@ -2879,7 +2879,7 @@ function DashboardHome() {
   const statCards = [
     { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
     { label: 'Available Now', value: stats?.availableNow || '0', icon: DoorOpen, color: 'text-emerald-600', bg: 'bg-emerald-50', path: '/rooms' },
-    { label: 'Scheduled Today', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=Scheduled' },
+    { label: 'Scheduled Today', value: stats?.scheduledRooms || '0', icon: Calendar, color: 'text-indigo-600', bg: 'bg-indigo-50', path: '/digital-twin?status=ScheduledToday' },
     { label: 'Equipment Issues', value: stats?.equipmentIssues || '0', icon: AlertTriangle, color: 'text-rose-600', bg: 'bg-rose-50', path: '/maintenance?status=open' },
     { label: 'Pending Bookings', value: stats?.pendingBookings || '0', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50', path: '/bookings?status=Pending' },
   ];
@@ -9816,7 +9816,9 @@ function ReportGeneration() {
   const exportComprehensiveWorkbook = () => {
     const reportConfigs = buildUtilizationReportConfigs();
     const reportLabels = new Map(REPORT_TYPE_OPTIONS.map((option) => [option.value, option.label]));
-    const reportTypesFromFilters = REPORT_TYPE_OPTIONS.map((option) => option.value).filter((key) => !!reportConfigs[key]);
+    const reportTypesFromFilters = REPORT_TYPE_OPTIONS
+      .map((option) => option.value)
+      .filter((key) => !!reportConfigs[key as keyof typeof reportConfigs]);
     const additionalReportTypes = Object.keys(reportConfigs).filter((key) => !reportTypesFromFilters.includes(key));
     const orderedReportTypes = [...reportTypesFromFilters, ...additionalReportTypes];
     const reportSummaryRows: Array<{
@@ -12168,13 +12170,22 @@ function DigitalTwin() {
     return roomLiveStatusByRoomId.get(toKey(room?.id)) || room?.status || 'Available';
   };
 
+  const hasRoomScheduledToday = (room: any) =>
+    (effectiveTodaySchedulesByRoomId.get(toKey(room?.id)) || []).length > 0;
+
   const roomMatchesFilters = (room: any) => {
     if (!room) return false;
     const query = normalizeLookupValue(filters.search);
     const haystack = roomSearchTextByRoomId.get(toKey(room?.id)) || '';
 
     if (query && !haystack.includes(query)) return false;
-    if (filters.status && getRoomLiveStatus(room) !== filters.status) return false;
+    if (filters.status) {
+      if (filters.status === 'ScheduledToday') {
+        if (!hasRoomScheduledToday(room)) return false;
+      } else if (getRoomLiveStatus(room) !== filters.status) {
+        return false;
+      }
+    }
     if (filters.roomType && room.room_type !== filters.roomType) return false;
     if (filters.minCapacity && (parseInt(room.capacity, 10) || 0) < (parseInt(filters.minCapacity, 10) || 0)) return false;
     return true;
@@ -12457,6 +12468,7 @@ function DigitalTwin() {
           className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500"
         >
           <option value="">All statuses</option>
+          <option value="ScheduledToday">Scheduled Today</option>
           <option value="Available">Available</option>
           <option value="Scheduled">Scheduled</option>
           <option value="Booked">Booked</option>
