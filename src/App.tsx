@@ -1208,14 +1208,15 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     ],
   },
   Room: {
-    headers: ['Room ID', 'Room Number', 'Room Aliases', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Restroom For'],
+    headers: ['Room ID', 'Room Number', 'Room Aliases', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Sub Lab Name', 'Restroom For'],
     instructions: [
       'Use Shared Room for one physical room with multiple doors/entrances. It behaves like a normal single room and does not need Sub Room Count, Sub Room Name, or Parent Room.',
       'For seminar halls or shared venues with multiple room numbers like 4015 and 4016, create one canonical room row and list the alternate labels in Room Aliases separated by commas.',
       'Use one row for the parent room and one separate row for every split/inside child room.',
       'For Split Parent or Inside Parent, enter Sub Room Count as the planned number of child rows.',
       'For Split Child or Inside Child, leave Sub Room Count blank and enter Parent Room as the parent room number or room ID.',
-      'Room Type belongs to the current row. A child room can have a different Room Type from its parent.',
+      'Room Type is for parent/normal rows. Sub Room Type is for Split Child or Inside Child rows.',
+      'A child room can have a different room type and lab name from its parent room.',
       'Capacity is used only for classroom and lab room types. For all other room types, leave Capacity blank and it will be imported as 0.',
       'For offices, cabins, examination sections, library/reading rooms, admin/support/service rooms, restrooms, and access spaces, leave Is Bookable and Capacity blank. They are imported as non-bookable spaces with capacity 0.',
       'During import, a parent row with Sub Room Count must have the same number of matching child rows in the same Excel file.',
@@ -1229,6 +1230,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
         'Room Type': 'Lab',
+        'Sub Room Type': '',
         'Room Layout': 'Split Parent',
         'Sub Room Count': 3,
         'Sub Room Name': 'Computer Lab',
@@ -1238,6 +1240,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Capacity: 60,
         Status: 'Available',
         'Lab Name': 'Computer Lab',
+        'Sub Lab Name': '',
         'Restroom For': '',
       },
       {
@@ -1248,6 +1251,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Direct floors',
         Floor: 'Fourth Floor',
         'Room Type': 'Seminar Hall',
+        'Sub Room Type': '',
         'Room Layout': 'Shared Room',
         'Sub Room Count': '',
         'Sub Room Name': '',
@@ -1257,6 +1261,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Capacity: 120,
         Status: 'Available',
         'Lab Name': '',
+        'Sub Lab Name': '',
         'Restroom For': '',
       },
       {
@@ -1265,7 +1270,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
-        'Room Type': 'Lab',
+        'Room Type': '',
+        'Sub Room Type': 'Lab',
         'Room Layout': 'Split Child',
         'Sub Room Count': '',
         'Sub Room Name': 'Programming Section',
@@ -1274,7 +1280,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Is Bookable': 'Yes',
         Capacity: 30,
         Status: 'Available',
-        'Lab Name': 'Programming Section',
+        'Lab Name': '',
+        'Sub Lab Name': 'Programming Section',
         'Restroom For': '',
       },
       {
@@ -1283,7 +1290,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
-        'Room Type': 'Store',
+        'Room Type': '',
+        'Sub Room Type': 'Store',
         'Room Layout': 'Split Child',
         'Sub Room Count': '',
         'Sub Room Name': 'Store Room',
@@ -1293,6 +1301,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Capacity: '',
         Status: 'Available',
         'Lab Name': '',
+        'Sub Lab Name': '',
         'Restroom For': '',
       },
       {
@@ -1302,6 +1311,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
         'Room Type': 'Classroom',
+        'Sub Room Type': '',
         'Room Layout': 'Inside Parent',
         'Sub Room Count': 1,
         'Sub Room Name': 'Main Room 19',
@@ -1311,6 +1321,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Capacity: 40,
         Status: 'Available',
         'Lab Name': '',
+        'Sub Lab Name': '',
         'Restroom For': '',
       },
       {
@@ -1319,7 +1330,8 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Building: 'M-Plaza',
         'Block / Direct Floors': 'Block A',
         Floor: 'First Floor',
-        'Room Type': 'Classroom',
+        'Room Type': '',
+        'Sub Room Type': 'Classroom',
         'Room Layout': 'Inside Child',
         'Sub Room Count': '',
         'Sub Room Name': 'Inside Room 20',
@@ -1329,6 +1341,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         Capacity: 20,
         Status: 'Available',
         'Lab Name': '',
+        'Sub Lab Name': '',
         'Restroom For': '',
       },
     ],
@@ -3244,6 +3257,10 @@ function GenericCRUD({
 
     return value;
   };
+  const getFormFieldLabel = (field: any) =>
+    typeof field.formLabel === 'function'
+      ? field.formLabel(formData, editingItem)
+      : (field.formLabel || field.label);
 
   const displayData = (dataFilter ? data.filter(dataFilter) : data)
     .slice()
@@ -3519,7 +3536,7 @@ function GenericCRUD({
               <div className="grid grid-cols-2 gap-4">
                 {formFields.filter(f => !f.show || f.show(formData, editingItem)).map(f => (
                   <div key={f.key} className={cn("space-y-1", f.fullWidth && "col-span-2")}>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{f.label}</label>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{getFormFieldLabel(f)}</label>
                     {f.type === 'select' ? (
                       <select
                         multiple={!!f.multiple}
@@ -3538,7 +3555,7 @@ function GenericCRUD({
                           f.multiple && "min-h-28"
                         )}
                       >
-                        {!f.multiple && <option value="">Select {f.label}</option>}
+                        {!f.multiple && <option value="">Select {getFormFieldLabel(f)}</option>}
                         {getFieldOptions(f, formData).map((opt: any) => {
                           const value = getOptionValue(opt);
                           const label = getOptionLabel(opt);
@@ -3554,7 +3571,7 @@ function GenericCRUD({
                             value={formData[f.key] || ''}
                             onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
                             className="w-full px-3 py-2 pr-16 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-                            placeholder={editingItem ? 'Enter new password' : `Enter ${f.label}`}
+                            placeholder={editingItem ? 'Enter new password' : `Enter ${getFormFieldLabel(f)}`}
                           />
                           <button
                             type="button"
@@ -3581,7 +3598,7 @@ function GenericCRUD({
                         value={formData[f.key] || ''}
                         onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-500"
-                        placeholder={`Enter ${f.label}`}
+                        placeholder={`Enter ${getFormFieldLabel(f)}`}
                       />
                     )}
                   </div>
@@ -4396,13 +4413,17 @@ function RoomManagement() {
     const roomType = normalizeRoomTypeValue(data.room_type);
     const parentRoomId = data.parent_room_id ? Number(data.parent_room_id) : null;
     const roomLayout = normalizeRoomLayoutValue(data.room_layout);
+    const isChildLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(roomLayout);
+    const parentLabName = data.lab_name?.toString().trim() || '';
+    const childLabName = data.sub_lab_name?.toString().trim() || '';
+    const effectiveLabName = (isChildLayout ? (childLabName || parentLabName) : (parentLabName || childLabName));
     const isInfrastructureSpace = isNonCapacityRoomType(roomType);
     const requiresCapacity = isCapacityRoomType(roomType);
     const payload = {
       ...data,
       room_aliases: normalizeRoomAliases(data.room_aliases),
       room_type: roomType,
-      lab_name: data.lab_name?.toString().trim() || data.room_section_name?.toString().trim() || '',
+      lab_name: effectiveLabName || data.room_section_name?.toString().trim() || '',
       restroom_type: normalizeRestroomTypeValue(data.restroom_type),
       parent_room_id: parentRoomId,
       room_layout: roomLayout,
@@ -4412,6 +4433,7 @@ function RoomManagement() {
       is_bookable: isInfrastructureSpace ? 0 : normalizeBooleanLikeValue(data.is_bookable, true) ? 1 : 0,
       capacity: requiresCapacity ? parseInt(data.capacity, 10) || 0 : 0,
     };
+    delete payload.sub_lab_name;
 
     if (!HIERARCHY_ROOM_LAYOUTS.includes(payload.room_layout)) {
       payload.parent_room_id = null;
@@ -4454,7 +4476,7 @@ function RoomManagement() {
 
     if (roomType === 'Lab') {
       if (!payload.lab_name) {
-        throw new Error('Please enter the lab name.');
+        throw new Error(isChildLayout ? 'Please enter the sub lab name for this child lab room.' : 'Please enter the lab name.');
       }
       payload.restroom_type = '';
     } else if (roomType === 'Restroom') {
@@ -4569,10 +4591,10 @@ function RoomManagement() {
       options: ROOM_LAYOUT_OPTIONS,
       onChange: (nextData: any, value: string) => {
         if (!HIERARCHY_ROOM_LAYOUTS.includes(value)) {
-          return { ...nextData, parent_room_id: '', sub_room_count: '', room_section_name: '' };
+          return { ...nextData, parent_room_id: '', sub_room_count: '', room_section_name: '', sub_lab_name: '' };
         }
         if (HIERARCHY_PARENT_ROOM_LAYOUTS.includes(value)) {
-          return { ...nextData, parent_room_id: '' };
+          return { ...nextData, parent_room_id: '', sub_lab_name: '' };
         }
         return { ...nextData, sub_room_count: '' };
       },
@@ -4587,17 +4609,28 @@ function RoomManagement() {
     {
       key: 'room_type',
       label: 'Room Type',
+      formLabel: (formData: any) =>
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(formData.room_layout)) ? 'Sub Room Type' : 'Room Type',
       type: 'select',
       options: ROOM_TYPE_OPTIONS,
       onChange: (nextData: any, value: string) => ({
         ...nextData,
         usage_category: normalizeUsageCategoryValue('', value),
         lab_name: normalizeRoomTypeValue(value) === 'Lab' ? nextData.lab_name : '',
+        sub_lab_name: normalizeRoomTypeValue(value) === 'Lab' ? nextData.sub_lab_name : '',
         restroom_type: normalizeRoomTypeValue(value) === 'Restroom' ? nextData.restroom_type : '',
         is_bookable: isNonCapacityRoomType(value) ? '0' : nextData.is_bookable,
         capacity: isCapacityRoomType(value) ? nextData.capacity : '',
       }),
       render: (item: any) => getRoomTypeDisplay(item),
+    },
+    {
+      key: 'sub_room_type',
+      label: 'Sub Room Type',
+      tableOnly: true,
+      render: (item: any) => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item.room_layout))
+        ? getRoomTypeDisplay(item)
+        : '-',
     },
     {
       key: 'room_section_name',
@@ -4644,9 +4677,20 @@ function RoomManagement() {
     {
       key: 'lab_name',
       label: 'Lab Name',
-      formOnly: true,
+      formLabel: (formData: any) =>
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(formData.room_layout)) ? 'Sub Lab Name' : 'Lab Name',
       required: false,
       show: (formData: any) => normalizeRoomTypeValue(formData.room_type) === 'Lab',
+      render: (item: any) => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item.room_layout)) ? '-' : (item.lab_name || '-'),
+    },
+    {
+      key: 'sub_lab_name',
+      label: 'Sub Lab Name',
+      tableOnly: true,
+      render: (item: any) => (
+        normalizeRoomTypeValue(item.room_type) === 'Lab' &&
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item.room_layout))
+      ) ? (item.lab_name || '-') : '-',
     },
     {
       key: 'restroom_type',
@@ -4681,6 +4725,8 @@ function RoomManagement() {
       parent_room_id: item?.parent_room_id || '',
       room_layout: normalizeRoomLayoutValue(item?.room_layout),
       sub_room_count: item?.sub_room_count ?? '',
+      lab_name: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout)) ? '' : (item?.lab_name || ''),
+      sub_lab_name: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout)) ? (item?.lab_name || '') : '',
       usage_category: normalizeUsageCategoryValue(item?.usage_category, item?.room_type),
     };
   };
@@ -4785,16 +4831,17 @@ function RoomManagement() {
         room_number: row['Room Number']?.toString(),
         room_aliases: normalizeRoomAliases(getImportValue(row, ['Room Aliases', 'Aliases', 'Alternate Room Numbers'])),
         floor_id: floor?.id ?? parseInt(floorValue as any),
-        room_type: normalizeRoomTypeValue(row['Room Type']),
+        room_type: normalizeRoomTypeValue(getImportValue(row, ['Sub Room Type', 'Room Type'])),
         room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
         parent_room_id: parentRoom?.id || null,
         sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
         room_section_name: getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString() || '',
-        usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), row['Room Type']),
-        is_bookable: isNonCapacityRoomType(row['Room Type']) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
+        usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), getImportValue(row, ['Sub Room Type', 'Room Type'])),
+        is_bookable: isNonCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
         lab_name: getImportValue(row, ['Lab Name']),
+        sub_lab_name: getImportValue(row, ['Sub Lab Name']),
         restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
-        capacity: isCapacityRoomType(row['Room Type']) ? parseInt(row['Capacity']) || 0 : 0,
+        capacity: isCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? parseInt(row['Capacity']) || 0 : 0,
         status: row['Status'] || 'Available'
       };
       if (!payload.room_id || !payload.room_number || !payload.floor_id) continue;
@@ -8416,6 +8463,7 @@ function AnalyticsDashboard() {
       Building: room.building,
       Department: room.department,
       Type: getRoomTypeDisplay(room),
+      SubRoomType: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
       Layout: room.room_layout || 'Normal',
       RoomAliases: getRoomAliasList(room).join(', '),
       ParentRoom: room.parent_room_number || '',
@@ -8424,6 +8472,10 @@ function AnalyticsDashboard() {
       UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
       IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
       'Lab Name': room.lab_name || '',
+      'Sub Lab Name': (
+        normalizeRoomTypeValue(room.room_type) === 'Lab' &&
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
+      ) ? (room.lab_name || '') : '',
       'Restroom For': room.restroom_type || '',
       Capacity: room.capacity,
       Utilization: `${room.utilization}%`,
@@ -9363,6 +9415,7 @@ function ReportGeneration() {
       Semesters: (room.semesterTags || []).join(', '),
       Sections: (room.sectionTags || []).join(', '),
       Type: getRoomTypeDisplay(room),
+      SubRoomType: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
       Layout: room.room_layout || 'Normal',
       RoomAliases: getRoomAliasList(room).join(', '),
       ParentRoom: room.parent_room_number || '',
@@ -9371,6 +9424,10 @@ function ReportGeneration() {
       UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
       IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
       'Lab Name': room.lab_name || '',
+      'Sub Lab Name': (
+        normalizeRoomTypeValue(room.room_type) === 'Lab' &&
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
+      ) ? (room.lab_name || '') : '',
       'Restroom For': room.restroom_type || '',
       Capacity: room.capacity,
       Status: room.status,
@@ -9564,6 +9621,7 @@ function ReportGeneration() {
       Semesters: (room.semesterTags || []).join(', '),
       Sections: (room.sectionTags || []).join(', '),
       Type: getRoomTypeDisplay(room),
+      SubRoomType: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) ? getRoomTypeDisplay(room) : '',
       Layout: room.room_layout || 'Normal',
       RoomAliases: getRoomAliasList(room).join(', '),
       ParentRoom: room.parent_room_number || '',
@@ -9572,6 +9630,10 @@ function ReportGeneration() {
       UsageCategory: room.usage_category || normalizeUsageCategoryValue('', room.room_type) || '',
       IsBookable: isRoomReservable(room) ? 'Yes' : 'No',
       LabName: room.lab_name || '',
+      SubLabName: (
+        normalizeRoomTypeValue(room.room_type) === 'Lab' &&
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))
+      ) ? (room.lab_name || '') : '',
       RestroomFor: room.restroom_type || '',
       Capacity: room.capacity,
       Status: room.status,
