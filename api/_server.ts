@@ -2261,8 +2261,8 @@ createCrudRoutes("maintenance");
 
         const booking = await db.prepare(`
           SELECT * FROM bookings 
-          WHERE room_number = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-        `).get(room.room_number, currentDate, currentTime, currentTime);
+          WHERE room_id = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+        `).get(room.id, currentDate, currentTime, currentTime);
 
         if (booking) {
           enrichedItems.push({ ...room, status: 'Occupied (Booked)' });

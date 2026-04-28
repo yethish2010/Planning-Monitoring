@@ -1207,6 +1207,23 @@ var parseAIJsonResponse = (text) => {
   }
   return JSON.parse(cleanText);
 };
+var composeDashboardInsightFallback = (stats, schoolReports) => {
+  const topSchool = (Array.isArray(schoolReports) ? schoolReports : []).filter((school) => school?.name).sort((a, b) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0))[0];
+  if (!topSchool) {
+    return "No school utilization data is available yet. Add room allocations, schedules, or approved bookings to populate live insights.";
+  }
+  const summaryParts = [
+    `${topSchool.name} is currently at ${Number(topSchool?.avgUtilization) || 0}% average utilization.`,
+    `${stats?.availableNow || 0} rooms are available right now.`
+  ];
+  if ((stats?.pendingBookings || 0) > 0) {
+    summaryParts.push(`${stats.pendingBookings} pending booking request${stats.pendingBookings === 1 ? "" : "s"} need review.`);
+  }
+  if ((stats?.equipmentIssues || 0) > 0) {
+    summaryParts.push(`${stats.equipmentIssues} maintenance issue${stats.equipmentIssues === 1 ? "" : "s"} need attention.`);
+  }
+  return summaryParts.join(" ");
+};
 var normalizeExtractedSectionValue = (value) => {
   const raw = value?.toString().trim();
   if (!raw) return "";
@@ -1292,6 +1309,42 @@ app.get("/api/auth/me", (req, res) => {
     res.json({ user: decoded });
   } catch (err) {
     res.status(401).json({ error: "Invalid token" });
+  }
+});
+app.post("/api/ai/dashboard-insight", authenticate, async (req, res) => {
+  try {
+    const safeStats = req.body?.stats && typeof req.body.stats === "object" ? req.body.stats : {};
+    const safeSchoolReports = Array.isArray(req.body?.schoolReports) ? req.body.schoolReports : [];
+    const fallbackInsight = composeDashboardInsightFallback(safeStats, safeSchoolReports);
+    if (!GEMINI_API_KEY) {
+      return res.json({ insight: fallbackInsight, source: "fallback" });
+    }
+    try {
+      const rankedSchools = safeSchoolReports.filter((school) => school?.name).sort((a, b) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0)).slice(0, 3).map((school) => `${school.name}: ${Number(school?.avgUtilization) || 0}%`).join(", ");
+      const prompt = `You are a campus operations assistant.
+Generate one concise admin insight sentence (maximum 55 words) using this live context.
+Top school utilization: ${rankedSchools || "No school data"}.
+Available rooms now: ${Number(safeStats?.availableNow) || 0}.
+Scheduled rooms now: ${Number(safeStats?.scheduledRooms) || 0}.
+Pending bookings: ${Number(safeStats?.pendingBookings) || 0}.
+Equipment issues: ${Number(safeStats?.equipmentIssues) || 0}.
+Keep it factual and actionable. Do not use markdown, bullets, or emojis.`;
+      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ parts: [{ text: prompt }] }]
+      });
+      const generatedText = (await getAIResponseText(response)).replace(/\s+/g, " ").trim().replace(/^["'`]|["'`]$/g, "");
+      if (!generatedText) {
+        return res.json({ insight: fallbackInsight, source: "fallback" });
+      }
+      return res.json({ insight: generatedText, source: "ai" });
+    } catch (aiErr) {
+      console.error("Dashboard AI insight fallback:", aiErr?.message || aiErr);
+      return res.json({ insight: fallbackInsight, source: "fallback" });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 app.post("/api/ai/extract-timetable", authenticate, async (req, res) => {
@@ -2050,8 +2103,8 @@ app.get(`/api/rooms`, authenticate, async (req, res) => {
       }
       const booking = await db.prepare(`
           SELECT * FROM bookings 
-          WHERE room_number = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
-        `).get(room.room_number, currentDate, currentTime, currentTime);
+          WHERE room_id = ? AND date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
+        `).get(room.id, currentDate, currentTime, currentTime);
       if (booking) {
         enrichedItems.push({ ...room, status: "Occupied (Booked)" });
         continue;
@@ -2090,13 +2143,17 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       SELECT room_id FROM bookings 
       WHERE date = ? AND status = 'Approved' AND start_time <= ? AND end_time > ?
     `).all(currentDate, currentTime, currentTime);
-    const currentlyScheduled = {
-      count: (/* @__PURE__ */ new Set([
-        ...activeSchedules.map((item) => item.room_id).filter(Boolean),
-        ...activeBookings.map((item) => item.room_id).filter(Boolean)
-      ])).size
-    };
-    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - currentlyScheduled.count);
+    const activeScheduleRoomIds = new Set(
+      activeSchedules.map((item) => item.room_id).filter(Boolean)
+    );
+    const activeBookingRoomIds = new Set(
+      activeBookings.map((item) => item.room_id).filter(Boolean)
+    );
+    const occupiedRoomIds = /* @__PURE__ */ new Set([
+      ...activeScheduleRoomIds,
+      ...activeBookingRoomIds
+    ]);
+    const availableNow = Math.max(0, totalRooms.count - maintenanceRooms.count - occupiedRoomIds.size);
     const recentAlerts = await db.prepare(`
       SELECT m.*, r.room_number, bld.name as building_name
       FROM maintenance m 
@@ -2112,8 +2169,10 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      // Keep this strictly "live now" to align with Digital Twin status filter.
-      scheduledRooms: currentlyScheduled.count,
+      // Keep this strictly "live now" and aligned with status filters in Digital Twin.
+      scheduledRooms: activeScheduleRoomIds.size,
+      bookedRooms: activeBookingRoomIds.size,
+      occupiedRooms: occupiedRoomIds.size,
       recentAlerts
     });
   } catch (err) {

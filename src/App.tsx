@@ -95,6 +95,48 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+const getRoomLookupVariants = (value: unknown) => {
+  const base = normalizeLookupValue(value);
+  if (!base) return [];
+
+  const variants = new Set<string>([base]);
+  const withoutPrefix = base
+    .replace(/\b(?:room|r)\s*\.?\s*(?:no|number)?\.?\s*[:\-]?\s*/g, '')
+    .trim();
+
+  if (withoutPrefix) {
+    variants.add(withoutPrefix);
+  }
+
+  const normalizedSeparators = withoutPrefix
+    .replace(/\s*&\s*/g, ' & ')
+    .replace(/\s*\/\s*/g, '/')
+    .replace(/\s*-\s*/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (normalizedSeparators) {
+    variants.add(normalizedSeparators);
+  }
+
+  const compact = normalizedSeparators.replace(/[^a-z0-9]/g, '');
+  if (compact.length >= 3) {
+    variants.add(compact);
+  }
+
+  const withoutLeadingZeros = normalizedSeparators.match(/^0*(\d+[a-z]?)$/i)?.[1]?.toLowerCase();
+  if (withoutLeadingZeros) {
+    variants.add(withoutLeadingZeros);
+  }
+
+  return Array.from(variants).filter(Boolean);
+};
+
+const roomLookupMatches = (candidate: unknown, targetVariants: Set<string>) => {
+  if (targetVariants.size === 0) return false;
+  return getRoomLookupVariants(candidate).some(variant => targetVariants.has(variant));
+};
+
 const idsMatch = (left: unknown, right: unknown) =>
   left !== undefined && left !== null && right !== undefined && right !== null && left.toString() === right.toString();
 
@@ -833,6 +875,7 @@ const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
 
 const findRoomsByImportLabel = (rooms: any[], value: unknown) => {
   const normalizedValue = normalizeLookupValue(value);
+  const lookupVariants = new Set(getRoomLookupVariants(value));
   if (!normalizedValue) {
     return { normalizedValue, matchType: 'none', matches: [] as any[] };
   }
@@ -847,17 +890,22 @@ const findRoomsByImportLabel = (rooms: any[], value: unknown) => {
     });
   };
 
-  const byRoomId = uniqueById(rooms.filter(room => normalizeLookupValue(room.room_id) === normalizedValue));
+  const byRoomId = uniqueById(rooms.filter(room => {
+    const roomIdValue = normalizeLookupValue(room.room_id);
+    return !!roomIdValue && (roomIdValue === normalizedValue || lookupVariants.has(roomIdValue));
+  }));
   if (byRoomId.length > 0) return { normalizedValue, matchType: 'room_id', matches: byRoomId };
 
-  const byRoomNumber = uniqueById(rooms.filter(room => normalizeLookupValue(room.room_number) === normalizedValue));
+  const byRoomNumber = uniqueById(rooms.filter(room => roomLookupMatches(room.room_number, lookupVariants)));
   if (byRoomNumber.length > 0) return { normalizedValue, matchType: 'room_number', matches: byRoomNumber };
 
-  const byDisplayLabel = uniqueById(rooms.filter(room => normalizeLookupValue(getRoomDisplayLabel(room, rooms)) === normalizedValue));
+  const byDisplayLabel = uniqueById(
+    rooms.filter(room => roomLookupMatches(getRoomDisplayLabel(room, rooms), lookupVariants))
+  );
   if (byDisplayLabel.length > 0) return { normalizedValue, matchType: 'display_label', matches: byDisplayLabel };
 
   const byAlias = uniqueById(
-    rooms.filter(room => getRoomAliasList(room).some(alias => normalizeLookupValue(alias) === normalizedValue))
+    rooms.filter(room => getRoomAliasList(room).some(alias => roomLookupMatches(alias, lookupVariants)))
   );
   if (byAlias.length > 0) return { normalizedValue, matchType: 'alias', matches: byAlias };
 
