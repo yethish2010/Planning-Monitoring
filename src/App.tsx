@@ -853,18 +853,17 @@ const isRoomReservable = (room: any) => {
   return BOOKABLE_ROOM_TYPES.has(roomType) || BOOKABLE_USAGE_CATEGORIES.has(usageCategory);
 };
 
-const getRoomAliasList = (room: any) =>
-  (room?.room_aliases?.toString() || '')
+const splitAliasTokens = (value: unknown): string[] =>
+  String(value ?? '')
     .split(/[\n,;|/]+/)
-    .map(alias => alias.trim())
-    .filter(Boolean);
+    .map((alias: string) => alias.trim())
+    .filter((alias: string) => alias.length > 0);
 
-const normalizeRoomAliases = (value: unknown) => Array.from(new Set(
-  value?.toString()
-    .split(/[\n,;|/]+/)
-    .map(alias => alias.trim())
-    .filter(Boolean) || [],
-)).join(', ');
+const getRoomAliasList = (room: any): string[] =>
+  splitAliasTokens(room?.room_aliases);
+
+const normalizeRoomAliases = (value: unknown): string =>
+  Array.from(new Set(splitAliasTokens(value))).join(', ');
 
 const getRoomDisplayLabel = (room: any, rooms: any[] = []) => {
   if (!room) return 'Unknown Room';
