@@ -10663,8 +10663,316 @@ function DigitalTwin() {
     }
   };
 
+  const toKey = (value: any) =>
+    value === undefined || value === null ? '' : value.toString();
+
+  const currentDate = formatLocalDate(new Date());
+  const currentTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
+  const currentDayName = new Date(`${currentDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
+  const scheduleDaysOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const roomTypes = useMemo(
+    () => Array.from(new Set(rooms.map(room => room.room_type).filter(Boolean))).sort(),
+    [rooms],
+  );
+
+  const departmentsById = useMemo(
+    () => new Map(departments.map((department: any) => [toKey(department?.id), department])),
+    [departments],
+  );
+  const buildingById = useMemo(
+    () => new Map(buildings.map((building: any) => [toKey(building?.id), building])),
+    [buildings],
+  );
+  const blockById = useMemo(
+    () => new Map(blocks.map((block: any) => [toKey(block?.id), block])),
+    [blocks],
+  );
+  const floorById = useMemo(
+    () => new Map(floors.map((floor: any) => [toKey(floor?.id), floor])),
+    [floors],
+  );
+
+  const blocksByBuildingId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    blocks.forEach((block: any) => {
+      const key = toKey(block?.building_id);
+      if (!key) return;
+      const next = map.get(key) || [];
+      next.push(block);
+      map.set(key, next);
+    });
+    return map;
+  }, [blocks]);
+
+  const floorsByBlockId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    floors.forEach((floor: any) => {
+      const key = toKey(floor?.block_id);
+      if (!key) return;
+      const next = map.get(key) || [];
+      next.push(floor);
+      map.set(key, next);
+    });
+    return map;
+  }, [floors]);
+
+  const roomsByFloorId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    rooms.forEach((room: any) => {
+      const key = toKey(room?.floor_id);
+      if (!key) return;
+      const next = map.get(key) || [];
+      next.push(room);
+      map.set(key, next);
+    });
+    return map;
+  }, [rooms]);
+
+  const roomsByBuildingId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    buildings.forEach((building: any) => {
+      const buildingKey = toKey(building?.id);
+      if (!buildingKey) return;
+      const buildingBlocks = blocksByBuildingId.get(buildingKey) || [];
+      const buildingRooms = buildingBlocks.flatMap((block: any) =>
+        (floorsByBlockId.get(toKey(block?.id)) || []).flatMap((floor: any) => roomsByFloorId.get(toKey(floor?.id)) || []),
+      );
+      map.set(buildingKey, buildingRooms);
+    });
+    return map;
+  }, [buildings, blocksByBuildingId, floorsByBlockId, roomsByFloorId]);
+
+  const dedupedSchedules = useMemo(
+    () => deduplicateScheduleRows(schedules),
+    [schedules],
+  );
+
+  const roomSchedulesByRoomId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    dedupedSchedules.forEach((schedule: any) => {
+      const roomKey = toKey(schedule?.room_id);
+      if (!roomKey) return;
+      const next = map.get(roomKey) || [];
+      next.push({
+        ...schedule,
+        department_name: departmentsById.get(toKey(schedule?.department_id))?.name || '',
+      });
+      map.set(roomKey, next);
+    });
+    map.forEach((items) => {
+      items.sort((a: any, b: any) => {
+        const dayCompare = scheduleDaysOrder.indexOf(a.day_of_week) - scheduleDaysOrder.indexOf(b.day_of_week);
+        if (dayCompare !== 0) return dayCompare;
+        return (a.start_time || '').localeCompare(b.start_time || '');
+      });
+    });
+    return map;
+  }, [dedupedSchedules, departmentsById]);
+
+  const approvedBookingsByRoomId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    bookings.forEach((booking: any) => {
+      if (booking?.status !== 'Approved') return;
+      const roomKey = toKey(booking?.room_id);
+      if (!roomKey) return;
+      const next = map.get(roomKey) || [];
+      next.push(booking);
+      map.set(roomKey, next);
+    });
+    return map;
+  }, [bookings]);
+
+  const activeMaintenanceByRoomId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    maintenance.forEach((item: any) => {
+      if (item?.status === 'Completed') return;
+      const roomKey = toKey(item?.room_id);
+      if (!roomKey) return;
+      const next = map.get(roomKey) || [];
+      next.push(item);
+      map.set(roomKey, next);
+    });
+    return map;
+  }, [maintenance]);
+
+  const equipmentLabelsByRoomId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    equipment.forEach((item: any) => {
+      const roomKey = toKey(item?.room_id);
+      const label = item?.name?.toString?.().trim();
+      if (!roomKey || !label) return;
+      const next = map.get(roomKey) || [];
+      next.push(label);
+      map.set(roomKey, next);
+    });
+    return map;
+  }, [equipment]);
+
+  const roomDepartmentLabelByRoomId = useMemo(() => {
+    const namesByRoom = new Map<string, Set<string>>();
+    allocations
+      .filter(item => getRangeLifecycleStatus(item.start_date, item.end_date, 'Released', 'Planned') !== 'Released')
+      .forEach((item: any) => {
+        const roomKey = toKey(item?.room_id);
+        if (!roomKey) return;
+        const departmentName = departmentsById.get(toKey(item?.department_id))?.name;
+        if (!departmentName) return;
+        if (!namesByRoom.has(roomKey)) namesByRoom.set(roomKey, new Set<string>());
+        namesByRoom.get(roomKey)!.add(departmentName);
+      });
+
+    const labels = new Map<string, string>();
+    rooms.forEach((room: any) => {
+      const roomKey = toKey(room?.id);
+      const names = Array.from(namesByRoom.get(roomKey) || []);
+      if (names.length === 0) {
+        labels.set(roomKey, 'Unmapped');
+      } else if (names.length === 1) {
+        labels.set(roomKey, names[0]);
+      } else {
+        labels.set(roomKey, `Shared: ${names.join(', ')}`);
+      }
+    });
+    return labels;
+  }, [allocations, departmentsById, rooms]);
+
+  const roomUsageMetricsByRoomId = useMemo(() => {
+    const map = new Map<string, { scheduledHours: number; bookedHours: number; totalUsedHours: number; utilizationPercent: number }>();
+    rooms.forEach((room: any) => {
+      const roomKey = toKey(room?.id);
+      const roomSchedules = roomSchedulesByRoomId.get(roomKey) || [];
+      const roomBookings = approvedBookingsByRoomId.get(roomKey) || [];
+      const scheduledHours = roomSchedules.reduce((acc: number, schedule: any) => acc + calculateUsageHours(schedule.start_time, schedule.end_time), 0);
+      const bookedHours = roomBookings.reduce((acc: number, booking: any) => acc + calculateUsageHours(booking.start_time, booking.end_time), 0);
+      const totalUsedHours = scheduledHours + bookedHours;
+      map.set(roomKey, {
+        scheduledHours: Math.round(scheduledHours * 10) / 10,
+        bookedHours: Math.round(bookedHours * 10) / 10,
+        totalUsedHours: Math.round(totalUsedHours * 10) / 10,
+        utilizationPercent: Math.min(100, Math.round((totalUsedHours / 72) * 100)),
+      });
+    });
+    return map;
+  }, [rooms, roomSchedulesByRoomId, approvedBookingsByRoomId]);
+
+  const effectiveTodaySchedulesByRoomId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    roomSchedulesByRoomId.forEach((roomSchedules, roomKey) => {
+      const scoped = roomSchedules
+        .filter(schedule => schedule.day_of_week === currentDayName)
+        .filter(schedule => !isScheduleSuppressedForDate(schedule, currentDate, academicCalendars, batchRoomAllocations));
+      map.set(roomKey, scoped);
+    });
+    return map;
+  }, [roomSchedulesByRoomId, currentDayName, currentDate, academicCalendars, batchRoomAllocations]);
+
+  const roomCurrentScheduleByRoomId = useMemo(() => {
+    const map = new Map<string, any | null>();
+    rooms.forEach((room: any) => {
+      const roomKey = toKey(room?.id);
+      const current = (effectiveTodaySchedulesByRoomId.get(roomKey) || [])
+        .find((schedule: any) => schedule.start_time <= currentTime && schedule.end_time > currentTime) || null;
+      map.set(roomKey, current);
+    });
+    return map;
+  }, [rooms, effectiveTodaySchedulesByRoomId, currentTime]);
+
+  const roomNextScheduleByRoomId = useMemo(() => {
+    const map = new Map<string, any | null>();
+    const dateEntries = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date(`${currentDate}T00:00:00`);
+      date.setDate(date.getDate() + offset);
+      const dateKey = formatLocalDate(date);
+      const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+      return { offset, dateKey, dayName };
+    });
+
+    rooms.forEach((room: any) => {
+      const roomKey = toKey(room?.id);
+      const roomSchedules = roomSchedulesByRoomId.get(roomKey) || [];
+      let next: any = null;
+      for (const { offset, dateKey, dayName } of dateEntries) {
+        const dateSchedules = roomSchedules
+          .filter(schedule => schedule.day_of_week === dayName)
+          .filter(schedule => !isScheduleSuppressedForDate(schedule, dateKey, academicCalendars, batchRoomAllocations));
+        const upcoming = offset === 0
+          ? dateSchedules.filter(schedule => schedule.start_time > currentTime)
+          : dateSchedules;
+        if (upcoming.length > 0) {
+          next = { ...upcoming[0], effective_date: dateKey };
+          break;
+        }
+      }
+      map.set(roomKey, next);
+    });
+    return map;
+  }, [rooms, roomSchedulesByRoomId, currentDate, currentTime, academicCalendars, batchRoomAllocations]);
+
+  const roomLiveStatusByRoomId = useMemo(() => {
+    const nowBookedRoomIds = new Set(
+      bookings
+        .filter((booking: any) =>
+          booking?.status === 'Approved' &&
+          booking?.date === currentDate &&
+          booking?.start_time <= currentTime &&
+          booking?.end_time > currentTime,
+        )
+        .map((booking: any) => toKey(booking?.room_id))
+        .filter(Boolean),
+    );
+
+    const map = new Map<string, string>();
+    rooms.forEach((room: any) => {
+      const roomKey = toKey(room?.id);
+      if ((activeMaintenanceByRoomId.get(roomKey)?.length || 0) > 0 || room?.status === 'Maintenance') {
+        map.set(roomKey, 'Maintenance');
+      } else if (nowBookedRoomIds.has(roomKey)) {
+        map.set(roomKey, 'Booked');
+      } else if (roomCurrentScheduleByRoomId.get(roomKey)) {
+        map.set(roomKey, 'Scheduled');
+      } else {
+        map.set(roomKey, room?.status || 'Available');
+      }
+    });
+    return map;
+  }, [rooms, bookings, currentDate, currentTime, activeMaintenanceByRoomId, roomCurrentScheduleByRoomId]);
+
+  const roomSearchTextByRoomId = useMemo(() => {
+    const map = new Map<string, string>();
+    rooms.forEach((room: any) => {
+      const roomKey = toKey(room?.id);
+      const floor = floorById.get(toKey(room?.floor_id));
+      const block = blockById.get(toKey(floor?.block_id));
+      const building = buildingById.get(toKey(block?.building_id));
+      const roomSchedules = roomSchedulesByRoomId.get(roomKey) || [];
+      const searchText = [
+        room?.room_number,
+        room?.room_aliases,
+        room?.room_type,
+        roomLiveStatusByRoomId.get(roomKey),
+        roomDepartmentLabelByRoomId.get(roomKey),
+        ...roomSchedules.flatMap((schedule: any) => [
+          schedule.course_name,
+          schedule.course_code,
+          schedule.faculty,
+          schedule.department_name,
+          schedule.semester,
+          schedule.section,
+          schedule.day_of_week,
+        ]),
+        building?.name,
+        block?.name,
+        floor ? getFloorName(floor.floor_number) : '',
+      ]
+        .map(normalizeLookupValue)
+        .join(' ');
+      map.set(roomKey, searchText);
+    });
+    return map;
+  }, [rooms, floorById, blockById, buildingById, roomSchedulesByRoomId, roomLiveStatusByRoomId, roomDepartmentLabelByRoomId]);
+
   const getBlocksForBuilding = (buildingId: number) =>
-    blocks.filter(block => idsMatch(block.building_id, buildingId));
+    blocksByBuildingId.get(toKey(buildingId)) || [];
 
   const getVisibleBlocksForBuilding = (building: any) =>
     getBlocksForBuilding(building.id).filter(block => !isImplicitBuildingBlock(block, building));
@@ -10673,37 +10981,19 @@ function DigitalTwin() {
     getBlocksForBuilding(building.id).find(block => isImplicitBuildingBlock(block, building));
 
   const getFloorsForBlock = (blockId: number) =>
-    floors.filter(floor => idsMatch(floor.block_id, blockId));
+    floorsByBlockId.get(toKey(blockId)) || [];
 
-  const getRoomsForBuilding = (building: any) => {
-    const buildingBlockIds = getBlocksForBuilding(building.id).map(block => block.id);
-    const buildingFloorIds = floors.filter(floor => buildingBlockIds.some(blockId => idsMatch(blockId, floor.block_id))).map(floor => floor.id);
-    return rooms.filter(room => room && buildingFloorIds.some(floorId => idsMatch(floorId, room.floor_id)));
-  };
-
-  const currentDate = formatLocalDate(new Date());
-  const currentTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
-  const scheduleDaysOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const roomTypes = Array.from(new Set(rooms.map(room => room.room_type).filter(Boolean))).sort();
+  const getRoomsForBuilding = (building: any) =>
+    roomsByBuildingId.get(toKey(building?.id)) || [];
 
   const getRoomMaintenance = (room: any) =>
-    maintenance.filter(item => idsMatch(item.room_id, room.id) && item.status !== 'Completed');
+    activeMaintenanceByRoomId.get(toKey(room?.id)) || [];
 
   const getRoomEquipmentLabels = (room: any) =>
-    equipment.filter(item => idsMatch(item.room_id, room.id)).map(item => item.name).filter(Boolean);
+    equipmentLabelsByRoomId.get(toKey(room?.id)) || [];
 
-  const getRoomDepartmentLabel = (room: any) => {
-    const activeAllocationNames = Array.from(new Set(
-      allocations
-        .filter(item => idsMatch(item.room_id, room.id))
-        .filter(item => getRangeLifecycleStatus(item.start_date, item.end_date, 'Released', 'Planned') !== 'Released')
-        .map(item => departments.find(department => idsMatch(department.id, item.department_id))?.name)
-        .filter(Boolean)
-    ));
-    if (activeAllocationNames.length === 0) return 'Unmapped';
-    if (activeAllocationNames.length === 1) return activeAllocationNames[0] as string;
-    return `Shared: ${activeAllocationNames.join(', ')}`;
-  };
+  const getRoomDepartmentLabel = (room: any) =>
+    roomDepartmentLabelByRoomId.get(toKey(room?.id)) || 'Unmapped';
 
   const calculateUsageHours = (start?: string, end?: string) => {
     if (!start || !end) return 0;
@@ -10714,32 +11004,17 @@ function DigitalTwin() {
   };
 
   const getRoomSchedules = (room: any) =>
-    deduplicateScheduleRows(schedules)
-      .filter(schedule => idsMatch(schedule.room_id, room.id))
-      .map(schedule => ({
-        ...schedule,
-        department_name: departments.find(item => idsMatch(item.id, schedule.department_id))?.name || '',
-      }))
-      .sort((a, b) => {
-        const dayCompare = scheduleDaysOrder.indexOf(a.day_of_week) - scheduleDaysOrder.indexOf(b.day_of_week);
-        if (dayCompare !== 0) return dayCompare;
-        return (a.start_time || '').localeCompare(b.start_time || '');
-      });
+    roomSchedulesByRoomId.get(toKey(room?.id)) || [];
 
   const getApprovedRoomBookings = (room: any) =>
-    bookings.filter(booking => idsMatch(booking.room_id, room.id) && booking.status === 'Approved');
+    approvedBookingsByRoomId.get(toKey(room?.id)) || [];
 
   const getRoomUsageMetrics = (room: any) => {
-    const scheduledHours = getRoomSchedules(room).reduce((acc, schedule) => acc + calculateUsageHours(schedule.start_time, schedule.end_time), 0);
-    const bookedHours = getApprovedRoomBookings(room).reduce((acc, booking) => acc + calculateUsageHours(booking.start_time, booking.end_time), 0);
-    const totalUsedHours = scheduledHours + bookedHours;
-    const utilizationPercent = Math.min(100, Math.round((totalUsedHours / 72) * 100));
-
-    return {
-      scheduledHours: Math.round(scheduledHours * 10) / 10,
-      bookedHours: Math.round(bookedHours * 10) / 10,
-      totalUsedHours: Math.round(totalUsedHours * 10) / 10,
-      utilizationPercent,
+    return roomUsageMetricsByRoomId.get(toKey(room?.id)) || {
+      scheduledHours: 0,
+      bookedHours: 0,
+      totalUsedHours: 0,
+      utilizationPercent: 0,
     };
   };
 
@@ -10749,69 +11024,19 @@ function DigitalTwin() {
       .filter(schedule => !isScheduleSuppressedForDate(schedule, date, academicCalendars, batchRoomAllocations));
 
   const getCurrentSchedule = (room: any) =>
-    getEffectiveRoomSchedulesForDate(room, currentDate).find(schedule => schedule.start_time <= currentTime && schedule.end_time > currentTime);
+    roomCurrentScheduleByRoomId.get(toKey(room?.id)) || null;
 
-  const getNextSchedule = (room: any) => {
-    for (let offset = 0; offset < 7; offset += 1) {
-      const date = new Date(`${currentDate}T00:00:00`);
-      date.setDate(date.getDate() + offset);
-      const dateKey = formatLocalDate(date);
-      const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
-      const daySchedules = getEffectiveRoomSchedulesForDate(room, dateKey)
-        .filter(schedule => schedule.day_of_week === dayName);
-      const upcomingSchedules = offset === 0
-        ? daySchedules.filter(schedule => schedule.start_time > currentTime)
-        : daySchedules;
-      if (upcomingSchedules.length > 0) {
-        return { ...upcomingSchedules[0], effective_date: dateKey };
-      }
-    }
-
-    return null;
-  };
+  const getNextSchedule = (room: any) =>
+    roomNextScheduleByRoomId.get(toKey(room?.id)) || null;
 
   const getRoomLiveStatus = (room: any) => {
-    if (getRoomMaintenance(room).length > 0 || room.status === 'Maintenance') return 'Maintenance';
-    const hasBooking = bookings.some(booking =>
-      idsMatch(booking.room_id, room.id) &&
-      booking.status === 'Approved' &&
-      booking.date === currentDate &&
-      booking.start_time <= currentTime &&
-      booking.end_time > currentTime
-    );
-    if (hasBooking) return 'Booked';
-    if (getCurrentSchedule(room)) return 'Scheduled';
-    return room.status || 'Available';
+    return roomLiveStatusByRoomId.get(toKey(room?.id)) || room?.status || 'Available';
   };
 
   const roomMatchesFilters = (room: any) => {
     if (!room) return false;
     const query = normalizeLookupValue(filters.search);
-    const { floor, block, building } = (() => {
-      const floor = floors.find(item => idsMatch(item.id, room?.floor_id));
-      const block = blocks.find(item => idsMatch(item.id, floor?.block_id));
-      const building = buildings.find(item => idsMatch(item.id, block?.building_id));
-      return { floor, block, building };
-    })();
-    const haystack = [
-      room.room_number,
-      room.room_aliases,
-      room.room_type,
-      getRoomLiveStatus(room),
-      getRoomDepartmentLabel(room),
-      ...getRoomSchedules(room).flatMap(schedule => [
-        schedule.course_name,
-        schedule.course_code,
-        schedule.faculty,
-        schedule.department_name,
-        schedule.semester,
-        schedule.section,
-        schedule.day_of_week,
-      ]),
-      building?.name,
-      block?.name,
-      floor ? getFloorName(floor.floor_number) : ''
-    ].map(normalizeLookupValue).join(' ');
+    const haystack = roomSearchTextByRoomId.get(toKey(room?.id)) || '';
 
     if (query && !haystack.includes(query)) return false;
     if (filters.status && getRoomLiveStatus(room) !== filters.status) return false;
@@ -10820,9 +11045,19 @@ function DigitalTwin() {
     return true;
   };
 
+  const matchingRoomIds = useMemo(() => {
+    const set = new Set<string>();
+    rooms.forEach((room: any) => {
+      if (roomMatchesFilters(room)) set.add(toKey(room?.id));
+    });
+    return set;
+  }, [rooms, filters, roomSearchTextByRoomId, roomLiveStatusByRoomId]);
+
+  const roomPassesFilters = (room: any) => matchingRoomIds.has(toKey(room?.id));
+
   const filteredBuildings = buildings.filter(building => {
     const query = normalizeLookupValue(filters.search);
-    const buildingRooms = getRoomsForBuilding(building).filter(roomMatchesFilters);
+    const buildingRooms = getRoomsForBuilding(building).filter(roomPassesFilters);
     return buildingRooms.length > 0 || (!query && !filters.status && !filters.roomType && !filters.minCapacity);
   });
 
@@ -10838,7 +11073,7 @@ function DigitalTwin() {
     const buildingBlocks = getBlocksForBuilding(building.id);
     const buildingFloors = floors.filter(floor => buildingBlocks.some(block => idsMatch(block.id, floor.block_id)));
     const buildingRooms = getRoomsForBuilding(building);
-    const visibleRooms = buildingRooms.filter(roomMatchesFilters);
+    const visibleRooms = buildingRooms.filter(roomPassesFilters);
     const usageRooms = visibleRooms.length > 0 ? visibleRooms : buildingRooms;
     const activeRooms = usageRooms.filter(room => getRoomUsageMetrics(room).totalUsedHours > 0).length;
     const maintenanceCount = visibleRooms.filter(room => getRoomMaintenance(room).length > 0 || room.status === 'Maintenance').length;
@@ -10891,16 +11126,16 @@ function DigitalTwin() {
         ? floors.filter(floor => getBlocksForBuilding(selectedBuilding.id).some(block => idsMatch(block.id, floor.block_id)))
         : floors.filter(floor => scopeBlocks.some(block => idsMatch(block.id, floor.block_id)));
   const scopeRooms = selectedFloor
-    ? rooms.filter(room => idsMatch(room.floor_id, selectedFloor.id) && roomMatchesFilters(room))
+    ? rooms.filter(room => idsMatch(room.floor_id, selectedFloor.id) && roomPassesFilters(room))
     : activeBlock
       ? rooms.filter(room =>
           scopeFloors.some(floor => idsMatch(floor.id, room.floor_id)) &&
-          roomMatchesFilters(room)
+          roomPassesFilters(room)
         )
       : selectedBuilding
-        ? getRoomsForBuilding(selectedBuilding).filter(roomMatchesFilters)
-        : rooms.filter(roomMatchesFilters);
-  const scopeSchedules = deduplicateScheduleRows(schedules).filter(schedule =>
+        ? getRoomsForBuilding(selectedBuilding).filter(roomPassesFilters)
+        : rooms.filter(roomPassesFilters);
+  const scopeSchedules = dedupedSchedules.filter(schedule =>
     scopeRooms.some(room => idsMatch(room.id, schedule.room_id))
   );
   const scopeUtilizationRaw = scopeRooms.reduce((acc, room) => acc + getRoomUsageMetrics(room).utilizationPercent, 0) / (scopeRooms.length || 1);
@@ -10940,6 +11175,8 @@ function DigitalTwin() {
     if (schedule?.section) params.set('section', schedule.section.toString());
     return `?${params.toString()}`;
   };
+
+  const isCampus3DOverview = viewMode === '3D' && !selectedBuilding;
 
   return (
     <div className="space-y-8">
@@ -11114,7 +11351,7 @@ function DigitalTwin() {
           backgroundSize: '40px 40px' 
         }} />
         
-        {viewMode === '3D' && !selectedBuilding && (
+        {isCampus3DOverview && (
           <div className="absolute inset-0 z-0">
             <Canvas shadows camera={{ position: [10, 10, 10], fov: 45 }}>
               <PerspectiveCamera makeDefault position={[15, 15, 15]} />
@@ -11146,13 +11383,16 @@ function DigitalTwin() {
           </div>
         )}
 
-        <div className={cn("p-12 relative z-10", viewMode === '3D' && !selectedBuilding && "pointer-events-none")}>
-          {!selectedBuilding ? (
-            <div className={cn("grid grid-cols-1 md:grid-cols-3 gap-8", viewMode === '3D' && "opacity-0 invisible")}>
+        {!isCampus3DOverview && (
+          <div className="p-12 relative z-10">
+            {(() => {
+              if (!selectedBuilding) {
+                return (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {filteredBuildings.map(b => {
               const visibleBlocks = getVisibleBlocksForBuilding(b);
               const buildingRooms = getRoomsForBuilding(b);
-              const visibleRooms = buildingRooms.filter(roomMatchesFilters);
+              const visibleRooms = buildingRooms.filter(roomPassesFilters);
               const buildingScheduleCount = buildingRooms.reduce((count, room) => count + getRoomSchedules(room).length, 0);
               const utilization = getBuildingUtilization(b);
 
@@ -11203,10 +11443,13 @@ function DigitalTwin() {
               </div>
             )}
           </div>
-        ) : shouldShowBlockLevel && !selectedBlock ? (
+                );
+              }
+              if (shouldShowBlockLevel && !selectedBlock) {
+                return (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative z-10">
             {selectedBuildingBlockOptions
-              .filter(block => floors.some(floor => idsMatch(floor.block_id, block.id) && rooms.some(room => idsMatch(room.floor_id, floor.id) && roomMatchesFilters(room))))
+              .filter(block => floors.some(floor => idsMatch(floor.block_id, block.id) && rooms.some(room => idsMatch(room.floor_id, floor.id) && roomPassesFilters(room))))
               .map(bl => (
               <div 
                 key={bl.id} 
@@ -11218,13 +11461,16 @@ function DigitalTwin() {
                 </div>
                 <h4 className="text-xl font-bold text-white mb-2">{getBlockDisplayLabel(bl, selectedBuilding)}</h4>
                 <p className="text-sm text-slate-400">{bl.description}</p>
-                <p className="text-xs text-slate-500 mt-3 font-bold">{floors.filter(floor => idsMatch(floor.block_id, bl.id)).reduce((count, floor) => count + rooms.filter(room => idsMatch(room.floor_id, floor.id) && roomMatchesFilters(room)).length, 0)} matching rooms</p>
+                <p className="text-xs text-slate-500 mt-3 font-bold">{floors.filter(floor => idsMatch(floor.block_id, bl.id)).reduce((count, floor) => count + rooms.filter(room => idsMatch(room.floor_id, floor.id) && roomPassesFilters(room)).length, 0)} matching rooms</p>
               </div>
             ))}
           </div>
-        ) : !selectedFloor ? (
+                );
+              }
+              if (!selectedFloor) {
+                return (
           <div className="space-y-4 relative z-10 max-w-2xl mx-auto">
-            {floors.filter(f => idsMatch(f.block_id, activeBlock?.id) && rooms.some(room => idsMatch(room.floor_id, f.id) && roomMatchesFilters(room))).sort((a,b) => a.floor_number - b.floor_number).map(f => (
+            {floors.filter(f => idsMatch(f.block_id, activeBlock?.id) && rooms.some(room => idsMatch(room.floor_id, f.id) && roomPassesFilters(room))).sort((a,b) => a.floor_number - b.floor_number).map(f => (
               <div 
                 key={f.id} 
                 onClick={() => setSelectedFloor(f)}
@@ -11242,16 +11488,18 @@ function DigitalTwin() {
                 <div className="flex items-center gap-4">
                   <div className="text-right">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Rooms</p>
-                    <p className="text-sm font-bold text-white">{rooms.filter(r => idsMatch(r.floor_id, f.id) && roomMatchesFilters(r)).length}/{rooms.filter(r => idsMatch(r.floor_id, f.id)).length}</p>
+                    <p className="text-sm font-bold text-white">{rooms.filter(r => idsMatch(r.floor_id, f.id) && roomPassesFilters(r)).length}/{rooms.filter(r => idsMatch(r.floor_id, f.id)).length}</p>
                   </div>
                   <ChevronRight className="text-slate-500 group-hover:text-emerald-500" />
                 </div>
               </div>
             ))}
           </div>
-        ) : (
+                );
+              }
+              return (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-6 relative z-10">
-            {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomMatchesFilters(r)).map(r => {
+            {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomPassesFilters(r)).map(r => {
               const liveStatus = getRoomLiveStatus(r);
               const equipmentLabels = getRoomEquipmentLabels(r);
               const departmentLabel = getRoomDepartmentLabel(r);
@@ -11311,7 +11559,7 @@ function DigitalTwin() {
                 <div className="flex items-center justify-between mt-4">
                   <span className="text-[10px] font-bold text-slate-500">CAP: {r.capacity}</span>
                   <span className="text-[10px] font-bold text-slate-500">CLS: {roomSchedules.length}</span>
-                  {maintenance.some(m => idsMatch(m.room_id, r.id) && m.status !== 'Completed') && (
+                  {getRoomMaintenance(r).length > 0 && (
                     <AlertTriangle size={14} className="text-amber-500" />
                   )}
                 </div>
@@ -11323,15 +11571,17 @@ function DigitalTwin() {
                 </div>
               </div>
             );})}
-            {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomMatchesFilters(r)).length === 0 && (
+            {rooms.filter(r => idsMatch(r.floor_id, selectedFloor.id) && roomPassesFilters(r)).length === 0 && (
               <div className="col-span-full p-12 text-center border-2 border-dashed border-slate-700 rounded-3xl">
                 <p className="text-sm font-bold text-slate-400">No rooms match the current filters on this floor.</p>
               </div>
             )}
           </div>
+              );
+            })()}
+          </div>
         )}
       </div>
-    </div>
 
     {aiRecommendations && (
         <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
