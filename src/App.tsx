@@ -2726,6 +2726,8 @@ function DashboardHome() {
   const [utilizationTrend, setUtilizationTrend] = useState<any[]>([]);
   const [schoolUsage, setSchoolUsage] = useState<any[]>([]);
   const [aiInsightMessage, setAiInsightMessage] = useState('');
+  const [utilizationReport, setUtilizationReport] = useState<any>({});
+  const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
 
   const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
     const rankedSchools = (Array.isArray(schoolReportsPayload) ? schoolReportsPayload : [])
@@ -2785,6 +2787,7 @@ function DashboardHome() {
         setUtilizationTrend(Array.isArray(utilizationData) ? utilizationData : []);
         setSchoolUsage(safeSchoolReports);
         setAiInsightMessage(fallbackInsight);
+        setUtilizationReport(reportData || {});
 
         const aiInsightResponse = await fetchJson<{ insight?: string; source?: string } | null>(
           '/api/ai/dashboard-insight',
@@ -2836,6 +2839,30 @@ function DashboardHome() {
         color: colorClasses[index % colorClasses.length],
       }));
   }, [schoolUsage]);
+
+  const topBusyRooms = useMemo(() => {
+    const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
+    return roomReports
+      .filter((room: any) => Number(room?.utilization) > 0)
+      .sort((a: any, b: any) => (Number(b?.utilization) || 0) - (Number(a?.utilization) || 0))
+      .slice(0, 5);
+  }, [utilizationReport]);
+
+  const lowestUsageRooms = useMemo(() => {
+    const roomReports = Array.isArray(utilizationReport?.roomReports) ? utilizationReport.roomReports : [];
+    return roomReports
+      .filter((room: any) => Number(room?.utilization) >= 0)
+      .sort((a: any, b: any) => (Number(a?.utilization) || 0) - (Number(b?.utilization) || 0))
+      .slice(0, 5);
+  }, [utilizationReport]);
+
+  const openAnalysisPanel = () => {
+    setIsAnalysisPanelOpen(true);
+  };
+
+  const closeAnalysisPanel = () => {
+    setIsAnalysisPanelOpen(false);
+  };
 
   const statCards = [
     { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
@@ -2977,7 +3004,7 @@ function DashboardHome() {
               {aiInsightMessage}
             </p>
             <button
-              onClick={() => navigate('/analytics')}
+              onClick={openAnalysisPanel}
               className="w-full py-3 bg-emerald-500 text-white rounded-2xl font-bold text-sm hover:bg-emerald-600 transition-all relative z-10"
             >
               View Analysis
@@ -3011,6 +3038,115 @@ function DashboardHome() {
           </div>
         </div>
       </div>
+
+      {isAnalysisPanelOpen && (
+        <div className="fixed inset-0 z-[120] bg-slate-950/60 backdrop-blur-sm p-4 md:p-8 flex justify-end">
+          <div className="w-full max-w-2xl h-full bg-white rounded-3xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-200 flex items-start justify-between">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">Dashboard Analysis Snapshot</h3>
+                <p className="text-sm text-slate-500 mt-1">Live operational summary generated from current dashboard metrics.</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeAnalysisPanel}
+                className="text-slate-400 hover:text-slate-700 transition-colors"
+                aria-label="Close analysis panel"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Buildings</p>
+                  <p className="text-xl font-black text-slate-800 mt-1">{stats?.totalBuildings || 0}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Available</p>
+                  <p className="text-xl font-black text-emerald-700 mt-1">{stats?.availableNow || 0}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Scheduled</p>
+                  <p className="text-xl font-black text-indigo-700 mt-1">{stats?.scheduledRooms || 0}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500">Pending</p>
+                  <p className="text-xl font-black text-amber-700 mt-1">{stats?.pendingBookings || 0}</p>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                <p className="text-xs font-bold uppercase tracking-widest text-emerald-700 mb-2">AI Insight</p>
+                <p className="text-sm text-slate-700 leading-relaxed">{aiInsightMessage}</p>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <h4 className="text-sm font-bold text-slate-800 mb-3">Highest Utilization Rooms</h4>
+                {topBusyRooms.length > 0 ? (
+                  <div className="space-y-2">
+                    {topBusyRooms.map((room: any) => (
+                      <div key={`busy-${room.room_id}`} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-800 truncate">Room {room.room_number}</p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {[room.building, room.block].filter(Boolean).join(' • ') || 'No building context'}
+                          </p>
+                        </div>
+                        <span className="text-xs font-bold text-rose-600">{Math.round(Number(room.utilization) || 0)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400 italic">No utilization records available yet.</p>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <h4 className="text-sm font-bold text-slate-800 mb-3">Lowest Utilization Rooms</h4>
+                {lowestUsageRooms.length > 0 ? (
+                  <div className="space-y-2">
+                    {lowestUsageRooms.map((room: any) => (
+                      <div key={`low-${room.room_id}`} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-800 truncate">Room {room.room_number}</p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {[room.building, room.block].filter(Boolean).join(' • ') || 'No building context'}
+                          </p>
+                        </div>
+                        <span className="text-xs font-bold text-slate-700">{Math.round(Number(room.utilization) || 0)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400 italic">No utilization records available yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-200 bg-white flex flex-col sm:flex-row gap-3">
+              <button
+                type="button"
+                onClick={closeAnalysisPanel}
+                className="flex-1 px-4 py-2 rounded-xl border border-slate-200 text-slate-700 font-semibold hover:bg-slate-50 transition-colors"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  closeAnalysisPanel();
+                  navigate('/analytics');
+                }}
+                className="flex-1 px-4 py-2 rounded-xl bg-slate-900 text-white font-semibold hover:bg-slate-800 transition-colors"
+              >
+                View Full Analytics
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
