@@ -8660,6 +8660,8 @@ function AnalyticsDashboard() {
 function ReportGeneration() {
   const [utilizationData, setUtilizationData] = useState<any>(null);
   const [reportBookings, setReportBookings] = useState<any[]>([]);
+  const [reportSchedules, setReportSchedules] = useState<any[]>([]);
+  const [reportAcademicCalendars, setReportAcademicCalendars] = useState<any[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [suggestionError, setSuggestionError] = useState('');
   const [activeTab, setActiveTab] = useState<'utilization' | 'methodology' | 'kpis'>('utilization');
@@ -8712,17 +8714,25 @@ function ReportGeneration() {
 
   const fetchUtilization = async () => {
     try {
-      const [reportRes, bookingRes] = await Promise.all([
+      const [reportRes, bookingRes, scheduleRes, academicRes] = await Promise.all([
         fetch('/api/reports/utilization', { credentials: 'include' }),
         fetch('/api/bookings', { credentials: 'include' }),
+        fetch('/api/schedules', { credentials: 'include' }),
+        fetch('/api/academic_calendars', { credentials: 'include' }),
       ]);
       const data = await reportRes.json();
       const bookingData = await bookingRes.json();
+      const scheduleData = await scheduleRes.json();
+      const academicData = await academicRes.json();
       setUtilizationData(data);
       setReportBookings(Array.isArray(bookingData) ? bookingData : []);
+      setReportSchedules(Array.isArray(scheduleData) ? scheduleData : []);
+      setReportAcademicCalendars(Array.isArray(academicData) ? academicData : []);
     } catch (err) {
       console.error(err);
       setReportBookings([]);
+      setReportSchedules([]);
+      setReportAcademicCalendars([]);
     } finally {
       setLoading(false);
     }
@@ -8957,6 +8967,388 @@ function ReportGeneration() {
   const avgFilteredUtilization = Math.round(filteredRoomReports.reduce((acc: number, room: any) => acc + room.utilization, 0) / (filteredRoomReports.length || 1));
   const mostUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => b.utilization - a.utilization)[0];
   const leastUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => a.utilization - b.utilization)[0];
+  const filteredRoomIdSet = new Set(filteredRoomReports.map((room: any) => room.room_id?.toString()).filter(Boolean));
+  const filteredRoomNumberSet = new Set(filteredRoomReports.map((room: any) => room.room_number?.toString().trim()).filter(Boolean));
+  const roomMetaByRoomId = new Map(filteredRoomReports.map((room: any) => [room.room_id?.toString(), room]));
+  const reportDayOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const parseTimeToMinutes = (time?: string) => {
+    if (!time || !time.includes(':')) return null;
+    const [h, m] = time.split(':').map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return (h * 60) + m;
+  };
+  const safeDate = (value?: string) => {
+    if (!value) return null;
+    const date = new Date(`${value}T00:00:00`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const getDaysBetweenInclusive = (start?: string, end?: string) => {
+    const startDate = safeDate(start);
+    const endDate = safeDate(end);
+    if (!startDate || !endDate || endDate < startDate) return 0;
+    const diff = Math.floor((endDate.getTime() - startDate.getTime()) / 86400000);
+    return diff + 1;
+  };
+  const getDateDayName = (value?: string) => {
+    const date = safeDate(value);
+    return date ? date.toLocaleDateString('en-US', { weekday: 'long' }) : '';
+  };
+  const overlaps = (startA?: string, endA?: string, startB?: string, endB?: string) => {
+    const aStart = parseTimeToMinutes(startA);
+    const aEnd = parseTimeToMinutes(endA);
+    const bStart = parseTimeToMinutes(startB);
+    const bEnd = parseTimeToMinutes(endB);
+    if ([aStart, aEnd, bStart, bEnd].some(value => value === null)) return false;
+    return (aStart as number) < (bEnd as number) && (bStart as number) < (aEnd as number);
+  };
+  const semMatches = (scheduleValue: any, selectedValue: string) => {
+    if (!selectedValue) return true;
+    return normalizeSemesterValue(scheduleValue, '').toLowerCase() === selectedValue.toLowerCase();
+  };
+  const yearMatches = (scheduleValue: any, selectedValue: string) => {
+    if (!selectedValue) return true;
+    const normalized = normalizeYearOfStudyKey(scheduleValue);
+    return normalized ? normalized === selectedValue : false;
+  };
+  const sectionMatches = (scheduleValue: any, selectedValue: string) => {
+    if (!selectedValue) return true;
+    return scheduleValue?.toString().trim().toLowerCase() === selectedValue.toLowerCase();
+  };
+  const departmentMatches = (_scheduleDepartmentId: any, scheduleDepartmentName: any) => {
+    if (!filters.department) return true;
+    if (scheduleDepartmentName?.toString().trim().toLowerCase() === filters.department.toLowerCase()) return true;
+    return false;
+  };
+  const filteredScheduleRows = reportSchedules.filter((schedule: any) => {
+    const roomIdKey = schedule.room_id?.toString();
+    const roomLabel = schedule.room_label?.toString().trim() || '';
+    if (roomIdKey && filteredRoomIdSet.has(roomIdKey)) {
+      // pass
+    } else if (roomLabel && filteredRoomNumberSet.has(roomLabel)) {
+      // pass
+    } else {
+      return false;
+    }
+    if (!departmentMatches(schedule.department_id, schedule.department_name)) return false;
+    if (!semMatches(schedule.semester, filters.semester)) return false;
+    if (!yearMatches(schedule.year_of_study, filters.year)) return false;
+    if (!sectionMatches(schedule.section, filters.section)) return false;
+    return true;
+  });
+  const filteredApprovedBookings = filteredReportBookings.filter((booking: any) => booking.status === 'Approved');
+  const timeBandWindows = [
+    { label: '08:00-10:00', start: 8 * 60, end: 10 * 60 },
+    { label: '10:00-12:00', start: 10 * 60, end: 12 * 60 },
+    { label: '12:00-14:00', start: 12 * 60, end: 14 * 60 },
+    { label: '14:00-16:00', start: 14 * 60, end: 16 * 60 },
+    { label: '16:00-18:00', start: 16 * 60, end: 18 * 60 },
+  ];
+  const roomTimeBandUtilization = timeBandWindows.map((band) => {
+    const scheduledMinutes = filteredScheduleRows.reduce((acc: number, schedule: any) => {
+      const start = parseTimeToMinutes(schedule.start_time);
+      const end = parseTimeToMinutes(schedule.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      const overlapMinutes = Math.max(0, Math.min(end, band.end) - Math.max(start, band.start));
+      return acc + overlapMinutes;
+    }, 0);
+    const bookedMinutes = filteredApprovedBookings.reduce((acc: number, booking: any) => {
+      const start = parseTimeToMinutes(booking.start_time);
+      const end = parseTimeToMinutes(booking.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      const overlapMinutes = Math.max(0, Math.min(end, band.end) - Math.max(start, band.start));
+      return acc + overlapMinutes;
+    }, 0);
+    const totalMinutes = scheduledMinutes + bookedMinutes;
+    const roomCount = Math.max(filteredRoomReports.length, 1);
+    const maxMinutes = roomCount * (band.end - band.start) * reportDayOrder.length;
+    const utilization = maxMinutes > 0 ? Math.min(100, Math.round((totalMinutes / maxMinutes) * 100)) : 0;
+    return {
+      band: band.label,
+      scheduledHours: Math.round((scheduledMinutes / 60) * 10) / 10,
+      bookedHours: Math.round((bookedMinutes / 60) * 10) / 10,
+      utilization,
+    };
+  });
+  const departmentRoomTypeDemand = Array.from(new Set([
+    ...filteredScheduleRows.map((schedule: any) => schedule.department_name || roomMetaByRoomId.get(schedule.room_id?.toString())?.department || 'Unmapped'),
+    ...filteredApprovedBookings.map((booking: any) => booking.department_name || getBookingRoomMeta(booking)?.department || 'Unmapped'),
+  ].filter(Boolean))).sort().map((department) => {
+    const roomTypeCounts = roomTypeOptions.reduce((acc: Record<string, number>, roomType: string) => {
+      const normalizedRoomType = roomType.toLowerCase();
+      const scheduleCount = filteredScheduleRows.filter((schedule: any) => {
+        const scheduleDepartment = schedule.department_name || roomMetaByRoomId.get(schedule.room_id?.toString())?.department || 'Unmapped';
+        const scheduleRoomType = getRoomTypeDisplay(roomMetaByRoomId.get(schedule.room_id?.toString()) || { room_type: schedule.room_type || '' }).toLowerCase();
+        return scheduleDepartment === department && scheduleRoomType === normalizedRoomType;
+      }).length;
+      const bookingCount = filteredApprovedBookings.filter((booking: any) => {
+        const bookingDepartment = booking.department_name || getBookingRoomMeta(booking)?.department || 'Unmapped';
+        const bookingRoomType = getRoomTypeDisplay(getBookingRoomMeta(booking) || { room_type: booking.room_type || '' }).toLowerCase();
+        return bookingDepartment === department && bookingRoomType === normalizedRoomType;
+      }).length;
+      acc[roomType] = scheduleCount + bookingCount;
+      return acc;
+    }, {});
+    const totalDemand = Object.values(roomTypeCounts).reduce((sum, value) => sum + value, 0);
+    return { department, totalDemand, roomTypeCounts };
+  }).filter((row) => row.totalDemand > 0).sort((a, b) => b.totalDemand - a.totalDemand);
+  const scheduleOverlapRows = (() => {
+    const clashes: any[] = [];
+    const grouped = new Map<string, any[]>();
+    filteredScheduleRows.forEach((schedule: any) => {
+      const key = `${schedule.room_id || schedule.room_label || 'unknown'}__${schedule.day_of_week || ''}`;
+      const rows = grouped.get(key) || [];
+      rows.push(schedule);
+      grouped.set(key, rows);
+    });
+    grouped.forEach((rows, key) => {
+      const sorted = rows
+        .filter((row: any) => row.start_time && row.end_time)
+        .sort((a: any, b: any) => (a.start_time || '').localeCompare(b.start_time || ''));
+      for (let i = 0; i < sorted.length; i += 1) {
+        for (let j = i + 1; j < sorted.length; j += 1) {
+          if (!overlaps(sorted[i].start_time, sorted[i].end_time, sorted[j].start_time, sorted[j].end_time)) break;
+          clashes.push({
+            room: sorted[i].room_label || roomMetaByRoomId.get(sorted[i].room_id?.toString())?.room_number || sorted[i].room_id,
+            day: sorted[i].day_of_week,
+            startA: sorted[i].start_time,
+            endA: sorted[i].end_time,
+            courseA: sorted[i].course_name || sorted[i].course_code || 'Schedule A',
+            sectionA: sorted[i].section || '',
+            startB: sorted[j].start_time,
+            endB: sorted[j].end_time,
+            courseB: sorted[j].course_name || sorted[j].course_code || 'Schedule B',
+            sectionB: sorted[j].section || '',
+            source: 'Timetable',
+            key,
+          });
+        }
+      }
+    });
+    return clashes;
+  })();
+  const bookingOverlapRows = (() => {
+    const clashes: any[] = [];
+    const grouped = new Map<string, any[]>();
+    filteredApprovedBookings.forEach((booking: any) => {
+      const key = `${booking.room_id || booking.room_number || 'unknown'}__${booking.date || ''}`;
+      const rows = grouped.get(key) || [];
+      rows.push(booking);
+      grouped.set(key, rows);
+    });
+    grouped.forEach((rows) => {
+      const sorted = rows
+        .filter((row: any) => row.start_time && row.end_time)
+        .sort((a: any, b: any) => (a.start_time || '').localeCompare(b.start_time || ''));
+      for (let i = 0; i < sorted.length; i += 1) {
+        for (let j = i + 1; j < sorted.length; j += 1) {
+          if (!overlaps(sorted[i].start_time, sorted[i].end_time, sorted[j].start_time, sorted[j].end_time)) break;
+          clashes.push({
+            room: getBookingRoomMeta(sorted[i])?.room_number || sorted[i].room_number || sorted[i].room_id,
+            day: sorted[i].date || '',
+            startA: sorted[i].start_time,
+            endA: sorted[i].end_time,
+            courseA: sorted[i].event_name || 'Booking A',
+            sectionA: sorted[i].faculty_name || '',
+            startB: sorted[j].start_time,
+            endB: sorted[j].end_time,
+            courseB: sorted[j].event_name || 'Booking B',
+            sectionB: sorted[j].faculty_name || '',
+            source: 'Booking',
+          });
+        }
+      }
+    });
+    return clashes;
+  })();
+  const overlapConflictReport = [...scheduleOverlapRows, ...bookingOverlapRows];
+  const vacancyOpportunityReport = filteredRoomReports
+    .map((room: any) => {
+      const weeklyHours = 72;
+      const usedHours = Number(room.totalUsedHours || 0);
+      const idleHours = Math.max(0, weeklyHours - usedHours);
+      return {
+        room: room.room_number,
+        building: room.building,
+        department: room.department,
+        utilization: room.utilization,
+        idleHours: Math.round(idleHours * 10) / 10,
+        opportunity: idleHours >= 50 ? 'High' : idleHours >= 30 ? 'Medium' : 'Low',
+      };
+    })
+    .sort((a: any, b: any) => b.idleHours - a.idleHours)
+    .slice(0, 50);
+  const capacityMismatchReport = filteredApprovedBookings
+    .map((booking: any) => {
+      const roomMeta = getBookingRoomMeta(booking);
+      const roomCapacity = Number(roomMeta?.capacity || 0);
+      const studentCount = Number(booking?.student_count || 0);
+      const occupancyPercent = roomCapacity > 0 ? Math.round((studentCount / roomCapacity) * 100) : 0;
+      const mismatchType = roomCapacity <= 0 || studentCount <= 0
+        ? 'Missing Strength'
+        : occupancyPercent > 100
+          ? 'Over Capacity'
+          : occupancyPercent < 40
+            ? 'Underutilized Capacity'
+            : 'Good Fit';
+      return {
+        date: booking.date,
+        room: roomMeta?.room_number || booking.room_number || booking.room_id,
+        department: booking.department_name || roomMeta?.department || 'Unmapped',
+        event: booking.event_name || 'Booking',
+        roomCapacity,
+        studentCount,
+        occupancyPercent,
+        mismatchType,
+      };
+    })
+    .filter((row: any) => row.mismatchType !== 'Good Fit')
+    .sort((a: any, b: any) => b.occupancyPercent - a.occupancyPercent);
+  const examImpactReport = reportAcademicCalendars
+    .filter((calendar: any) =>
+      isExaminationCalendarEvent(calendar) &&
+      (!filters.department || matchesReportFilterValue(calendar.department_name, filters.department)) &&
+      (!filters.semester || normalizeSemesterValue(calendar.semester, '').toLowerCase() === filters.semester.toLowerCase()) &&
+      (!filters.year || normalizeYearOfStudyKey(calendar.year_of_study) === filters.year) &&
+      (!filters.dateFrom || (calendar.end_date || calendar.start_date) >= filters.dateFrom) &&
+      (!filters.dateTo || (calendar.start_date || calendar.end_date) <= filters.dateTo),
+    )
+    .map((calendar: any) => {
+      const scheduleMatches = filteredScheduleRows.filter((schedule: any) => {
+        const semesterMatch = normalizeSemesterValue(schedule.semester, '').toLowerCase() === normalizeSemesterValue(calendar.semester, '').toLowerCase();
+        const deptMatch = matchesReportFilterValue(schedule.department_name, calendar.department_name);
+        return semesterMatch && deptMatch;
+      });
+      const days = getDaysBetweenInclusive(calendar.start_date, calendar.end_date);
+      const blockedClassSessions = scheduleMatches.length * Math.max(1, Math.min(days, 6));
+      return {
+        title: calendar.title || 'Examination Window',
+        department: calendar.department_name || 'Unmapped',
+        semester: calendar.semester || '-',
+        startDate: calendar.start_date,
+        endDate: calendar.end_date,
+        days,
+        affectedWeeklyClasses: scheduleMatches.length,
+        estimatedBlockedSessions: blockedClassSessions,
+      };
+    })
+    .sort((a: any, b: any) => b.estimatedBlockedSessions - a.estimatedBlockedSessions);
+  const bookingLifecycleReport = (() => {
+    const leadTimes = filteredReportBookings
+      .map((booking: any) => {
+        const eventDate = safeDate(booking.date);
+        const requestedDateRaw = booking.requested_date || booking.created_at || booking.requested_at || '';
+        const requestedDate = requestedDateRaw ? safeDate(requestedDateRaw.toString().slice(0, 10)) : null;
+        if (!eventDate || !requestedDate) return null;
+        return Math.floor((eventDate.getTime() - requestedDate.getTime()) / 86400000);
+      })
+      .filter((value: any) => value !== null && value >= 0) as number[];
+    const averageLeadDays = leadTimes.length
+      ? Math.round((leadTimes.reduce((sum, value) => sum + value, 0) / leadTimes.length) * 10) / 10
+      : null;
+    const cancellations = filteredReportBookings.filter((booking: any) => ['Rejected', 'Postponed'].includes(booking.status)).length;
+    const approvals = filteredReportBookings.filter((booking: any) => booking.status === 'Approved').length;
+    const cancellationRate = filteredReportBookings.length > 0 ? Math.round((cancellations / filteredReportBookings.length) * 100) : 0;
+    return {
+      totalRequests: filteredReportBookings.length,
+      approvals,
+      cancellations,
+      cancellationRate,
+      averageLeadDays,
+      leadTimeCapturedCount: leadTimes.length,
+    };
+  })();
+  const noShowRiskReport = filteredApprovedBookings
+    .map((booking: any) => {
+      const roomMeta = getBookingRoomMeta(booking);
+      const roomCapacity = Number(roomMeta?.capacity || 0);
+      const studentCount = Number(booking?.student_count || 0);
+      const occupancyPercent = roomCapacity > 0 && studentCount > 0 ? Math.round((studentCount / roomCapacity) * 100) : 0;
+      const bookingDate = safeDate(booking.date);
+      const isPast = bookingDate ? bookingDate.getTime() < Date.now() : false;
+      const riskScore =
+        (studentCount <= 0 ? 60 : 0) +
+        (roomCapacity > 0 && occupancyPercent < 25 ? 30 : 0) +
+        (isPast ? 10 : 0);
+      return {
+        bookingId: booking.request_id || booking.id,
+        date: booking.date,
+        room: roomMeta?.room_number || booking.room_number || booking.room_id,
+        department: booking.department_name || roomMeta?.department || 'Unmapped',
+        event: booking.event_name || 'Booking',
+        studentCount,
+        roomCapacity,
+        occupancyPercent,
+        riskScore,
+      };
+    })
+    .filter((row: any) => row.riskScore >= 40)
+    .sort((a: any, b: any) => b.riskScore - a.riskScore);
+  const sharedRoomConflictRiskReport = filteredRoomReports
+    .map((room: any) => {
+      const roomId = room.room_id?.toString();
+      const roomSchedules = filteredScheduleRows.filter((schedule: any) => schedule.room_id?.toString() === roomId);
+      const departments = new Set(roomSchedules.map((schedule: any) => schedule.department_name).filter(Boolean));
+      const sections = new Set(roomSchedules.map((schedule: any) => schedule.section?.toString().trim()).filter(Boolean));
+      const overlapsCount = overlapConflictReport.filter((conflict: any) =>
+        conflict.room?.toString().trim().toLowerCase() === room.room_number?.toString().trim().toLowerCase()
+      ).length;
+      const aliasCount = getRoomAliasList(room).length;
+      const isSharedRoom = (room.room_layout || '').toLowerCase() === 'shared room' || aliasCount > 0 || room.room_number?.toString().includes('&');
+      const riskScore =
+        (isSharedRoom ? 35 : 0) +
+        Math.min(30, departments.size * 10) +
+        Math.min(20, sections.size * 5) +
+        Math.min(15, overlapsCount * 5);
+      return {
+        room: room.room_number,
+        building: room.building,
+        roomLayout: room.room_layout || 'Normal',
+        aliases: getRoomAliasList(room).join(', '),
+        departments: departments.size,
+        sections: sections.size,
+        overlaps: overlapsCount,
+        riskScore,
+      };
+    })
+    .filter((row: any) => row.riskScore >= 35)
+    .sort((a: any, b: any) => b.riskScore - a.riskScore);
+  const semesterPeakLoadForecast = (() => {
+    const grouped = new Map<string, { semester: string; day: string; peakSlots: number; totalClasses: number; peakBand: string }>();
+    const bandNames = timeBandWindows.map((band) => band.label);
+    const rows = filteredScheduleRows.filter((schedule: any) => schedule.day_of_week && schedule.start_time && schedule.end_time);
+    const semesters = Array.from(new Set(rows.map((schedule: any) => normalizeSemesterValue(schedule.semester, 'Unknown'))));
+    semesters.forEach((semester) => {
+      reportDayOrder.forEach((day) => {
+        const dayRows = rows.filter((schedule: any) =>
+          normalizeSemesterValue(schedule.semester, 'Unknown') === semester &&
+          schedule.day_of_week === day
+        );
+        if (dayRows.length === 0) return;
+        const bandCounts = new Map<string, number>(bandNames.map((name) => [name, 0]));
+        dayRows.forEach((schedule: any) => {
+          const start = parseTimeToMinutes(schedule.start_time);
+          const end = parseTimeToMinutes(schedule.end_time);
+          if (start === null || end === null || end <= start) return;
+          timeBandWindows.forEach((band) => {
+            const overlapMinutes = Math.max(0, Math.min(end, band.end) - Math.max(start, band.start));
+            if (overlapMinutes > 0) bandCounts.set(band.label, (bandCounts.get(band.label) || 0) + 1);
+          });
+        });
+        const peakEntry = Array.from(bandCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+        grouped.set(`${semester}-${day}`, {
+          semester,
+          day,
+          peakSlots: peakEntry?.[1] || 0,
+          totalClasses: dayRows.length,
+          peakBand: peakEntry?.[0] || 'N/A',
+        });
+      });
+    });
+    return Array.from(grouped.values()).sort((a, b) =>
+      normalizeSemesterValue(a.semester, '').localeCompare(normalizeSemesterValue(b.semester, '')) ||
+      reportDayOrder.indexOf(a.day) - reportDayOrder.indexOf(b.day)
+    );
+  })();
   const exportUtilizationReport = () => {
     const roomWorksheet = XLSX.utils.json_to_sheet(filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
@@ -9040,6 +9432,88 @@ function ReportGeneration() {
       Rooms: section.roomCount,
       'Avg Utilization': `${section.avgUtilization}%`,
     })));
+    const timeBandWorksheet = XLSX.utils.json_to_sheet(roomTimeBandUtilization.map((item: any) => ({
+      TimeBand: item.band,
+      ScheduledHours: item.scheduledHours,
+      BookedHours: item.bookedHours,
+      Utilization: `${item.utilization}%`,
+    })));
+    const demandWorksheet = XLSX.utils.json_to_sheet(departmentRoomTypeDemand.map((item: any) => ({
+      Department: item.department,
+      TotalDemand: item.totalDemand,
+      ...item.roomTypeCounts,
+    })));
+    const overlapWorksheet = XLSX.utils.json_to_sheet(overlapConflictReport.map((item: any) => ({
+      Source: item.source,
+      Room: item.room,
+      DayOrDate: item.day,
+      EntryA: `${item.startA} - ${item.endA} | ${item.courseA}`,
+      EntryB: `${item.startB} - ${item.endB} | ${item.courseB}`,
+    })));
+    const vacancyWorksheet = XLSX.utils.json_to_sheet(vacancyOpportunityReport.map((item: any) => ({
+      Room: item.room,
+      Building: item.building,
+      Department: item.department,
+      IdleHoursPerWeek: item.idleHours,
+      Utilization: `${item.utilization}%`,
+      Opportunity: item.opportunity,
+    })));
+    const mismatchWorksheet = XLSX.utils.json_to_sheet(capacityMismatchReport.map((item: any) => ({
+      Date: item.date,
+      Room: item.room,
+      Department: item.department,
+      Event: item.event,
+      Students: item.studentCount,
+      Capacity: item.roomCapacity,
+      OccupancyPercent: `${item.occupancyPercent}%`,
+      MismatchType: item.mismatchType,
+    })));
+    const examImpactWorksheet = XLSX.utils.json_to_sheet(examImpactReport.map((item: any) => ({
+      ExamWindow: item.title,
+      Department: item.department,
+      Semester: item.semester,
+      StartDate: item.startDate,
+      EndDate: item.endDate,
+      Days: item.days,
+      AffectedWeeklyClasses: item.affectedWeeklyClasses,
+      EstimatedBlockedSessions: item.estimatedBlockedSessions,
+    })));
+    const lifecycleWorksheet = XLSX.utils.json_to_sheet([bookingLifecycleReport].map((item: any) => ({
+      TotalRequests: item.totalRequests,
+      Approvals: item.approvals,
+      Cancellations: item.cancellations,
+      CancellationRate: `${item.cancellationRate}%`,
+      AverageLeadDays: item.averageLeadDays ?? 'N/A',
+      LeadTimeCapturedCount: item.leadTimeCapturedCount,
+    })));
+    const noShowWorksheet = XLSX.utils.json_to_sheet(noShowRiskReport.map((item: any) => ({
+      Booking: item.bookingId,
+      Date: item.date,
+      Room: item.room,
+      Department: item.department,
+      Event: item.event,
+      Students: item.studentCount,
+      Capacity: item.roomCapacity,
+      OccupancyPercent: `${item.occupancyPercent}%`,
+      RiskScore: item.riskScore,
+    })));
+    const sharedRiskWorksheet = XLSX.utils.json_to_sheet(sharedRoomConflictRiskReport.map((item: any) => ({
+      Room: item.room,
+      Building: item.building,
+      RoomLayout: item.roomLayout,
+      Aliases: item.aliases,
+      Departments: item.departments,
+      Sections: item.sections,
+      Overlaps: item.overlaps,
+      RiskScore: item.riskScore,
+    })));
+    const peakForecastWorksheet = XLSX.utils.json_to_sheet(semesterPeakLoadForecast.map((item: any) => ({
+      Semester: item.semester,
+      Day: item.day,
+      PeakBand: item.peakBand,
+      PeakSlots: item.peakSlots,
+      TotalClasses: item.totalClasses,
+    })));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, roomWorksheet, 'Room Utilization');
     XLSX.utils.book_append_sheet(workbook, campusWorksheet, 'Campus Summary');
@@ -9051,6 +9525,16 @@ function ReportGeneration() {
     XLSX.utils.book_append_sheet(workbook, yearWorksheet, 'Year Summary');
     XLSX.utils.book_append_sheet(workbook, semesterWorksheet, 'Semester Summary');
     XLSX.utils.book_append_sheet(workbook, sectionWorksheet, 'Section Summary');
+    XLSX.utils.book_append_sheet(workbook, timeBandWorksheet, 'Time Band Utilization');
+    XLSX.utils.book_append_sheet(workbook, demandWorksheet, 'Dept RoomType Demand');
+    XLSX.utils.book_append_sheet(workbook, overlapWorksheet, 'Clash Overlap');
+    XLSX.utils.book_append_sheet(workbook, vacancyWorksheet, 'Vacancy Opportunity');
+    XLSX.utils.book_append_sheet(workbook, mismatchWorksheet, 'Capacity Mismatch');
+    XLSX.utils.book_append_sheet(workbook, examImpactWorksheet, 'Exam Impact');
+    XLSX.utils.book_append_sheet(workbook, lifecycleWorksheet, 'Booking Lifecycle');
+    XLSX.utils.book_append_sheet(workbook, noShowWorksheet, 'No Show Risk');
+    XLSX.utils.book_append_sheet(workbook, sharedRiskWorksheet, 'Shared Room Risk');
+    XLSX.utils.book_append_sheet(workbook, peakForecastWorksheet, 'Semester Peak Forecast');
     XLSX.writeFile(workbook, 'utilization-report.xlsx');
   };
   const exportSchoolSummaryReport = () => {
@@ -9164,6 +9648,16 @@ function ReportGeneration() {
             <option value="maintenance_impact">Maintenance Impact</option>
             <option value="underused">Underused Rooms</option>
             <option value="overused">Overused Rooms</option>
+            <option value="time_band_utilization">Time Band Utilization</option>
+            <option value="department_roomtype_demand">Department vs Room-Type Demand</option>
+            <option value="clash_overlap">Clash / Overlap Report</option>
+            <option value="vacancy_opportunity">Vacancy Opportunity Report</option>
+            <option value="capacity_mismatch">Capacity Mismatch Report</option>
+            <option value="exam_impact">Exam Impact Report</option>
+            <option value="booking_lifecycle">Booking Lead-Time & Cancellation</option>
+            <option value="no_show_risk">No-Show / Unused Booking Risk</option>
+            <option value="shared_room_conflict">Shared Room Conflict Risk</option>
+            <option value="semester_peak_forecast">Semester Peak Load Forecast</option>
           </select>
           <input type="date" value={filters.dateFrom} onChange={e => setFilters({ ...filters, dateFrom: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
           <input type="date" value={filters.dateTo} onChange={e => setFilters({ ...filters, dateTo: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500" />
@@ -9558,6 +10052,328 @@ function ReportGeneration() {
                   {bookingStatusSummary.length === 0 && (
                     <p className="text-sm text-slate-400 italic">No booking request activity matches the selected filters.</p>
                   )}
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'time_band_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Room Utilization by Time Band</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Time Band</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Booked Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utilization</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {roomTimeBandUtilization.map((item: any) => (
+                        <tr key={item.band} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.band}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledHours}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.bookedHours}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.utilization}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'department_roomtype_demand' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Department vs Room-Type Demand Matrix</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                        {roomTypeOptions.slice(0, 8).map((type: string) => (
+                          <th key={type} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">{type}</th>
+                        ))}
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {departmentRoomTypeDemand.map((item: any) => (
+                        <tr key={item.department} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.department}</td>
+                          {roomTypeOptions.slice(0, 8).map((type: string) => (
+                            <td key={type} className="py-4 text-sm text-slate-500 text-right">{item.roomTypeCounts[type] || 0}</td>
+                          ))}
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.totalDemand}</td>
+                        </tr>
+                      ))}
+                      {departmentRoomTypeDemand.length === 0 && (
+                        <tr><td colSpan={10} className="py-8 text-center text-slate-400 italic">No department demand rows match the selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'clash_overlap' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Clash / Overlap Report</h3>
+                <div className="overflow-x-auto max-h-96">
+                  <table className="w-full text-left">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Source</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day/Date</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry A</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry B</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {overlapConflictReport.map((item: any, index: number) => (
+                        <tr key={`${item.source}-${item.room}-${item.day}-${index}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-xs font-bold text-rose-600">{item.source}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.day}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.startA} - {item.endA} | {item.courseA}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.startB} - {item.endB} | {item.courseB}</td>
+                        </tr>
+                      ))}
+                      {overlapConflictReport.length === 0 && (
+                        <tr><td colSpan={5} className="py-8 text-center text-slate-400 italic">No overlap conflicts found for current filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'vacancy_opportunity' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Vacancy Opportunity Report</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Building</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Idle Hours/Week</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utilization</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Opportunity</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {vacancyOpportunityReport.map((item: any) => (
+                        <tr key={`${item.room}-${item.building}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.building}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.department}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.idleHours}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.utilization}%</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.opportunity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'capacity_mismatch' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Capacity Mismatch Report</h3>
+                <div className="overflow-x-auto max-h-96">
+                  <table className="w-full text-left">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Event</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Students</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Capacity</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Occupancy</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Type</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {capacityMismatchReport.map((item: any) => (
+                        <tr key={`${item.date}-${item.room}-${item.event}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm text-slate-500">{item.date || '-'}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.department}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.event}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.studentCount || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.roomCapacity || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.occupancyPercent}%</td>
+                          <td className="py-4 text-xs font-bold text-rose-600">{item.mismatchType}</td>
+                        </tr>
+                      ))}
+                      {capacityMismatchReport.length === 0 && (
+                        <tr><td colSpan={8} className="py-8 text-center text-slate-400 italic">No capacity mismatch rows found for selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'exam_impact' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Exam Impact Report</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Exam Window</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date Range</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Days</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Affected/Week</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Estimated Blocked</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {examImpactReport.map((item: any) => (
+                        <tr key={`${item.title}-${item.department}-${item.startDate}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.title}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.department}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.semester}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.startDate} to {item.endDate}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.days}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.affectedWeeklyClasses}</td>
+                          <td className="py-4 text-sm font-bold text-amber-700 text-right">{item.estimatedBlockedSessions}</td>
+                        </tr>
+                      ))}
+                      {examImpactReport.length === 0 && (
+                        <tr><td colSpan={7} className="py-8 text-center text-slate-400 italic">No examination impact found for selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'booking_lifecycle' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Booking Lead-Time & Cancellation Trends</h3>
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Requests</p><p className="text-2xl font-bold text-slate-800">{bookingLifecycleReport.totalRequests}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Approvals</p><p className="text-2xl font-bold text-emerald-700">{bookingLifecycleReport.approvals}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cancellations</p><p className="text-2xl font-bold text-rose-700">{bookingLifecycleReport.cancellations}</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cancellation Rate</p><p className="text-2xl font-bold text-slate-800">{bookingLifecycleReport.cancellationRate}%</p></div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100"><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg Lead Days</p><p className="text-2xl font-bold text-slate-800">{bookingLifecycleReport.averageLeadDays ?? 'N/A'}</p><p className="text-[10px] text-slate-400 mt-1">captured: {bookingLifecycleReport.leadTimeCapturedCount}</p></div>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'no_show_risk' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">No-Show / Unused Booking Risk</h3>
+                <div className="overflow-x-auto max-h-96">
+                  <table className="w-full text-left">
+                    <thead className="sticky top-0 bg-white">
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Booking</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Department</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Students</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Capacity</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Risk Score</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {noShowRiskReport.map((item: any) => (
+                        <tr key={`${item.bookingId}-${item.room}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.bookingId}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.date}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.department}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.studentCount || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.roomCapacity || '-'}</td>
+                          <td className="py-4 text-sm font-bold text-rose-700 text-right">{item.riskScore}</td>
+                        </tr>
+                      ))}
+                      {noShowRiskReport.length === 0 && (
+                        <tr><td colSpan={7} className="py-8 text-center text-slate-400 italic">No no-show risk rows for selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'shared_room_conflict' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Shared-Room Conflict Risk</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Building</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Layout / Aliases</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Departments</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Sections</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Overlaps</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Risk</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {sharedRoomConflictRiskReport.map((item: any) => (
+                        <tr key={`${item.room}-${item.building}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.building}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomLayout}{item.aliases ? ` (${item.aliases})` : ''}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.departments}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.sections}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.overlaps}</td>
+                          <td className="py-4 text-sm font-bold text-rose-700 text-right">{item.riskScore}</td>
+                        </tr>
+                      ))}
+                      {sharedRoomConflictRiskReport.length === 0 && (
+                        <tr><td colSpan={7} className="py-8 text-center text-slate-400 italic">No high-risk shared room conflicts for selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'semester_peak_forecast' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-6">Semester-wise Peak Load Forecast</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Peak Band</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Peak Slots</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Total Classes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {semesterPeakLoadForecast.map((item: any) => (
+                        <tr key={`${item.semester}-${item.day}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.semester}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.day}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.peakBand}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.peakSlots}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.totalClasses}</td>
+                        </tr>
+                      ))}
+                      {semesterPeakLoadForecast.length === 0 && (
+                        <tr><td colSpan={5} className="py-8 text-center text-slate-400 italic">No forecast rows available for selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
