@@ -2677,12 +2677,41 @@ function DashboardHome() {
   const [loading, setLoading] = useState(true);
   const [utilizationTrend, setUtilizationTrend] = useState<any[]>([]);
   const [schoolUsage, setSchoolUsage] = useState<any[]>([]);
+  const [aiInsightMessage, setAiInsightMessage] = useState('');
+
+  const composeInsightMessage = (statsPayload: any, schoolReportsPayload: any[]) => {
+    const rankedSchools = (Array.isArray(schoolReportsPayload) ? schoolReportsPayload : [])
+      .filter((school: any) => school?.name)
+      .sort((a: any, b: any) => (Number(b?.avgUtilization) || 0) - (Number(a?.avgUtilization) || 0));
+    const topSchool = rankedSchools[0];
+
+    if (!topSchool) {
+      return 'No school utilization data is available yet. Add room allocations, schedules, or approved bookings to populate live insights.';
+    }
+
+    const detailParts = [
+      `${topSchool.name} is currently at ${Number(topSchool?.avgUtilization) || 0}% average utilization.`,
+      `${statsPayload?.availableNow || 0} rooms are available right now.`,
+    ];
+
+    if ((statsPayload?.pendingBookings || 0) > 0) {
+      detailParts.push(`${statsPayload.pendingBookings} booking request${statsPayload.pendingBookings === 1 ? '' : 's'} ${statsPayload.pendingBookings === 1 ? 'is' : 'are'} still pending.`);
+    }
+
+    if ((statsPayload?.equipmentIssues || 0) > 0) {
+      detailParts.push(`${statsPayload.equipmentIssues} maintenance issue${statsPayload.equipmentIssues === 1 ? '' : 's'} need attention.`);
+    }
+
+    return detailParts.join(' ');
+  };
 
   useEffect(() => {
+    let isActive = true;
+
     const fetchData = async () => {
-      const fetchJson = async <T,>(url: string, fallback: T): Promise<T> => {
+      const fetchJson = async <T,>(url: string, fallback: T, options?: RequestInit): Promise<T> => {
         try {
-          const response = await fetch(url, { credentials: 'include' });
+          const response = await fetch(url, { credentials: 'include', ...(options || {}) });
           if (!response.ok) throw new Error(`${url} responded with ${response.status}`);
           return await response.json();
         } catch (error) {
@@ -2697,16 +2726,49 @@ function DashboardHome() {
           fetchJson('/api/analytics/utilization-trends', []),
           fetchJson('/api/reports/utilization', {})
         ]);
-        setStats(statsData || {});
+
+        if (!isActive) return;
+
+        const safeStats = statsData || {};
+        const safeSchoolReports = Array.isArray(reportData?.schoolReports) ? reportData.schoolReports : [];
+        const fallbackInsight = composeInsightMessage(safeStats, safeSchoolReports);
+
+        setStats(safeStats);
         setUtilizationTrend(Array.isArray(utilizationData) ? utilizationData : []);
-        setSchoolUsage(Array.isArray(reportData?.schoolReports) ? reportData.schoolReports : []);
+        setSchoolUsage(safeSchoolReports);
+        setAiInsightMessage(fallbackInsight);
+
+        const aiInsightResponse = await fetchJson<{ insight?: string; source?: string } | null>(
+          '/api/ai/dashboard-insight',
+          null,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stats: safeStats,
+              schoolReports: safeSchoolReports,
+            }),
+          }
+        );
+
+        if (!isActive) return;
+
+        const generatedInsight = aiInsightResponse?.insight?.toString().trim() || '';
+        setAiInsightMessage(generatedInsight || fallbackInsight);
       } catch (err) {
         console.error(err);
       } finally {
-        setLoading(false);
+        if (isActive) setLoading(false);
       }
     };
+
     fetchData();
+
+    const refreshTimer = window.setInterval(fetchData, 60000);
+    return () => {
+      isActive = false;
+      window.clearInterval(refreshTimer);
+    };
   }, []);
 
   const peakUtilization = useMemo(() => {
@@ -2726,28 +2788,6 @@ function DashboardHome() {
         color: colorClasses[index % colorClasses.length],
       }));
   }, [schoolUsage]);
-
-  const insightMessage = useMemo(() => {
-    const topSchool = schoolUsageItems[0];
-    if (!topSchool) {
-      return 'No school utilization data is available yet. Add room allocations, schedules, or approved bookings to populate live insights.';
-    }
-
-    const detailParts = [
-      `${topSchool.name} is currently at ${topSchool.value}% average utilization.`,
-      `${stats?.availableNow || 0} rooms are available right now.`,
-    ];
-
-    if ((stats?.pendingBookings || 0) > 0) {
-      detailParts.push(`${stats.pendingBookings} booking request${stats.pendingBookings === 1 ? '' : 's'} ${stats.pendingBookings === 1 ? 'is' : 'are'} still pending.`);
-    }
-
-    if ((stats?.equipmentIssues || 0) > 0) {
-      detailParts.push(`${stats.equipmentIssues} maintenance issue${stats.equipmentIssues === 1 ? '' : 's'} need attention.`);
-    }
-
-    return detailParts.join(' ');
-  }, [schoolUsageItems, stats]);
 
   const statCards = [
     { label: 'Total Buildings', value: stats?.totalBuildings || '0', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', path: '/digital-twin?view=3D' },
@@ -2886,7 +2926,7 @@ function DashboardHome() {
             </div>
             <h3 className="text-xl font-bold mb-4 relative z-10">AI Insights</h3>
             <p className="text-sm text-slate-400 leading-relaxed mb-6 relative z-10">
-              {insightMessage}
+              {aiInsightMessage}
             </p>
             <button
               onClick={() => navigate('/analytics')}
