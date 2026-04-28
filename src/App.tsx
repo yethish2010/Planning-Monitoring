@@ -9681,7 +9681,7 @@ function ReportGeneration() {
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
     XLSX.writeFile(workbook, fileName);
   };
-  const exportReportByType = (reportType: string) => {
+  const buildUtilizationReportConfigs = () => {
     const roomDetailRows = filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
       Campus: room.campus || '',
@@ -9700,7 +9700,7 @@ function ReportGeneration() {
       Flags: (room.flags || []).join(', '),
     }));
 
-    const reportConfigs: Record<string, { fileName: string; sheetName: string; rows: any[] }> = {
+    return {
       room_utilization: {
         fileName: 'room-utilization-report.xlsx',
         sheetName: 'Room Utilization',
@@ -9928,12 +9928,72 @@ function ReportGeneration() {
         })),
       },
     };
+  };
+
+  const exportReportByType = (reportType: string) => {
+    const reportConfigs = buildUtilizationReportConfigs();
     const config = reportConfigs[reportType];
     if (!config) {
       alert('Selected report type is not available for individual export.');
       return;
     }
     exportRowsToWorkbook(config.rows, config.fileName, config.sheetName);
+  };
+  const exportComprehensiveWorkbook = () => {
+    const reportConfigs = buildUtilizationReportConfigs();
+    const reportLabels = new Map(REPORT_TYPE_OPTIONS.map((option) => [option.value, option.label]));
+    const orderedReportTypes = REPORT_TYPE_OPTIONS.map((option) => option.value).filter((key) => !!reportConfigs[key]);
+    const reportSummaryRows = orderedReportTypes.map((reportType, index) => {
+      const report = reportConfigs[reportType];
+      return {
+        'S. No': index + 1,
+        'Report Type': reportType,
+        'Report Name': reportLabels.get(reportType) || reportType,
+        'Sheet Name': report.sheetName,
+        'Total Rows': report.rows.length,
+      };
+    });
+    const totalRowsAcrossReports = reportSummaryRows.reduce((total, row) => total + Number(row['Total Rows'] || 0), 0);
+    reportSummaryRows.push({
+      'S. No': 'TOTAL',
+      'Report Type': 'all_reports',
+      'Report Name': 'All Reports Combined',
+      'Sheet Name': `${orderedReportTypes.length} sheets`,
+      'Total Rows': totalRowsAcrossReports,
+    });
+
+    const completeDataRows = orderedReportTypes.flatMap((reportType) => {
+      const report = reportConfigs[reportType];
+      const reportName = reportLabels.get(reportType) || reportType;
+      return report.rows.map((row: any, rowIndex: number) => {
+        const entries = Object.entries(row || {});
+        const primaryEntry = entries[0] || ['', ''];
+        const secondaryEntry = entries[1] || ['', ''];
+        return {
+          'Report Type': reportType,
+          'Report Name': reportName,
+          'Sheet Name': report.sheetName,
+          'Row No': rowIndex + 1,
+          'Primary Field': primaryEntry[0],
+          'Primary Value': primaryEntry[1],
+          'Secondary Field': secondaryEntry[0],
+          'Secondary Value': secondaryEntry[1],
+          'Row JSON': JSON.stringify(row || {}),
+        };
+      });
+    });
+
+    const workbook = XLSX.utils.book_new();
+    const summaryWorksheet = XLSX.utils.json_to_sheet(reportSummaryRows);
+    const completeDataWorksheet = XLSX.utils.json_to_sheet(completeDataRows);
+    XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Overall Summary');
+    XLSX.utils.book_append_sheet(workbook, completeDataWorksheet, 'Complete Data');
+    orderedReportTypes.forEach((reportType) => {
+      const report = reportConfigs[reportType];
+      const worksheet = XLSX.utils.json_to_sheet(report.rows);
+      XLSX.utils.book_append_sheet(workbook, worksheet, report.sheetName);
+    });
+    XLSX.writeFile(workbook, 'comprehensive-utilization-workbook.xlsx');
   };
   const exportCurrentReport = () => exportReportByType(filters.reportType);
   const selectedSchoolRooms = selectedSchool
@@ -9982,6 +10042,13 @@ function ReportGeneration() {
             >
               <FileSpreadsheet size={16} />
               Export Current Report
+            </button>
+            <button
+              onClick={exportComprehensiveWorkbook}
+              className="px-4 py-2 bg-violet-50 text-violet-700 border border-violet-100 rounded-xl text-xs font-bold flex items-center gap-2"
+            >
+              <FileSpreadsheet size={16} />
+              Export Comprehensive Workbook
             </button>
             <button
               onClick={exportUtilizationReport}
@@ -10843,6 +10910,15 @@ function ReportGeneration() {
                     Download Selected Report
                   </button>
                 </div>
+                <button onClick={exportComprehensiveWorkbook} className="w-full flex items-center justify-between px-5 py-4 bg-violet-50 text-violet-700 rounded-2xl hover:bg-violet-100 transition-all group border border-violet-100">
+                  <div className="flex items-center gap-4">
+                    <div className="p-2 bg-white rounded-lg shadow-sm">
+                      <FileSpreadsheet className="text-violet-500" size={20} />
+                    </div>
+                    <span className="text-sm font-bold">Comprehensive Workbook</span>
+                  </div>
+                  <ChevronRight size={18} className="text-violet-300 group-hover:translate-x-1 transition-transform" />
+                </button>
                 <button onClick={exportSchoolSummaryReport} className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 text-slate-700 rounded-2xl hover:bg-slate-100 transition-all group border border-slate-100">
                   <div className="flex items-center gap-4">
                     <div className="p-2 bg-white rounded-lg shadow-sm">
