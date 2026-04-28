@@ -9810,7 +9810,7 @@ function ReportGeneration() {
       return;
     }
     const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
-      ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {}))))
+      ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
       : undefined;
     exportRowsToWorkbook(config.rows, config.fileName, config.sheetName, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
   };
@@ -9820,7 +9820,13 @@ function ReportGeneration() {
     const reportTypesFromFilters = REPORT_TYPE_OPTIONS.map((option) => option.value).filter((key) => !!reportConfigs[key]);
     const additionalReportTypes = Object.keys(reportConfigs).filter((key) => !reportTypesFromFilters.includes(key));
     const orderedReportTypes = [...reportTypesFromFilters, ...additionalReportTypes];
-    const reportSummaryRows = orderedReportTypes.map((reportType, index) => {
+    const reportSummaryRows: Array<{
+      'S. No': number | string;
+      'Report Type': string;
+      'Report Name': string;
+      'Sheet Name': string;
+      'Total Rows': number;
+    }> = orderedReportTypes.map((reportType, index) => {
       const report = reportConfigs[reportType];
       return {
         'S. No': index + 1,
@@ -9868,7 +9874,7 @@ function ReportGeneration() {
     orderedReportTypes.forEach((reportType) => {
       const report = reportConfigs[reportType];
       const dynamicColumns = reportType === 'department_roomtype_demand' && report.rows.length > 0
-        ? Array.from(new Set(report.rows.flatMap((row: any) => Object.keys(row || {}))))
+        ? Array.from(new Set(report.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
         : undefined;
       const worksheet = buildWorksheetFromRows(report.rows, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
       XLSX.utils.book_append_sheet(workbook, worksheet, report.sheetName);
