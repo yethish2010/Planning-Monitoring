@@ -10836,6 +10836,14 @@ function DigitalTwin() {
     return labels;
   }, [allocations, departmentsById, rooms]);
 
+  const calculateUsageHours = (start?: string, end?: string) => {
+    if (!start || !end) return 0;
+    const [startHour, startMinute] = start.split(':').map(Number);
+    const [endHour, endMinute] = end.split(':').map(Number);
+    if ([startHour, startMinute, endHour, endMinute].some(value => Number.isNaN(value))) return 0;
+    return Math.max(0, (endHour + endMinute / 60) - (startHour + startMinute / 60));
+  };
+
   const roomUsageMetricsByRoomId = useMemo(() => {
     const map = new Map<string, { scheduledHours: number; bookedHours: number; totalUsedHours: number; utilizationPercent: number }>();
     rooms.forEach((room: any) => {
@@ -10994,14 +11002,6 @@ function DigitalTwin() {
 
   const getRoomDepartmentLabel = (room: any) =>
     roomDepartmentLabelByRoomId.get(toKey(room?.id)) || 'Unmapped';
-
-  const calculateUsageHours = (start?: string, end?: string) => {
-    if (!start || !end) return 0;
-    const [startHour, startMinute] = start.split(':').map(Number);
-    const [endHour, endMinute] = end.split(':').map(Number);
-    if ([startHour, startMinute, endHour, endMinute].some(value => Number.isNaN(value))) return 0;
-    return Math.max(0, (endHour + endMinute / 60) - (startHour + startMinute / 60));
-  };
 
   const getRoomSchedules = (room: any) =>
     roomSchedulesByRoomId.get(toKey(room?.id)) || [];
