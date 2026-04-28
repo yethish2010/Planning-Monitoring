@@ -10121,6 +10121,8 @@ function DigitalTwin() {
   const [heatmapMode, setHeatmapMode] = useState(false);
   const [aiRecommendations, setAiRecommendations] = useState<any>(null);
   const [loadingAi, setLoadingAi] = useState(false);
+  const [aiOptimizationError, setAiOptimizationError] = useState('');
+  const [aiOptimizationSource, setAiOptimizationSource] = useState<'ai' | 'fallback' | ''>('');
   const [filters, setFilters] = useState({
     search: '',
     status: '',
@@ -10204,31 +10206,125 @@ function DigitalTwin() {
     }
   }, [location.search]);
 
+  const buildDigitalTwinOptimizationSummary = () => {
+    const safeSchedules = Array.isArray(schedules) ? deduplicateScheduleRows(schedules) : [];
+    const safeBookings = Array.isArray(bookings) ? bookings : [];
+    const safeRooms = Array.isArray(rooms) ? rooms : [];
+    const safeMaintenance = Array.isArray(maintenance) ? maintenance : [];
+    const safeBuildings = Array.isArray(buildings) ? buildings : [];
+    const safeBlocks = Array.isArray(blocks) ? blocks : [];
+    const safeFloors = Array.isArray(floors) ? floors : [];
+
+    const currentDayName = new Date(`${currentDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
+    const scheduledNowRoomIds = new Set(
+      safeSchedules
+        .filter(item => item?.day_of_week === currentDayName && item?.start_time <= currentTime && item?.end_time > currentTime)
+        .map(item => item?.room_id?.toString())
+        .filter(Boolean)
+    );
+    const bookedNowRoomIds = new Set(
+      safeBookings
+        .filter(item => item?.status === 'Approved' && item?.date === currentDate && item?.start_time <= currentTime && item?.end_time > currentTime)
+        .map(item => item?.room_id?.toString())
+        .filter(Boolean)
+    );
+    const maintenanceRoomIds = new Set(
+      safeMaintenance
+        .filter(item => item?.status !== 'Completed' && item?.room_id !== undefined && item?.room_id !== null)
+        .map(item => item.room_id.toString())
+    );
+
+    const activeRoomIds = new Set<string>([...scheduledNowRoomIds, ...bookedNowRoomIds]);
+    const availableNow = Math.max(0, safeRooms.length - activeRoomIds.size - maintenanceRoomIds.size);
+
+    const buildingStats = safeBuildings.map((building: any) => {
+      const buildingBlockIds = safeBlocks.filter((block: any) => idsMatch(block?.building_id, building?.id)).map((block: any) => block.id);
+      const buildingFloorIds = safeFloors.filter((floor: any) => buildingBlockIds.some((blockId: any) => idsMatch(blockId, floor?.block_id))).map((floor: any) => floor.id);
+      const buildingRooms = safeRooms.filter((room: any) => buildingFloorIds.some((floorId: any) => idsMatch(floorId, room?.floor_id)));
+      const buildingRoomIds = new Set(buildingRooms.map((room: any) => room?.id?.toString()).filter(Boolean));
+
+      const usedHours = safeSchedules
+        .filter((schedule: any) => buildingRoomIds.has(schedule?.room_id?.toString()))
+        .reduce((acc: number, schedule: any) => {
+          const [sh, sm] = (schedule?.start_time || '00:00').split(':').map(Number);
+          const [eh, em] = (schedule?.end_time || '00:00').split(':').map(Number);
+          if ([sh, sm, eh, em].some(value => Number.isNaN(value))) return acc;
+          const duration = Math.max(0, (eh + em / 60) - (sh + sm / 60));
+          return acc + duration;
+        }, 0);
+      const denominator = Math.max(buildingRooms.length * 72, 1);
+      const utilizationPercent = Math.min(100, Math.round((usedHours / denominator) * 100));
+
+      return {
+        name: building?.name || 'Unknown Building',
+        roomCount: buildingRooms.length,
+        utilizationPercent,
+      };
+    }).sort((a: any, b: any) => b.utilizationPercent - a.utilizationPercent);
+
+    const roomTypeMix = Array.from(
+      safeRooms.reduce((acc: Map<string, number>, room: any) => {
+        const key = room?.room_type?.toString()?.trim() || 'Unknown';
+        acc.set(key, (acc.get(key) || 0) + 1);
+        return acc;
+      }, new Map<string, number>())
+    ).map(([roomType, count]) => ({ roomType, count }));
+
+    return {
+      timestamp: new Date().toISOString(),
+      scope: {
+        selectedBuilding: selectedBuilding?.name || null,
+        selectedBlock: selectedBlock?.name || null,
+        selectedFloor: selectedFloor ? getFloorName(selectedFloor.floor_number) : null,
+      },
+      totals: {
+        campuses: campuses.length,
+        buildings: safeBuildings.length,
+        blocks: safeBlocks.length,
+        floors: safeFloors.length,
+        rooms: safeRooms.length,
+      },
+      live: {
+        scheduledNow: scheduledNowRoomIds.size,
+        bookedNow: bookedNowRoomIds.size,
+        maintenanceRooms: maintenanceRoomIds.size,
+        availableNow,
+      },
+      topBuildings: buildingStats.slice(0, 5),
+      roomTypeMix,
+      pendingBookings: safeBookings.filter(item => item?.status === 'Pending').length,
+      openMaintenanceTickets: safeMaintenance.filter(item => item?.status !== 'Completed').length,
+    };
+  };
+
   const runAiOptimization = async () => {
     setLoadingAi(true);
+    setAiOptimizationError('');
     try {
-      const ai = getGenAIClient();
-      const model = ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analyze this campus infrastructure data and provide optimization recommendations:
-        Campuses: ${JSON.stringify(campuses)}
-        Buildings: ${JSON.stringify(buildings)}
-        Blocks: ${JSON.stringify(blocks)}
-        Floors: ${JSON.stringify(floors)}
-        Rooms: ${JSON.stringify(rooms)}
-        Maintenance: ${JSON.stringify(maintenance)}
-        
-        Return a JSON object with:
-        - recommendations (array of strings)
-        - futureForecast (string)
-        - efficiencyScore (number 0-100)
-        - simulationImpact (string)`,
-        config: { responseMimeType: "application/json" }
+      const summary = buildDigitalTwinOptimizationSummary();
+      const response = await fetch('/api/ai/digital-twin-optimization', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ summary }),
       });
-      const result = await model;
-      setAiRecommendations(parseAIResponse(await getAIResponseText(result)));
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result?.error || 'AI optimization failed.');
+      }
+      if (!Array.isArray(result?.recommendations) || !result?.futureForecast) {
+        throw new Error('AI optimization response format is invalid.');
+      }
+      setAiRecommendations({
+        recommendations: result.recommendations,
+        futureForecast: result.futureForecast,
+        efficiencyScore: Number(result.efficiencyScore) || 0,
+        simulationImpact: result.simulationImpact || '',
+      });
+      setAiOptimizationSource(result?.source === 'fallback' ? 'fallback' : 'ai');
     } catch (err) {
       console.error(err);
+      setAiOptimizationError('AI optimization is temporarily unavailable. Please try again in a moment.');
     } finally {
       setLoadingAi(false);
     }
@@ -10611,6 +10707,16 @@ function DigitalTwin() {
           </button>
         </div>
       </div>
+      {aiOptimizationError && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+          {aiOptimizationError}
+        </div>
+      )}
+      {aiOptimizationSource === 'fallback' && !aiOptimizationError && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+          AI service is busy. Showing safe fallback optimization based on live campus data.
+        </div>
+      )}
 
       {heatmapMode && !selectedBuilding && (
         <div className="flex flex-wrap items-center gap-3 px-1">

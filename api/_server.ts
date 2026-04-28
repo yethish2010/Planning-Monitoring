@@ -1249,6 +1249,64 @@ const composeDashboardInsightFallback = (stats: any, schoolReports: any[]) => {
   return summaryParts.join(" ");
 };
 
+const composeDigitalTwinOptimizationFallback = (summary: any) => {
+  const totalRooms = Number(summary?.totals?.rooms) || 0;
+  const scheduledNow = Number(summary?.live?.scheduledNow) || 0;
+  const bookedNow = Number(summary?.live?.bookedNow) || 0;
+  const maintenanceRooms = Number(summary?.live?.maintenanceRooms) || 0;
+  const availableNow = Number(summary?.live?.availableNow) || 0;
+  const activeRooms = scheduledNow + bookedNow;
+  const efficiencyScore = totalRooms > 0
+    ? Math.max(10, Math.min(100, Math.round(((activeRooms + availableNow) / totalRooms) * 100 - maintenanceRooms)))
+    : 45;
+  const topBuildings = Array.isArray(summary?.topBuildings) ? summary.topBuildings : [];
+  const topBuildingLabel = topBuildings[0]?.name ? `${topBuildings[0].name}` : "the busiest building";
+
+  const recommendations = [
+    `Prioritize timetable balancing for ${topBuildingLabel} to reduce concentrated peak load and improve room spread across other buildings.`,
+    `Convert rooms with repeated low usage into flexible shared pools for elective, lab support, and event overflow slots.`,
+    `Auto-tag maintenance-prone rooms for proactive checks before daily peak hours to avoid avoidable schedule disruptions.`,
+  ];
+
+  const futureForecast = maintenanceRooms > 0
+    ? "If maintenance backlog is reduced and low-usage rooms are rebalanced, utilization consistency should improve over the next 2-4 weeks."
+    : "Current infrastructure is stable; adding periodic balancing of schedules and bookings should increase effective utilization in upcoming weeks.";
+
+  const simulationImpact = totalRooms > 0
+    ? `Simulated rebalancing indicates up to ${Math.max(4, Math.min(18, Math.round((activeRooms / Math.max(totalRooms, 1)) * 20)))}% improvement in peak-slot distribution.`
+    : "Simulation baseline is limited because room inventory is still being populated.";
+
+  return {
+    recommendations,
+    futureForecast,
+    efficiencyScore,
+    simulationImpact,
+    source: "fallback",
+  };
+};
+
+const normalizeDigitalTwinOptimizationResponse = (payload: any, fallback: any) => {
+  const recommendations = Array.isArray(payload?.recommendations)
+    ? payload.recommendations.map((item: any) => item?.toString?.().trim()).filter(Boolean)
+    : [];
+  const futureForecast = payload?.futureForecast?.toString?.().trim() || "";
+  const simulationImpact = payload?.simulationImpact?.toString?.().trim() || "";
+  const rawScore = Number(payload?.efficiencyScore);
+  const efficiencyScore = Number.isFinite(rawScore) ? Math.max(0, Math.min(100, Math.round(rawScore))) : NaN;
+
+  if (recommendations.length === 0 || !futureForecast || !Number.isFinite(efficiencyScore)) {
+    return fallback;
+  }
+
+  return {
+    recommendations: recommendations.slice(0, 6),
+    futureForecast,
+    efficiencyScore,
+    simulationImpact: simulationImpact || fallback.simulationImpact,
+    source: "ai",
+  };
+};
+
 const normalizeExtractedSectionValue = (value: any) => {
   const raw = value?.toString().trim();
   if (!raw) return "";
@@ -1395,6 +1453,49 @@ Keep it factual and actionable. Do not use markdown, bullets, or emojis.`;
     } catch (aiErr: any) {
       console.error("Dashboard AI insight fallback:", aiErr?.message || aiErr);
       return res.json({ insight: fallbackInsight, source: "fallback" });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/ai/digital-twin-optimization", authenticate, async (req, res) => {
+  try {
+    const summary = req.body?.summary && typeof req.body.summary === "object" ? req.body.summary : {};
+    const fallback = composeDigitalTwinOptimizationFallback(summary);
+
+    if (!GEMINI_API_KEY) {
+      return res.json(fallback);
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const prompt = `You are a campus infrastructure optimization assistant.
+Analyze the following digital twin summary and return only JSON with these keys:
+- recommendations (array of concise actionable strings)
+- futureForecast (string)
+- efficiencyScore (number 0-100)
+- simulationImpact (string)
+
+Context summary JSON:
+${JSON.stringify(summary)}
+
+Rules:
+- Keep recommendations specific and operational.
+- Mention maintenance and scheduling distribution when relevant.
+- Do not include markdown or explanation outside JSON.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" },
+      });
+
+      const parsed = parseAIJsonResponse(await getAIResponseText(response));
+      return res.json(normalizeDigitalTwinOptimizationResponse(parsed, fallback));
+    } catch (aiErr: any) {
+      console.error("Digital twin optimization fallback:", aiErr?.message || aiErr);
+      return res.json(fallback);
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
