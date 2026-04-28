@@ -2774,7 +2774,7 @@ function DashboardHome() {
         const [statsData, utilizationData, reportData] = await Promise.all([
           fetchJson('/api/dashboard/stats', {}),
           fetchJson('/api/analytics/utilization-trends', []),
-          fetchJson('/api/reports/utilization', {})
+          fetchJson<any>('/api/reports/utilization', {})
         ]);
 
         if (!isActive) return;
@@ -8967,9 +8967,9 @@ function ReportGeneration() {
   const avgFilteredUtilization = Math.round(filteredRoomReports.reduce((acc: number, room: any) => acc + room.utilization, 0) / (filteredRoomReports.length || 1));
   const mostUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => b.utilization - a.utilization)[0];
   const leastUsedRoom = [...filteredRoomReports].sort((a: any, b: any) => a.utilization - b.utilization)[0];
-  const filteredRoomIdSet = new Set(filteredRoomReports.map((room: any) => room.room_id?.toString()).filter(Boolean));
-  const filteredRoomNumberSet = new Set(filteredRoomReports.map((room: any) => room.room_number?.toString().trim()).filter(Boolean));
-  const roomMetaByRoomId = new Map(filteredRoomReports.map((room: any) => [room.room_id?.toString(), room]));
+  const filteredRoomIdSet = new Set<string>(filteredRoomReports.map((room: any) => room.room_id?.toString()).filter(Boolean));
+  const filteredRoomNumberSet = new Set<string>(filteredRoomReports.map((room: any) => room.room_number?.toString().trim()).filter(Boolean));
+  const roomMetaByRoomId = new Map<string, any>(filteredRoomReports.map((room: any) => [room.room_id?.toString(), room]));
   const reportDayOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const parseTimeToMinutes = (time?: string) => {
     if (!time || !time.includes(':')) return null;
@@ -9007,7 +9007,7 @@ function ReportGeneration() {
   };
   const yearMatches = (scheduleValue: any, selectedValue: string) => {
     if (!selectedValue) return true;
-    const normalized = normalizeYearOfStudyKey(scheduleValue);
+    const normalized = normalizeYearOfStudyValue(scheduleValue);
     return normalized ? normalized === selectedValue : false;
   };
   const sectionMatches = (scheduleValue: any, selectedValue: string) => {
@@ -9069,11 +9069,12 @@ function ReportGeneration() {
       utilization,
     };
   });
-  const departmentRoomTypeDemand = Array.from(new Set([
+  const departmentNamesForDemand = Array.from(new Set<string>([
     ...filteredScheduleRows.map((schedule: any) => schedule.department_name || roomMetaByRoomId.get(schedule.room_id?.toString())?.department || 'Unmapped'),
     ...filteredApprovedBookings.map((booking: any) => booking.department_name || getBookingRoomMeta(booking)?.department || 'Unmapped'),
-  ].filter(Boolean))).sort().map((department) => {
-    const roomTypeCounts = roomTypeOptions.reduce((acc: Record<string, number>, roomType: string) => {
+  ].filter(Boolean))).sort();
+  const departmentRoomTypeDemand = departmentNamesForDemand.map((department: string) => {
+    const roomTypeCounts = roomTypeOptions.reduce<Record<string, number>>((acc: Record<string, number>, roomType: string) => {
       const normalizedRoomType = roomType.toLowerCase();
       const scheduleCount = filteredScheduleRows.filter((schedule: any) => {
         const scheduleDepartment = schedule.department_name || roomMetaByRoomId.get(schedule.room_id?.toString())?.department || 'Unmapped';
@@ -9088,7 +9089,7 @@ function ReportGeneration() {
       acc[roomType] = scheduleCount + bookingCount;
       return acc;
     }, {});
-    const totalDemand = Object.values(roomTypeCounts).reduce((sum, value) => sum + value, 0);
+    const totalDemand: number = Object.values(roomTypeCounts).reduce((sum: number, value) => sum + Number(value || 0), 0);
     return { department, totalDemand, roomTypeCounts };
   }).filter((row) => row.totalDemand > 0).sort((a, b) => b.totalDemand - a.totalDemand);
   const scheduleOverlapRows = (() => {
@@ -9208,7 +9209,7 @@ function ReportGeneration() {
       isExaminationCalendarEvent(calendar) &&
       (!filters.department || matchesReportFilterValue(calendar.department_name, filters.department)) &&
       (!filters.semester || normalizeSemesterValue(calendar.semester, '').toLowerCase() === filters.semester.toLowerCase()) &&
-      (!filters.year || normalizeYearOfStudyKey(calendar.year_of_study) === filters.year) &&
+      (!filters.year || normalizeYearOfStudyValue(calendar.year_of_study) === filters.year) &&
       (!filters.dateFrom || (calendar.end_date || calendar.start_date) >= filters.dateFrom) &&
       (!filters.dateTo || (calendar.start_date || calendar.end_date) <= filters.dateTo),
     )

@@ -1294,7 +1294,7 @@ var composeUtilizationOptimizationFallback = (snapshot) => {
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
-  const focusDept = Object.entries(lowDept).sort((a, b) => b[1] - a[1])[0]?.[0] || "target departments";
+  const focusDept = Object.entries(lowDept).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0] || "target departments";
   return [
     {
       title: "Rebalance Underused Rooms",
