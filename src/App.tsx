@@ -9475,16 +9475,112 @@ function ReportGeneration() {
     }, {}));
     return XLSX.utils.json_to_sheet(orderedRows, { header: resolvedColumns });
   };
+  const sanitizeReportSheetName = (value: string) =>
+    value.replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Export';
+  const toNumericValue = (value: unknown): number | null => {
+    if (value == null) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    const cleaned = value
+      .toString()
+      .replace(/,/g, '')
+      .replace(/%/g, '')
+      .trim();
+    if (!cleaned) return null;
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const buildVisualizationRows = (rows: any[], columns?: string[]) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const resolvedColumns = (columns && columns.length > 0)
+      ? columns
+      : (safeRows[0] ? Object.keys(safeRows[0]) : []);
+    if (safeRows.length === 0 || resolvedColumns.length === 0) {
+      return [{
+        'Visualization Type': 'info',
+        Label: 'No data available',
+        Value: '',
+        Metric: '',
+        Note: 'Source report has no rows for the current filters.',
+      }];
+    }
+
+    const numericColumns = resolvedColumns.filter((column) =>
+      safeRows.some((row: any) => toNumericValue(row?.[column]) != null)
+    );
+    const categoricalColumns = resolvedColumns.filter((column) =>
+      safeRows.some((row: any) => {
+        const value = row?.[column];
+        return value != null && toNumericValue(value) == null && value.toString().trim() !== '';
+      })
+    );
+
+    const visualizationRows: Array<Record<string, any>> = [{
+      'Visualization Type': 'kpi',
+      Label: 'Total Rows',
+      Value: safeRows.length,
+      Metric: 'count',
+      Note: 'Total records in this report.',
+    }];
+
+    numericColumns.forEach((column) => {
+      const values = safeRows
+        .map((row: any) => toNumericValue(row?.[column]))
+        .filter((value): value is number => value != null);
+      if (values.length === 0) return;
+      const sum = values.reduce((acc, value) => acc + value, 0);
+      const avg = sum / values.length;
+      visualizationRows.push({
+        'Visualization Type': 'metric',
+        Label: column,
+        Value: Math.round(sum * 100) / 100,
+        Metric: 'sum',
+        Note: `Average: ${Math.round(avg * 100) / 100}`,
+      });
+    });
+
+    const primaryCategory = categoricalColumns[0];
+    if (primaryCategory) {
+      const distribution = new Map<string, number>();
+      safeRows.forEach((row: any) => {
+        const label = (row?.[primaryCategory] ?? 'Unknown').toString().trim() || 'Unknown';
+        distribution.set(label, (distribution.get(label) || 0) + 1);
+      });
+      Array.from(distribution.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .forEach(([label, count]) => {
+          visualizationRows.push({
+            'Visualization Type': 'distribution',
+            Label: label,
+            Value: count,
+            Metric: primaryCategory,
+            Note: `Top distribution by ${primaryCategory}`,
+          });
+        });
+    }
+
+    return visualizationRows;
+  };
+  const appendVisualizationSheet = (workbook: XLSX.WorkBook, baseSheetName: string, rows: any[], columns?: string[]) => {
+    const visualRows = buildVisualizationRows(rows, columns);
+    const visualWorksheet = buildWorksheetFromRows(
+      visualRows,
+      ['Visualization Type', 'Label', 'Value', 'Metric', 'Note'],
+    );
+    XLSX.utils.book_append_sheet(workbook, visualWorksheet, sanitizeReportSheetName(`${baseSheetName} Visual`));
+  };
   const buildWorkbookFromReportConfigs = (reportConfigs: Record<string, { fileName: string; sheetName: string; rows: any[] }>, reportOrder: string[], fileName: string) => {
     const workbook = XLSX.utils.book_new();
     reportOrder.forEach((reportType) => {
       const config = reportConfigs[reportType];
       if (!config) return;
       const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
-        ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {}))))
+        ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
         : undefined;
-      const worksheet = buildWorksheetFromRows(config.rows, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
+      const exportColumns = dynamicColumns || REPORT_EXPORT_COLUMNS[reportType];
+      const worksheet = buildWorksheetFromRows(config.rows, exportColumns);
       XLSX.utils.book_append_sheet(workbook, worksheet, config.sheetName);
+      appendVisualizationSheet(workbook, config.sheetName, config.rows, exportColumns);
     });
     XLSX.writeFile(workbook, fileName);
   };
@@ -9546,6 +9642,7 @@ function ReportGeneration() {
     const workbook = XLSX.utils.book_new();
     const worksheet = buildWorksheetFromRows(rows, columns);
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    appendVisualizationSheet(workbook, sheetName, rows, columns);
     XLSX.writeFile(workbook, fileName);
   };
   const buildUtilizationReportConfigs = () => {
@@ -9892,8 +9989,10 @@ function ReportGeneration() {
       const dynamicColumns = reportType === 'department_roomtype_demand' && report.rows.length > 0
         ? Array.from(new Set(report.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
         : undefined;
-      const worksheet = buildWorksheetFromRows(report.rows, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
+      const exportColumns = dynamicColumns || REPORT_EXPORT_COLUMNS[reportType];
+      const worksheet = buildWorksheetFromRows(report.rows, exportColumns);
       XLSX.utils.book_append_sheet(workbook, worksheet, report.sheetName);
+      appendVisualizationSheet(workbook, report.sheetName, report.rows, exportColumns);
     });
     XLSX.writeFile(workbook, 'comprehensive-utilization-workbook.xlsx');
   };
