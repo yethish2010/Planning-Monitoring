@@ -9797,8 +9797,418 @@ function ReportGeneration() {
     );
     XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeReportSheetName('Chart Recommendations'));
   };
-  const buildWorkbookFromReportConfigs = (reportConfigs: Record<string, { fileName: string; sheetName: string; rows: any[] }>, reportOrder: string[], fileName: string) => {
-    const workbook = XLSX.utils.book_new();
+
+  type ReportConfigMap = Record<string, { fileName: string; sheetName: string; rows: any[] }>;
+  type ReportRecommendationItem = {
+    reportType: string;
+    reportName: string;
+    sheetName: string;
+    rows: any[];
+    columns: string[];
+  };
+  type ChartPoint = {
+    label: string;
+    value: number;
+    secondaryValue?: number;
+  };
+  type ExcelWorkbook = import('exceljs').Workbook;
+  type ExcelWorksheet = import('exceljs').Worksheet;
+
+  const createExcelWorkbook = async () => {
+    const module = await import('exceljs');
+    const ExcelJSRuntime = (module as any).default || module;
+    return new ExcelJSRuntime.Workbook() as ExcelWorkbook;
+  };
+
+  const getReportColumns = (reportType: string, rows: any[]) => {
+    if (reportType === 'department_roomtype_demand' && rows.length > 0) {
+      return Array.from(new Set(rows.flatMap((row: any) => Object.keys(row || {})))) as string[];
+    }
+    return REPORT_EXPORT_COLUMNS[reportType] || (rows[0] ? Object.keys(rows[0]) : []);
+  };
+  const toExcelCellValue = (value: unknown) => {
+    if (value == null) return '';
+    if (Array.isArray(value)) return value.join(', ');
+    if (typeof value === 'object') return JSON.stringify(value);
+    return value as string | number | boolean;
+  };
+  const getUniqueExcelSheetName = (workbook: ExcelWorkbook, value: string) => {
+    const baseName = sanitizeReportSheetName(value);
+    let candidate = baseName;
+    let index = 2;
+    while (workbook.getWorksheet(candidate)) {
+      const suffix = ` ${index}`;
+      candidate = `${baseName.slice(0, Math.max(1, 31 - suffix.length))}${suffix}`;
+      index += 1;
+    }
+    return candidate;
+  };
+  const applyExcelHeaderStyle = (worksheet: ExcelWorksheet) => {
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+    headerRow.alignment = { vertical: 'middle', wrapText: true };
+    headerRow.height = 22;
+    worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+  };
+  const appendExcelDataSheet = (
+    workbook: ExcelWorkbook,
+    sheetName: string,
+    rows: any[],
+    columns?: string[],
+  ) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const resolvedColumns = (columns && columns.length > 0)
+      ? columns
+      : (safeRows[0] ? Object.keys(safeRows[0]) : []);
+    const worksheet = workbook.addWorksheet(getUniqueExcelSheetName(workbook, sheetName));
+    if (resolvedColumns.length === 0) {
+      worksheet.addRow(['No data available']);
+      applyExcelHeaderStyle(worksheet);
+      worksheet.getColumn(1).width = 24;
+      return worksheet;
+    }
+    worksheet.addRow(resolvedColumns);
+    safeRows.forEach((row: any) => {
+      worksheet.addRow(resolvedColumns.map((column) => toExcelCellValue(row?.[column])));
+    });
+    applyExcelHeaderStyle(worksheet);
+    resolvedColumns.forEach((column, columnIndex) => {
+      const maxLength = Math.max(
+        column.length,
+        ...safeRows.slice(0, 250).map((row: any) => String(toExcelCellValue(row?.[column])).length),
+      );
+      worksheet.getColumn(columnIndex + 1).width = Math.min(Math.max(maxLength + 2, 12), 36);
+    });
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      row.alignment = { vertical: 'top', wrapText: true };
+    });
+    return worksheet;
+  };
+  const appendExcelVisualizationDataSheet = (
+    workbook: ExcelWorkbook,
+    baseSheetName: string,
+    rows: any[],
+    columns?: string[],
+  ) => {
+    const visualRows = buildVisualizationRows(rows, columns);
+    appendExcelDataSheet(
+      workbook,
+      `${baseSheetName} Visual`,
+      visualRows,
+      ['Visualization Type', 'Label', 'Value', 'Metric', 'Note'],
+    );
+  };
+  const normalizeChartFieldName = (value: string) =>
+    value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const findMatchingReportColumn = (columns: string[], preferred: string) => {
+    const preferredParts = preferred.split(/[\/+]/).map((part) => part.trim()).filter(Boolean);
+    const candidates = preferredParts.length > 0 ? preferredParts : [preferred];
+    const normalizedColumns = columns.map((column) => ({ column, normalized: normalizeChartFieldName(column) }));
+    for (const candidate of candidates) {
+      const normalizedCandidate = normalizeChartFieldName(candidate);
+      const directMatch = normalizedColumns.find((item) => item.normalized === normalizedCandidate);
+      if (directMatch) return directMatch.column;
+      const looseMatch = normalizedColumns.find((item) =>
+        item.normalized.includes(normalizedCandidate) || normalizedCandidate.includes(item.normalized)
+      );
+      if (looseMatch) return looseMatch.column;
+    }
+    return '';
+  };
+  const getChartDataPoints = (
+    reportType: string,
+    rows: any[],
+    columns: string[],
+  ): { points: ChartPoint[]; xLabel: string; yLabel: string; chartType: string; note: string } => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const recommendation = getChartRecommendationMeta(reportType, columns);
+    if (safeRows.length === 0) {
+      return { points: [], xLabel: recommendation.xAxis, yLabel: recommendation.yAxis, chartType: recommendation.chart, note: recommendation.note };
+    }
+
+    if (reportType === 'booking_lifecycle') {
+      const lifecycleRow = safeRows[0] || {};
+      const points = ['TotalRequests', 'Approvals', 'Cancellations', 'LeadTimeCapturedCount']
+        .map((key) => ({ label: key.replace(/([A-Z])/g, ' $1').trim(), value: toNumericValue(lifecycleRow[key]) || 0 }))
+        .filter((point) => point.value > 0);
+      return { points, xLabel: 'Lifecycle Stage', yLabel: 'Count', chartType: recommendation.chart, note: recommendation.note };
+    }
+
+    const xColumn = findMatchingReportColumn(columns, recommendation.xAxis) || columns.find((column) =>
+      safeRows.some((row: any) => row?.[column] != null && toNumericValue(row?.[column]) == null)
+    ) || columns[0] || 'Category';
+    const yColumn = findMatchingReportColumn(columns, recommendation.yAxis) || columns.find((column) =>
+      safeRows.some((row: any) => toNumericValue(row?.[column]) != null)
+    ) || '';
+
+    if (!yColumn || reportType === 'clash_overlap') {
+      const grouped = new Map<string, number>();
+      safeRows.forEach((row: any) => {
+        const label = (row?.[xColumn] ?? 'Unknown').toString().trim() || 'Unknown';
+        grouped.set(label, (grouped.get(label) || 0) + 1);
+      });
+      const points = Array.from(grouped.entries())
+        .map(([label, value]) => ({ label, value }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 12);
+      return { points, xLabel: xColumn, yLabel: reportType === 'clash_overlap' ? 'Overlap Count' : 'Count', chartType: recommendation.chart, note: recommendation.note };
+    }
+
+    const points = safeRows
+      .map((row: any) => ({
+        label: (row?.[xColumn] ?? 'Unknown').toString().trim() || 'Unknown',
+        value: toNumericValue(row?.[yColumn]) || 0,
+        secondaryValue: toNumericValue(row?.Capacity ?? row?.TotalCapacity ?? row?.Rooms),
+      }))
+      .filter((point) => Number.isFinite(point.value))
+      .sort((a, b) => {
+        if (recommendation.sortBy.toLowerCase().includes('asc')) return a.value - b.value;
+        return b.value - a.value;
+      })
+      .slice(0, 12);
+    return { points, xLabel: xColumn, yLabel: yColumn, chartType: recommendation.chart, note: recommendation.note };
+  };
+  const drawRoundedRect = (
+    context: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+  ) => {
+    context.beginPath();
+    context.moveTo(x + radius, y);
+    context.lineTo(x + width - radius, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + radius);
+    context.lineTo(x + width, y + height - radius);
+    context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    context.lineTo(x + radius, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - radius);
+    context.lineTo(x, y + radius);
+    context.quadraticCurveTo(x, y, x + radius, y);
+    context.closePath();
+  };
+  const drawChartImage = (
+    reportName: string,
+    reportType: string,
+    rows: any[],
+    columns: string[],
+  ) => {
+    if (typeof document === 'undefined') return '';
+    const width = 1120;
+    const height = 620;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) return '';
+    const palette = ['#10B981', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6', '#14B8A6', '#F97316', '#64748B'];
+    const chart = getChartDataPoints(reportType, rows, columns);
+    context.fillStyle = '#F8FAFC';
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = '#0F172A';
+    context.font = 'bold 30px Calibri, Arial, sans-serif';
+    context.fillText(reportName, 42, 58);
+    context.fillStyle = '#64748B';
+    context.font = '16px Calibri, Arial, sans-serif';
+    context.fillText(`${chart.chartType} | ${chart.xLabel} vs ${chart.yLabel}`, 42, 88);
+    context.fillText(chart.note, 42, 114);
+    drawRoundedRect(context, 32, 136, width - 64, height - 176, 18);
+    context.fillStyle = '#FFFFFF';
+    context.fill();
+    context.strokeStyle = '#E2E8F0';
+    context.lineWidth = 2;
+    context.stroke();
+
+    if (chart.points.length === 0) {
+      context.fillStyle = '#94A3B8';
+      context.font = 'bold 28px Calibri, Arial, sans-serif';
+      context.textAlign = 'center';
+      context.fillText('No report data available for visualization', width / 2, height / 2);
+      context.textAlign = 'left';
+      return canvas.toDataURL('image/png');
+    }
+
+    const chartKind = chart.chartType.toLowerCase();
+    const isPie = chartKind.includes('pie') || chartKind.includes('donut');
+    const isLine = chartKind.includes('line') || chartKind.includes('forecast');
+    const isScatter = chartKind.includes('scatter');
+    const isHorizontal = chartKind.includes('horizontal') || chartKind.includes('clustered');
+
+    if (isPie) {
+      const total = chart.points.reduce((sum, point) => sum + Math.max(point.value, 0), 0) || 1;
+      const centerX = 430;
+      const centerY = 350;
+      const radius = 150;
+      let startAngle = -Math.PI / 2;
+      chart.points.forEach((point, index) => {
+        const slice = (Math.max(point.value, 0) / total) * Math.PI * 2;
+        context.beginPath();
+        context.moveTo(centerX, centerY);
+        context.arc(centerX, centerY, radius, startAngle, startAngle + slice);
+        context.closePath();
+        context.fillStyle = palette[index % palette.length];
+        context.fill();
+        startAngle += slice;
+      });
+      if (chartKind.includes('donut')) {
+        context.beginPath();
+        context.arc(centerX, centerY, 78, 0, Math.PI * 2);
+        context.fillStyle = '#FFFFFF';
+        context.fill();
+      }
+      chart.points.slice(0, 8).forEach((point, index) => {
+        const y = 230 + index * 36;
+        context.fillStyle = palette[index % palette.length];
+        context.fillRect(680, y - 12, 18, 18);
+        context.fillStyle = '#0F172A';
+        context.font = '16px Calibri, Arial, sans-serif';
+        context.fillText(`${point.label} (${point.value})`, 710, y + 2);
+      });
+    } else {
+      const plotX = 92;
+      const plotY = 190;
+      const plotWidth = 940;
+      const plotHeight = 330;
+      const values = chart.points.map((point) => Math.max(point.value, 0));
+      const maxValue = Math.max(...values, 1);
+      context.strokeStyle = '#E2E8F0';
+      context.lineWidth = 1;
+      context.fillStyle = '#64748B';
+      context.font = '13px Calibri, Arial, sans-serif';
+      for (let i = 0; i <= 4; i += 1) {
+        const y = plotY + plotHeight - (plotHeight * i / 4);
+        context.beginPath();
+        context.moveTo(plotX, y);
+        context.lineTo(plotX + plotWidth, y);
+        context.stroke();
+        context.fillText(String(Math.round(maxValue * i / 4)), 42, y + 4);
+      }
+
+      if (isLine) {
+        const step = chart.points.length > 1 ? plotWidth / (chart.points.length - 1) : plotWidth;
+        context.beginPath();
+        chart.points.forEach((point, index) => {
+          const x = plotX + index * step;
+          const y = plotY + plotHeight - (Math.max(point.value, 0) / maxValue) * plotHeight;
+          if (index === 0) context.moveTo(x, y);
+          else context.lineTo(x, y);
+        });
+        context.strokeStyle = '#10B981';
+        context.lineWidth = 5;
+        context.stroke();
+        chart.points.forEach((point, index) => {
+          const x = plotX + index * step;
+          const y = plotY + plotHeight - (Math.max(point.value, 0) / maxValue) * plotHeight;
+          context.beginPath();
+          context.arc(x, y, 7, 0, Math.PI * 2);
+          context.fillStyle = '#0EA5E9';
+          context.fill();
+        });
+      } else if (isScatter) {
+        const secondaryValues = chart.points.map((point) => Math.max(point.secondaryValue || point.value, 0));
+        const maxSecondary = Math.max(...secondaryValues, 1);
+        chart.points.forEach((point, index) => {
+          const x = plotX + (Math.max(point.secondaryValue || point.value, 0) / maxSecondary) * plotWidth;
+          const y = plotY + plotHeight - (Math.max(point.value, 0) / maxValue) * plotHeight;
+          context.beginPath();
+          context.arc(x, y, 10, 0, Math.PI * 2);
+          context.fillStyle = palette[index % palette.length];
+          context.fill();
+        });
+      } else if (isHorizontal) {
+        const rowHeight = Math.min(32, plotHeight / Math.max(chart.points.length, 1));
+        chart.points.forEach((point, index) => {
+          const y = plotY + index * rowHeight + 4;
+          const barWidth = (Math.max(point.value, 0) / maxValue) * (plotWidth - 220);
+          context.fillStyle = '#334155';
+          context.font = '13px Calibri, Arial, sans-serif';
+          context.fillText(point.label.slice(0, 24), plotX, y + 16);
+          drawRoundedRect(context, plotX + 220, y, barWidth, rowHeight - 8, 7);
+          context.fillStyle = palette[index % palette.length];
+          context.fill();
+          context.fillStyle = '#0F172A';
+          context.fillText(String(point.value), plotX + 230 + barWidth, y + 16);
+        });
+      } else {
+        const barGap = 16;
+        const barWidth = Math.max(22, (plotWidth - barGap * (chart.points.length - 1)) / Math.max(chart.points.length, 1));
+        chart.points.forEach((point, index) => {
+          const barHeight = (Math.max(point.value, 0) / maxValue) * plotHeight;
+          const x = plotX + index * (barWidth + barGap);
+          const y = plotY + plotHeight - barHeight;
+          drawRoundedRect(context, x, y, Math.min(barWidth, 58), barHeight, 8);
+          context.fillStyle = palette[index % palette.length];
+          context.fill();
+          context.save();
+          context.translate(x + 8, plotY + plotHeight + 18);
+          context.rotate(-Math.PI / 5);
+          context.fillStyle = '#475569';
+          context.font = '12px Calibri, Arial, sans-serif';
+          context.fillText(point.label.slice(0, 18), 0, 0);
+          context.restore();
+        });
+      }
+    }
+
+    return canvas.toDataURL('image/png');
+  };
+  const appendExcelImageSheet = (
+    workbook: ExcelWorkbook,
+    reportType: string,
+    reportName: string,
+    sheetName: string,
+    rows: any[],
+    columns: string[],
+  ) => {
+    const worksheet = workbook.addWorksheet(getUniqueExcelSheetName(workbook, `${sheetName} Image`));
+    worksheet.getCell('A1').value = reportName;
+    worksheet.getCell('A1').font = { bold: true, size: 18, color: { argb: 'FF0F172A' } };
+    worksheet.getCell('A2').value = `Image-based visualization generated from ${rows.length} rows.`;
+    worksheet.getCell('A2').font = { italic: true, color: { argb: 'FF64748B' } };
+    worksheet.getColumn(1).width = 24;
+    worksheet.getRow(1).height = 26;
+    const imageData = drawChartImage(reportName, reportType, rows, columns);
+    if (imageData) {
+      const imageId = workbook.addImage({ base64: imageData, extension: 'png' });
+      worksheet.addImage(imageId, { tl: { col: 0, row: 3 }, ext: { width: 960, height: 532 } });
+      for (let rowIndex = 4; rowIndex < 32; rowIndex += 1) worksheet.getRow(rowIndex).height = 18;
+      for (let columnIndex = 1; columnIndex <= 14; columnIndex += 1) worksheet.getColumn(columnIndex).width = 12;
+    } else {
+      worksheet.getCell('A4').value = 'Image visualization is available only in the browser runtime.';
+    }
+  };
+  const appendExcelChartRecommendationsSheet = (
+    workbook: ExcelWorkbook,
+    items: ReportRecommendationItem[],
+  ) => {
+    const rows = buildChartRecommendationRows(items);
+    appendExcelDataSheet(
+      workbook,
+      'Chart Recommendations',
+      rows,
+      ['Report Type', 'Report Name', 'Source Sheet', 'Recommended Chart', 'X Axis', 'Y Axis', 'Sort By', 'Top N Suggested', 'Data Rows', 'Note'],
+    );
+  };
+  const saveExcelWorkbook = async (workbook: ExcelWorkbook, fileName: string) => {
+    workbook.creator = 'MBU SmartCampus AI';
+    workbook.created = new Date();
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const buildWorkbookFromReportConfigs = async (reportConfigs: ReportConfigMap, reportOrder: string[], fileName: string) => {
+    const workbook = await createExcelWorkbook();
     const recommendationItems: Array<{
       reportType: string;
       reportName: string;
@@ -9809,32 +10219,30 @@ function ReportGeneration() {
     reportOrder.forEach((reportType) => {
       const config = reportConfigs[reportType];
       if (!config) return;
-      const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
-        ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
-        : undefined;
-      const exportColumns = dynamicColumns || REPORT_EXPORT_COLUMNS[reportType];
-      const worksheet = buildWorksheetFromRows(config.rows, exportColumns);
-      XLSX.utils.book_append_sheet(workbook, worksheet, config.sheetName);
-      appendVisualizationSheet(workbook, config.sheetName, config.rows, exportColumns);
+      const exportColumns = getReportColumns(reportType, config.rows);
+      const reportName = REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName;
+      appendExcelDataSheet(workbook, config.sheetName, config.rows, exportColumns);
+      appendExcelVisualizationDataSheet(workbook, config.sheetName, config.rows, exportColumns);
+      appendExcelImageSheet(workbook, reportType, reportName, config.sheetName, config.rows, exportColumns);
       recommendationItems.push({
         reportType,
-        reportName: REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName,
+        reportName,
         sheetName: config.sheetName,
         rows: config.rows,
         columns: exportColumns || [],
       });
     });
-    appendChartRecommendationsSheet(workbook, recommendationItems);
-    XLSX.writeFile(workbook, fileName);
+    appendExcelChartRecommendationsSheet(workbook, recommendationItems);
+    await saveExcelWorkbook(workbook, fileName);
   };
-  const exportUtilizationReport = () => {
+  const exportUtilizationReport = async () => {
     const reportConfigs = buildUtilizationReportConfigs();
-    buildWorkbookFromReportConfigs(reportConfigs, Object.keys(reportConfigs), 'utilization-report.xlsx');
+    await buildWorkbookFromReportConfigs(reportConfigs, Object.keys(reportConfigs), 'utilization-report.xlsx');
   };
-  const exportSchoolSummaryReport = () => {
+  const exportSchoolSummaryReport = async () => {
     const reportConfigs = buildUtilizationReportConfigs();
     const config = reportConfigs.school_utilization;
-    exportRowsToWorkbook(
+    await exportRowsToWorkbook(
       config.rows,
       config.fileName,
       config.sheetName,
@@ -9843,7 +10251,7 @@ function ReportGeneration() {
       'School Utilization Summary',
     );
   };
-  const exportRawUsageData = () => {
+  const exportRawUsageData = async () => {
     const rows = filteredRoomReports.map((room: any) => ({
       Room: room.room_number,
       Campus: room.campus || '',
@@ -9886,21 +10294,22 @@ function ReportGeneration() {
       'IsBookable', 'LabName', 'SubLabName', 'RestroomFor', 'Capacity', 'Status', 'Utilization', 'ScheduledHours',
       'BookedHours', 'MaintenanceIssues', 'BookingStatuses', 'BookingDates', 'Flags'
     ];
-    exportRowsToWorkbook(rows, 'raw-usage-data.xlsx', 'Raw Usage Data', rawUsageColumns, 'raw_usage_data', 'Raw Usage Data');
+    await exportRowsToWorkbook(rows, 'raw-usage-data.xlsx', 'Raw Usage Data', rawUsageColumns, 'raw_usage_data', 'Raw Usage Data');
   };
-  const exportRowsToWorkbook = (rows: any[], fileName: string, sheetName: string, columns?: string[], reportType = 'custom_report', reportName = sheetName) => {
-    const workbook = XLSX.utils.book_new();
-    const worksheet = buildWorksheetFromRows(rows, columns);
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-    appendVisualizationSheet(workbook, sheetName, rows, columns);
-    appendChartRecommendationsSheet(workbook, [{
+  const exportRowsToWorkbook = async (rows: any[], fileName: string, sheetName: string, columns?: string[], reportType = 'custom_report', reportName = sheetName) => {
+    const workbook = await createExcelWorkbook();
+    const resolvedColumns = columns || (rows[0] ? Object.keys(rows[0]) : []);
+    appendExcelDataSheet(workbook, sheetName, rows, resolvedColumns);
+    appendExcelVisualizationDataSheet(workbook, sheetName, rows, resolvedColumns);
+    appendExcelImageSheet(workbook, reportType, reportName, sheetName, rows, resolvedColumns);
+    appendExcelChartRecommendationsSheet(workbook, [{
       reportType,
       reportName,
       sheetName,
       rows,
-      columns: columns || (rows[0] ? Object.keys(rows[0]) : []),
+      columns: resolvedColumns,
     }]);
-    XLSX.writeFile(workbook, fileName);
+    await saveExcelWorkbook(workbook, fileName);
   };
   const buildUtilizationReportConfigs = () => {
     const roomDetailRows = filteredRoomReports.map((room: any) => ({
@@ -10167,26 +10576,24 @@ function ReportGeneration() {
     };
   };
 
-  const exportReportByType = (reportType: string) => {
+  const exportReportByType = async (reportType: string) => {
     const reportConfigs = buildUtilizationReportConfigs();
     const config = reportConfigs[reportType as keyof typeof reportConfigs];
     if (!config) {
       alert('Selected report type is not available for individual export.');
       return;
     }
-    const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
-      ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
-      : undefined;
-    exportRowsToWorkbook(
+    const exportColumns = getReportColumns(reportType, config.rows);
+    await exportRowsToWorkbook(
       config.rows,
       config.fileName,
       config.sheetName,
-      dynamicColumns || REPORT_EXPORT_COLUMNS[reportType],
+      exportColumns,
       reportType,
       REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName,
     );
   };
-  const exportComprehensiveWorkbook = () => {
+  const exportComprehensiveWorkbook = async () => {
     const reportConfigs = buildUtilizationReportConfigs();
     const reportLabels = new Map(REPORT_TYPE_OPTIONS.map((option) => [option.value, option.label]));
     const reportTypesFromFilters = REPORT_TYPE_OPTIONS
@@ -10243,39 +10650,29 @@ function ReportGeneration() {
       });
     });
 
-    const workbook = XLSX.utils.book_new();
-    const summaryWorksheet = buildWorksheetFromRows(reportSummaryRows, ['S. No', 'Report Type', 'Report Name', 'Sheet Name', 'Total Rows']);
-    const completeDataWorksheet = buildWorksheetFromRows(completeDataRows, completeDataHeaders);
-    XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Overall Summary');
-    XLSX.utils.book_append_sheet(workbook, completeDataWorksheet, 'Complete Data');
-    const recommendationItems: Array<{
-      reportType: string;
-      reportName: string;
-      sheetName: string;
-      rows: any[];
-      columns: string[];
-    }> = [];
+    const workbook = await createExcelWorkbook();
+    appendExcelDataSheet(workbook, 'Overall Summary', reportSummaryRows, ['S. No', 'Report Type', 'Report Name', 'Sheet Name', 'Total Rows']);
+    appendExcelDataSheet(workbook, 'Complete Data', completeDataRows, completeDataHeaders);
+    const recommendationItems: ReportRecommendationItem[] = [];
     orderedReportTypes.forEach((reportType) => {
       const report = reportConfigs[reportType as keyof typeof reportConfigs];
-      const dynamicColumns = reportType === 'department_roomtype_demand' && report.rows.length > 0
-        ? Array.from(new Set(report.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
-        : undefined;
-      const exportColumns = dynamicColumns || REPORT_EXPORT_COLUMNS[reportType];
-      const worksheet = buildWorksheetFromRows(report.rows, exportColumns);
-      XLSX.utils.book_append_sheet(workbook, worksheet, report.sheetName);
-      appendVisualizationSheet(workbook, report.sheetName, report.rows, exportColumns);
+      const exportColumns = getReportColumns(reportType, report.rows);
+      const reportName = reportLabels.get(reportType) || report.sheetName;
+      appendExcelDataSheet(workbook, report.sheetName, report.rows, exportColumns);
+      appendExcelVisualizationDataSheet(workbook, report.sheetName, report.rows, exportColumns);
+      appendExcelImageSheet(workbook, reportType, reportName, report.sheetName, report.rows, exportColumns);
       recommendationItems.push({
         reportType,
-        reportName: reportLabels.get(reportType) || report.sheetName,
+        reportName,
         sheetName: report.sheetName,
         rows: report.rows,
         columns: exportColumns || [],
       });
     });
-    appendChartRecommendationsSheet(workbook, recommendationItems);
-    XLSX.writeFile(workbook, 'comprehensive-utilization-workbook.xlsx');
+    appendExcelChartRecommendationsSheet(workbook, recommendationItems);
+    await saveExcelWorkbook(workbook, 'comprehensive-utilization-workbook.xlsx');
   };
-  const exportCurrentReport = () => exportReportByType(filters.reportType);
+  const exportCurrentReport = () => { void exportReportByType(filters.reportType); };
   const selectedSchoolRooms = selectedSchool
     ? filteredRoomReports.filter((room: any) => room.school === selectedSchool.name)
     : [];
