@@ -10659,7 +10659,6 @@ function ReportGeneration() {
       const exportColumns = getReportColumns(reportType, report.rows);
       const reportName = reportLabels.get(reportType) || report.sheetName;
       appendExcelDataSheet(workbook, report.sheetName, report.rows, exportColumns);
-      appendExcelVisualizationDataSheet(workbook, report.sheetName, report.rows, exportColumns);
       appendExcelImageSheet(workbook, reportType, reportName, report.sheetName, report.rows, exportColumns);
       recommendationItems.push({
         reportType,
