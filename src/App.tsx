@@ -10379,10 +10379,10 @@ function ReportGeneration() {
 
     if (reportType === 'booking_lifecycle') {
       const lifecycleRow = safeRows[0] || {};
-      const points: ChartPoint[] = ['TotalRequests', 'Approvals', 'Cancellations', 'LeadTimeCapturedCount']
+      const lifecyclePoints: ChartPoint[] = ['TotalRequests', 'Approvals', 'Cancellations', 'LeadTimeCapturedCount']
         .map((key) => ({ label: key.replace(/([A-Z])/g, ' $1').trim(), value: toNumericValue(lifecycleRow[key]) || 0 }))
         .filter((point) => point.value > 0);
-      return { points, xLabel: 'Lifecycle Stage', yLabel: 'Count', chartType: recommendation.chart, note: recommendation.note };
+      return { points: lifecyclePoints, xLabel: 'Lifecycle Stage', yLabel: 'Count', chartType: recommendation.chart, note: recommendation.note };
     }
 
     const xColumn = findMatchingReportColumn(columns, recommendation.xAxis) || columns.find((column) =>
@@ -10398,14 +10398,14 @@ function ReportGeneration() {
         const label = (row?.[xColumn] ?? 'Unknown').toString().trim() || 'Unknown';
         grouped.set(label, (grouped.get(label) || 0) + 1);
       });
-      const points: ChartPoint[] = Array.from(grouped.entries())
+      const groupedPoints: ChartPoint[] = Array.from(grouped.entries())
         .map(([label, value]) => ({ label, value }))
         .sort((a, b) => b.value - a.value)
         .slice(0, 12);
-      return { points, xLabel: xColumn, yLabel: reportType === 'clash_overlap' ? 'Overlap Count' : 'Count', chartType: recommendation.chart, note: recommendation.note };
+      return { points: groupedPoints, xLabel: xColumn, yLabel: reportType === 'clash_overlap' ? 'Overlap Count' : 'Count', chartType: recommendation.chart, note: recommendation.note };
     }
 
-    const points: ChartPoint[] = safeRows
+    const chartPoints: ChartPoint[] = safeRows
       .map((row: any) => ({
         label: (row?.[xColumn] ?? 'Unknown').toString().trim() || 'Unknown',
         value: toNumericValue(row?.[yColumn]) || 0,
@@ -10417,7 +10417,7 @@ function ReportGeneration() {
         return b.value - a.value;
       })
       .slice(0, 12);
-    return { points, xLabel: xColumn, yLabel: yColumn, chartType: recommendation.chart, note: recommendation.note };
+    return { points: chartPoints, xLabel: xColumn, yLabel: yColumn, chartType: recommendation.chart, note: recommendation.note };
   };
   const drawRoundedRect = (
     context: CanvasRenderingContext2D,
