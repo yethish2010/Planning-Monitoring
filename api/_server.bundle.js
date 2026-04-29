@@ -1426,7 +1426,8 @@ app.post("/api/ai/dashboard-insight", authenticate, async (req, res) => {
 Generate one concise admin insight sentence (maximum 55 words) using this live context.
 Top school utilization: ${rankedSchools || "No school data"}.
 Available rooms now: ${Number(safeStats?.availableNow) || 0}.
-Scheduled rooms now: ${Number(safeStats?.scheduledRooms) || 0}.
+Scheduled rooms today: ${Number(safeStats?.scheduledRooms) || 0}.
+Scheduled rooms right now: ${Number(safeStats?.activeScheduledRooms) || 0}.
 Pending bookings: ${Number(safeStats?.pendingBookings) || 0}.
 Equipment issues: ${Number(safeStats?.equipmentIssues) || 0}.
 Keep it factual and actionable. Do not use markdown, bullets, or emojis.`;
@@ -2318,8 +2319,8 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     const equipmentIssues = await db.prepare("SELECT COUNT(*) as count FROM maintenance WHERE status = 'Pending'").get();
     const pendingBookings = await db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'Pending'").get();
     const { date: currentDate, time: currentTime } = getCampusDateTimeParts();
-    const activeSchedules = await getEffectiveSchedulesForDate(
-      currentDate,
+    const daySchedules = await getEffectiveSchedulesForDate(currentDate);
+    const activeSchedules = daySchedules.filter(
       (schedule) => schedule.start_time <= currentTime && schedule.end_time > currentTime
     );
     const activeBookings = await db.prepare(`
@@ -2328,6 +2329,9 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
     `).all(currentDate, currentTime, currentTime);
     const activeScheduleRoomIds = new Set(
       activeSchedules.map((item) => item.room_id).filter(Boolean)
+    );
+    const dayScheduleRoomIds = new Set(
+      daySchedules.map((item) => item.room_id).filter(Boolean)
     );
     const activeBookingRoomIds = new Set(
       activeBookings.map((item) => item.room_id).filter(Boolean)
@@ -2352,8 +2356,9 @@ app.get("/api/dashboard/stats", authenticate, async (req, res) => {
       availableNow,
       equipmentIssues: equipmentIssues.count,
       pendingBookings: pendingBookings.count,
-      // Keep this strictly "live now" and aligned with status filters in Digital Twin.
-      scheduledRooms: activeScheduleRoomIds.size,
+      // Scheduled rooms for the current day (stable metric), plus live-now subset.
+      scheduledRooms: dayScheduleRoomIds.size,
+      activeScheduledRooms: activeScheduleRoomIds.size,
       bookedRooms: activeBookingRoomIds.size,
       occupiedRooms: occupiedRoomIds.size,
       recentAlerts
