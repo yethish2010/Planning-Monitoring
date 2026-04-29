@@ -10222,7 +10222,6 @@ function ReportGeneration() {
       const exportColumns = getReportColumns(reportType, config.rows);
       const reportName = REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName;
       appendExcelDataSheet(workbook, config.sheetName, config.rows, exportColumns);
-      appendExcelVisualizationDataSheet(workbook, config.sheetName, config.rows, exportColumns);
       appendExcelImageSheet(workbook, reportType, reportName, config.sheetName, config.rows, exportColumns);
       recommendationItems.push({
         reportType,
@@ -10300,7 +10299,6 @@ function ReportGeneration() {
     const workbook = await createExcelWorkbook();
     const resolvedColumns = columns || (rows[0] ? Object.keys(rows[0]) : []);
     appendExcelDataSheet(workbook, sheetName, rows, resolvedColumns);
-    appendExcelVisualizationDataSheet(workbook, sheetName, rows, resolvedColumns);
     appendExcelImageSheet(workbook, reportType, reportName, sheetName, rows, resolvedColumns);
     appendExcelChartRecommendationsSheet(workbook, [{
       reportType,
