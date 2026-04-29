@@ -1573,7 +1573,7 @@ Return a single JSON object with exactly these keys:
   - department (e.g., "Computer Science and Engineering")
   - section (e.g., "A1", "A2", "A10" from headers like SECTION-A1)
   - year_of_study (Roman or numeric year if available, e.g., "II", "2", "IV Year")
-  - semester (Odd or Even if available, else null)
+  - semester (prefer the exact semester if available, e.g., "IV", "6", or "VI Semester"; use Odd/Even only if the file truly provides no exact semester)
   - course_code (if available, else null)
   - course_name (the subject name, e.g., "Computer Networks")
   - faculty (the teacher's name)
@@ -1594,8 +1594,8 @@ If a slot has multiple subjects or is a lab, create separate entries if needed o
 
 Example response:
 {
-  "sectionRoomMaps": [{"section":"A4","room":"331","year_of_study":"II","semester":"Even","department":"Computer Science and Engineering"}],
-  "schedules": [{"department":"Computer Science and Engineering","section":"A4","year_of_study":"II","semester":"Even","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
+  "sectionRoomMaps": [{"section":"A4","room":"331","year_of_study":"II","semester":"IV Semester","department":"Computer Science and Engineering"}],
+  "schedules": [{"department":"Computer Science and Engineering","section":"A4","year_of_study":"II","semester":"IV Semester","course_code":"22ME101703M","course_name":"Management Science","faculty":"MOOC","room":"331","day_of_week":"Monday","start_time":"09:00","end_time":"09:55","student_count":null}]
 }` });
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const response = await ai.models.generateContent({
