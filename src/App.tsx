@@ -1463,8 +1463,48 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
       },
     ],
   },
+  'Timing Profile': {
+    headers: ['Profile ID', 'Profile Name', 'School', 'Department', 'Program', 'Academic Year', 'Year / Semester', 'Semester', 'Section', 'Working Days', 'Slot Timings', 'Notes'],
+    exampleRows: [
+      {
+        'Profile ID': 'TP-COMMON-UG',
+        'Profile Name': 'Common UG Day Pattern',
+        School: 'School of Computing',
+        Department: '',
+        Program: 'B.Tech',
+        'Academic Year': '2025-26',
+        'Year / Semester': '',
+        Semester: '',
+        Section: '',
+        'Working Days': 'Monday,Tuesday,Wednesday,Thursday,Friday,Saturday',
+        'Slot Timings': '09:00-09:55, 09:55-10:50, 11:10-12:05, 12:05-13:00, 14:15-15:10, 15:10-16:05',
+        Notes: 'Default pattern used by multiple UG batches.',
+      },
+      {
+        'Profile ID': 'TP-CSE-VI-ALT',
+        'Profile Name': 'CSE VI Semester Late Shift',
+        School: 'School of Computing',
+        Department: 'Computer Science and Engineering',
+        Program: 'B.Tech',
+        'Academic Year': '2025-26',
+        'Year / Semester': '3rd Year - 6th Semester',
+        Semester: 'VI Semester',
+        Section: 'A4',
+        'Working Days': 'Monday,Tuesday,Wednesday,Thursday,Friday',
+        'Slot Timings': '10:00-10:55, 10:55-11:50, 12:10-13:05, 13:05-14:00, 15:00-15:55, 15:55-16:50',
+        Notes: 'Specific override timing profile for mixed shared-room usage.',
+      },
+    ],
+    instructions: [
+      'Keep scope fields blank to create a broad default profile that can be reused across multiple years or semesters.',
+      'Use more specific scope fields such as Department, Year / Semester, Semester, or Section only when that context truly follows a different daily timing pattern.',
+      'Slot Timings must be comma-separated or line-separated ranges in HH:mm-HH:mm format, for example 09:00-09:55, 09:55-10:50.',
+      'Timetable View prefers the active timing profile for vacancy slot scaffolding and falls back to the imported timetable timings when no profile is matched.',
+      'Academic Calendar rows can optionally link to one timing profile so date-based periods and slot patterns stay connected without storing timings directly in the calendar row.',
+    ],
+  },
   'Academic Calendar': {
-    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
+    headers: ['Calendar ID', 'School', 'Department', 'Program', 'Batch', 'Academic Year', 'Semester', 'Year / Semester', 'Timing Profile', 'Event Type', 'Title', 'Start Date', 'End Date', 'Notes'],
     exampleRows: [
       {
         'Calendar ID': 'CAL-MTECH2-2025-26',
@@ -1475,6 +1515,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         Semester: 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
+        'Timing Profile': 'Common UG Day Pattern',
         'Event Type': 'Semester Period',
         Title: 'M.Tech II Semester - Teaching Period',
         'Start Date': '2026-01-02',
@@ -1490,6 +1531,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         Semester: 'VI Semester',
         'Year / Semester': '3rd Year - 6th Semester',
+        'Timing Profile': 'CSE VI Semester Late Shift',
         'Event Type': 'Semester Period',
         Title: 'B.Tech VI Semester - Teaching Period',
         'Start Date': '2026-01-02',
@@ -1505,6 +1547,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         Semester: 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
+        'Timing Profile': 'Common UG Day Pattern',
         'Event Type': 'Examinations',
         Title: 'CIAT-I',
         'Start Date': '2026-03-09',
@@ -1520,6 +1563,7 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
         'Academic Year': '2025-26',
         Semester: 'Even',
         'Year / Semester': '2nd Year - 4th Semester',
+        'Timing Profile': 'Common UG Day Pattern',
         'Event Type': 'Examinations',
         Title: 'CIAT-II',
         'Start Date': '2026-04-27',
@@ -1530,9 +1574,10 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
     instructions: [
       `Allowed Event Type values: ${ACADEMIC_CALENDAR_EVENT_TYPES.join(', ')}.`,
       `Allowed Program values include: ${PROGRAM_OPTIONS.join(', ')}.`,
-      'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester -> Year / Semester.',
+      'Match the form order exactly: School -> Department -> Program -> Batch -> Academic Year -> Semester -> Year / Semester -> Timing Profile.',
       'Semester accepts Odd/Even, numeric values like 6, and Roman numeral values like VI Semester. Roman numerals are normalized automatically during import.',
       'For Year / Semester, use values like 1st Year - 1st Semester, 1st Year - 2nd Semester, 2nd Year - 3rd Semester, 2nd Year - 4th Semester, and so on.',
+      'Timing Profile is optional but recommended whenever a batch or semester follows a defined slot pattern. Use either the Profile ID or Profile Name from Timing Profile Management.',
       'Use one row per academic period. The app automatically marks rows as Upcoming, Active, or Completed from the date range.',
       'Use Event Type = Examinations for CIAT-I, CIAT-II, semester-end exams, or any exam window where normal class timetable occupancy must be ignored.',
       'When an Examinations row is active for a department and semester, Timetable View, Room Bookings vacancy checks, and Digital Twin suppress normal class schedules for those dates.',
@@ -1729,6 +1774,138 @@ const DEFAULT_TIMETABLE_TIME_SLOTS = [
 ];
 
 const MIN_INFERRED_TIMETABLE_SLOT_MINUTES = 30;
+const DEFAULT_TIMING_PROFILE_WORKING_DAYS = 'Monday,Tuesday,Wednesday,Thursday,Friday,Saturday';
+
+const normalizeDayLabel = (value: unknown) => {
+  const normalized = normalizeLookupValue(value);
+  if (!normalized) return '';
+  const dayMap: Record<string, string> = {
+    mon: 'Monday',
+    monday: 'Monday',
+    tue: 'Tuesday',
+    tues: 'Tuesday',
+    tuesday: 'Tuesday',
+    wed: 'Wednesday',
+    wednesday: 'Wednesday',
+    thu: 'Thursday',
+    thur: 'Thursday',
+    thurs: 'Thursday',
+    thursday: 'Thursday',
+    fri: 'Friday',
+    friday: 'Friday',
+    sat: 'Saturday',
+    saturday: 'Saturday',
+    sun: 'Sunday',
+    sunday: 'Sunday',
+  };
+  return dayMap[normalized] || value?.toString().trim() || '';
+};
+
+const parseTimingProfileSlots = (value: unknown) => {
+  const slotText = value?.toString().trim() || '';
+  if (!slotText) return [];
+
+  const validSlots = slotText
+    .split(/[\n,;]+/)
+    .map(part => part.trim())
+    .filter(Boolean)
+    .map(part => {
+      const match = part.match(/^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/);
+      if (!match) return null;
+      const start = match[1].padStart(5, '0');
+      const end = match[2].padStart(5, '0');
+      if (start >= end) return null;
+      return { start_time: start, end_time: end };
+    })
+    .filter((slot): slot is { start_time: string; end_time: string } => Boolean(slot));
+
+  return Array.from(new Map(validSlots.map(slot => [getTimeSlotKey(slot), slot])).values())
+    .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || '') || (a.end_time || '').localeCompare(b.end_time || ''));
+};
+
+const normalizeTimingProfileSlotPattern = (value: unknown) =>
+  parseTimingProfileSlots(value)
+    .map(slot => `${slot.start_time}-${slot.end_time}`)
+    .join(', ');
+
+const normalizeTimingProfileWorkingDays = (value: unknown) => {
+  const parts = (value?.toString().trim() || DEFAULT_TIMING_PROFILE_WORKING_DAYS)
+    .split(/[\n,;|/]+/)
+    .flatMap(part => part.split('&'))
+    .map(part => normalizeDayLabel(part))
+    .filter(Boolean);
+
+  const normalizedDays = Array.from(new Set(parts));
+  return (normalizedDays.length > 0 ? normalizedDays : DEFAULT_TIMING_PROFILE_WORKING_DAYS.split(',')).join(', ');
+};
+
+const getTimingProfileDisplayLabel = (profile: any) => {
+  if (!profile) return 'Timing profile not set';
+  const primary = profile.profile_name || profile.name || profile.profile_id || 'Timing Profile';
+  return profile.profile_id ? `${primary} (${profile.profile_id})` : primary;
+};
+
+const getTimingProfileSpecificityScore = (profile: any) => [
+  profile?.school_id,
+  profile?.department_id,
+  profile?.program,
+  profile?.academic_year,
+  profile?.year_of_study,
+  profile?.semester,
+  profile?.section,
+].filter(value => value !== undefined && value !== null && value.toString().trim() !== '').length;
+
+const timingProfileMatchesContext = (profile: any, context: any) => {
+  if (!profile) return false;
+  if (profile.school_id && !idsMatch(profile.school_id, context.school_id)) return false;
+  if (profile.department_id && !idsMatch(profile.department_id, context.department_id)) return false;
+  if (profile.program && normalizeProgramValue(profile.program) !== normalizeProgramValue(context.program)) return false;
+  if (profile.academic_year && normalizeLookupValue(profile.academic_year) !== normalizeLookupValue(context.academic_year)) return false;
+  if (profile.year_of_study && normalizeYearOfStudyValue(profile.year_of_study, '') !== normalizeYearOfStudyValue(context.year_of_study, '')) return false;
+  if (profile.semester && normalizeExactSemesterValue(profile.semester, profile.year_of_study, profile.semester || '') !== normalizeExactSemesterValue(context.semester, context.year_of_study, '')) return false;
+  if (profile.section && normalizeLookupValue(profile.section) !== normalizeLookupValue(context.section)) return false;
+  return true;
+};
+
+const academicCalendarMatchesTimingContext = (calendar: any, context: any, activeDate: string) => {
+  if (!calendar?.timing_profile_id) return false;
+  if (activeDate && ((calendar.start_date && calendar.start_date > activeDate) || (calendar.end_date && calendar.end_date < activeDate))) return false;
+  if (normalizeLookupValue(calendar.event_type) === normalizeLookupValue('Examinations')) return false;
+  if (calendar.school_id && context.school_id && !idsMatch(calendar.school_id, context.school_id)) return false;
+  if (calendar.department_id && context.department_id && !idsMatch(calendar.department_id, context.department_id)) return false;
+  if (calendar.program && context.program && normalizeProgramValue(calendar.program) !== normalizeProgramValue(context.program)) return false;
+  if (calendar.academic_year && context.academic_year && normalizeLookupValue(calendar.academic_year) !== normalizeLookupValue(context.academic_year)) return false;
+  if (calendar.year_of_study && context.year_of_study && normalizeYearOfStudyValue(calendar.year_of_study, '') !== normalizeYearOfStudyValue(context.year_of_study, '')) return false;
+  if (calendar.semester && context.semester && normalizeSemesterValue(calendar.semester, '') !== normalizeSemesterValue(context.semester, '')) return false;
+  return true;
+};
+
+const resolveTimingProfileForContext = ({
+  timingProfiles,
+  academicCalendars,
+  activeDate,
+  context,
+}: {
+  timingProfiles: any[];
+  academicCalendars: any[];
+  activeDate: string;
+  context: any;
+}) => {
+  if (!Array.isArray(timingProfiles) || timingProfiles.length === 0) return null;
+
+  const profileById = new Map(timingProfiles.map(profile => [profile.id?.toString(), profile]));
+  const linkedProfile = academicCalendars
+    .filter(calendar => academicCalendarMatchesTimingContext(calendar, context, activeDate))
+    .sort((left, right) => getTimingProfileSpecificityScore(right) - getTimingProfileSpecificityScore(left))
+    .map(calendar => profileById.get(calendar.timing_profile_id?.toString()))
+    .find(Boolean);
+  if (linkedProfile) return linkedProfile;
+
+  return timingProfiles
+    .filter(profile => timingProfileMatchesContext(profile, context))
+    .sort((left, right) => getTimingProfileSpecificityScore(right) - getTimingProfileSpecificityScore(left))
+    .at(0) || null;
+};
 
 const getTimeSlotKey = (slot?: { start_time?: string; end_time?: string } | null) =>
   `${slot?.start_time || ''}-${slot?.end_time || ''}`;
@@ -1900,6 +2077,7 @@ function Sidebar() {
     { name: 'Room Management', icon: DoorOpen, path: '/rooms', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'School Management', icon: BookOpen, path: '/schools', roles: ['Administrator'] },
     { name: 'Department Management', icon: Layers, path: '/departments', roles: ['Administrator'] },
+    { name: 'Timing Profile Management', icon: Clock, path: '/timing-profiles', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Academic Calendar', icon: Calendar, path: '/academic-calendars', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Batch Room Allocation', icon: DoorOpen, path: '/batch-room-allocations', roles: ['Administrator', 'Infrastructure Manager'] },
     { name: 'Department Room Mapping', icon: DoorOpen, path: '/dept-allocation', roles: ['Administrator', 'Infrastructure Manager'] },
@@ -2642,6 +2820,13 @@ export default function App() {
                 <DependencyGuard dependencies={[{ table: 'schools', label: 'Schools' }]}>
                   <DepartmentManagement />
                 </DependencyGuard>
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/timing-profiles" element={
+            <ProtectedRoute roles={['Administrator', 'Infrastructure Manager']}>
+              <Layout title="Timing Profile Management">
+                <TimingProfileManagement />
               </Layout>
             </ProtectedRoute>
           } />
@@ -5006,7 +5191,7 @@ function DepartmentManagement() {
   return <GenericCRUD type="Department" fields={fields} apiPath="/api/departments" onImport={handleImport} />;
 }
 
-function AcademicCalendarManagement() {
+function TimingProfileManagement() {
   const [schools, setSchools] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
 
@@ -5017,6 +5202,140 @@ function AcademicCalendarManagement() {
     ]);
     setSchools(Array.isArray(schoolData) ? schoolData : []);
     setDepartments(Array.isArray(departmentData) ? departmentData : []);
+  };
+
+  useEffect(() => {
+    refreshLookups();
+  }, []);
+
+  const schoolOptions = schools
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0)
+    .map(school => ({ value: school.id, label: school.name }));
+
+  const sortedDepartments = departments
+    .slice()
+    .sort((a, b) => a.name?.localeCompare(b.name || '') || 0);
+
+  const fields = [
+    { key: 'profile_id', label: 'Profile ID' },
+    { key: 'profile_name', label: 'Profile Name' },
+    { key: 'school_id', label: 'School', type: 'select', required: false, resetKeys: ['department_id'], options: schoolOptions, render: (item: any) => schools.find(school => idsMatch(school.id, item.school_id))?.name || '-' },
+    {
+      key: 'department_id',
+      label: 'Department',
+      type: 'select',
+      required: false,
+      options: (formData: any) => sortedDepartments
+        .filter(department => !formData.school_id || idsMatch(department.school_id, formData.school_id))
+        .map(department => ({ value: department.id, label: department.name })),
+      render: (item: any) => departments.find(department => idsMatch(department.id, item.department_id))?.name || '-',
+    },
+    { key: 'program', label: 'Program', type: 'select', required: false, options: PROGRAM_OPTIONS },
+    { key: 'academic_year', label: 'Academic Year', required: false },
+    {
+      key: 'year_of_study',
+      label: 'Year / Semester',
+      type: 'select',
+      required: false,
+      resetKeys: ['semester'],
+      options: (formData: any) => getYearOfStudyOptions(formData.program, formData.semester),
+      render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program) || '-',
+    },
+    {
+      key: 'semester',
+      label: 'Semester',
+      type: 'select',
+      required: false,
+      options: (formData: any) => getScheduleSemesterOptions(formData.year_of_study),
+      render: (item: any) => normalizeExactSemesterValue(item.semester, item.year_of_study, item.semester || '-') || '-',
+    },
+    { key: 'section', label: 'Section', required: false },
+    { key: 'working_days', label: 'Working Days', required: false, fullWidth: true, formLabel: 'Working Days (comma separated)', render: (item: any) => item.working_days || '-' },
+    { key: 'slot_pattern', label: 'Slot Timings', fullWidth: true, formLabel: 'Slot Timings (HH:mm-HH:mm)', render: (item: any) => item.slot_pattern || '-' },
+    { key: 'notes', label: 'Notes', required: false, fullWidth: true },
+  ];
+
+  const prepareSubmitData = (data: any) => {
+    const nextSchoolId = data.school_id || '';
+    const nextDepartmentId = data.department_id || '';
+    const matchingDepartment = departments.find(department => idsMatch(department.id, nextDepartmentId));
+
+    return {
+      ...data,
+      school_id: matchingDepartment?.school_id || nextSchoolId || null,
+      department_id: nextDepartmentId || null,
+      program: normalizeProgramValue(data.program),
+      academic_year: data.academic_year?.toString().trim() || null,
+      year_of_study: normalizeYearOfStudyValue(data.year_of_study),
+      semester: normalizeExactSemesterValue(data.semester, data.year_of_study, data.semester?.toString().trim() || ''),
+      section: data.section?.toString().trim() || null,
+      working_days: normalizeTimingProfileWorkingDays(data.working_days),
+      slot_pattern: normalizeTimingProfileSlotPattern(data.slot_pattern),
+      notes: data.notes?.toString().trim() || null,
+    };
+  };
+
+  const handleImport = async (data: any[]) => {
+    for (const row of data) {
+      const school = schools.find(item =>
+        normalizeLookupValue(item.name) === normalizeLookupValue(row['School']) ||
+        normalizeLookupValue(item.school_id) === normalizeLookupValue(row['School'])
+      );
+      const department = sortedDepartments.find(item =>
+        (
+          normalizeLookupValue(item.name) === normalizeLookupValue(row['Department']) ||
+          normalizeLookupValue(item.department_id) === normalizeLookupValue(row['Department'])
+        ) &&
+        (!school || idsMatch(item.school_id, school.id))
+      );
+
+      const payload = {
+        profile_id: row['Profile ID']?.toString(),
+        profile_name: row['Profile Name']?.toString() || row['Profile ID']?.toString(),
+        school_id: department?.school_id || school?.id || null,
+        department_id: department?.id || null,
+        program: normalizeProgramValue(row['Program']),
+        academic_year: row['Academic Year']?.toString() || null,
+        year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study', 'Year'])),
+        semester: normalizeExactSemesterValue(getImportValue(row, ['Semester']), getImportValue(row, ['Year / Semester', 'Year of Study', 'Year']), ''),
+        section: getImportValue(row, ['Section'])?.toString().trim() || null,
+        working_days: normalizeTimingProfileWorkingDays(getImportValue(row, ['Working Days'])),
+        slot_pattern: normalizeTimingProfileSlotPattern(getImportValue(row, ['Slot Timings', 'Slot Pattern'])),
+        notes: row['Notes']?.toString() || null,
+      };
+
+      if (!payload.profile_id || !payload.profile_name || !payload.slot_pattern) continue;
+      await upsertImportRecord('/api/timing_profiles', payload, [['profile_id']]);
+    }
+  };
+
+  return (
+    <GenericCRUD
+      type="Timing Profile"
+      fields={fields}
+      apiPath="/api/timing_profiles"
+      onImport={handleImport}
+      prepareSubmitData={prepareSubmitData}
+      onDataChanged={refreshLookups}
+    />
+  );
+}
+
+function AcademicCalendarManagement() {
+  const [schools, setSchools] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
+
+  const refreshLookups = async () => {
+    const [schoolData, departmentData, timingProfileData] = await Promise.all([
+      fetch('/api/schools', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/timing_profiles', { credentials: 'include' }).then(res => res.json()),
+    ]);
+    setSchools(Array.isArray(schoolData) ? schoolData : []);
+    setDepartments(Array.isArray(departmentData) ? departmentData : []);
+    setTimingProfiles(Array.isArray(timingProfileData) ? timingProfileData : []);
   };
 
   useEffect(() => {
@@ -5056,6 +5375,19 @@ function AcademicCalendarManagement() {
       render: (item: any) => getStudyPeriodDisplay(item.year_of_study, item.semester, item.program),
     },
     {
+      key: 'timing_profile_id',
+      label: 'Timing Profile',
+      type: 'select',
+      required: false,
+      options: (formData: any) => timingProfiles
+        .filter(profile =>
+          (!formData.school_id || !profile.school_id || idsMatch(profile.school_id, formData.school_id)) &&
+          (!formData.department_id || !profile.department_id || idsMatch(profile.department_id, formData.department_id))
+        )
+        .map(profile => ({ value: profile.id, label: getTimingProfileDisplayLabel(profile) })),
+      render: (item: any) => getTimingProfileDisplayLabel(timingProfiles.find(profile => idsMatch(profile.id, item.timing_profile_id))) || '-',
+    },
+    {
       key: 'event_type',
       label: 'Event Type',
       type: 'select',
@@ -5091,6 +5423,7 @@ function AcademicCalendarManagement() {
       school_id: department.school_id,
       program: normalizeProgramValue(data.program),
       year_of_study: normalizeYearOfStudyValue(data.year_of_study),
+      timing_profile_id: data.timing_profile_id || null,
       title: data.title?.toString().trim() || data.event_type,
       status: getRangeLifecycleStatus(data.start_date, data.end_date, 'Completed'),
     };
@@ -5128,6 +5461,10 @@ function AcademicCalendarManagement() {
       );
       const startDate = formatExcelDate(row['Start Date']);
       const endDate = formatExcelDate(row['End Date']);
+      const timingProfile = timingProfiles.find(item =>
+        normalizeLookupValue(item.profile_id) === normalizeLookupValue(row['Timing Profile']) ||
+        normalizeLookupValue(item.profile_name) === normalizeLookupValue(row['Timing Profile'])
+      );
 
       const payload = {
         calendar_id: row['Calendar ID']?.toString(),
@@ -5138,6 +5475,7 @@ function AcademicCalendarManagement() {
         academic_year: row['Academic Year'],
         year_of_study: normalizeYearOfStudyValue(getImportValue(row, ['Year / Semester', 'Year of Study'])),
         semester: normalizeSemesterValue(row['Semester'], ''),
+        timing_profile_id: timingProfile?.id || null,
         event_type: row['Event Type'] || 'Semester Period',
         title: row['Title'] || row['Event Type'],
         start_date: startDate,
@@ -6839,6 +7177,8 @@ function BookingManagement() {
   const [blocks, setBlocks] = useState<any[]>([]);
   const [buildings, setBuildings] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
+  const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
+  const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [equipment, setEquipment] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -6880,8 +7220,10 @@ function BookingManagement() {
       fetch('/api/blocks', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/buildings', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/departments', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/academic_calendars', { credentials: 'include' }).then(res => res.json()),
+      fetch('/api/timing_profiles', { credentials: 'include' }).then(res => res.json()),
       fetch('/api/equipment', { credentials: 'include' }).then(res => res.json())
-    ]).then(([roomData, floorData, blockData, buildingData, departmentData, equipmentData]) => {
+    ]).then(([roomData, floorData, blockData, buildingData, departmentData, calendarData, timingProfileData, equipmentData]) => {
       const safeRooms = Array.isArray(roomData) ? roomData : [];
       const safeFloors = Array.isArray(floorData) ? floorData : [];
       const safeBlocks = Array.isArray(blockData) ? blockData : [];
@@ -6891,6 +7233,8 @@ function BookingManagement() {
       setBlocks(safeBlocks);
       setBuildings(safeBuildings);
       setDepartments(Array.isArray(departmentData) ? departmentData : []);
+      setAcademicCalendars(Array.isArray(calendarData) ? calendarData : []);
+      setTimingProfiles(Array.isArray(timingProfileData) ? timingProfileData : []);
       setEquipment(Array.isArray(equipmentData) ? equipmentData : []);
 
       const params = new URLSearchParams(location.search);
@@ -6942,6 +7286,22 @@ function BookingManagement() {
     searchCriteria.semester,
     searchCriteria.section ? `Section ${searchCriteria.section}` : '',
   ].filter(Boolean).join(' • ');
+
+  const selectedBookingTimingProfile = useMemo(() => resolveTimingProfileForContext({
+    timingProfiles,
+    academicCalendars,
+    activeDate: searchCriteria.date,
+    context: {
+      department_id: searchCriteria.departmentId,
+      year_of_study: normalizeYearOfStudyValue(getYearNumberFromAcademicContext('', searchCriteria.semester)?.toString() || '', ''),
+      semester: searchCriteria.semester,
+      section: searchCriteria.section,
+    },
+  }), [academicCalendars, searchCriteria.date, searchCriteria.departmentId, searchCriteria.section, searchCriteria.semester, timingProfiles]);
+  const selectedBookingTimingSlots = useMemo(
+    () => parseTimingProfileSlots(selectedBookingTimingProfile?.slot_pattern),
+    [selectedBookingTimingProfile],
+  );
 
   useEffect(() => {
     const interval = window.setInterval(fetchMyBookings, 10000);
@@ -7569,6 +7929,22 @@ function BookingManagement() {
           {selectedAcademicContextLabel && (
             <div className="md:col-span-4 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
               Academic context selected: <span className="font-bold">{selectedAcademicContextLabel}</span>. Vacancy still uses actual time overlaps, and this context is carried into room schedule review and request defaults for mixed-use rooms.
+            </div>
+          )}
+          {selectedBookingTimingProfile && (
+            <div className={cn(
+              "md:col-span-4 rounded-xl px-3 py-2 text-xs",
+              selectedBookingTimingSlots.length > 0 && selectedBookingTimingSlots.some(slot => searchCriteria.time >= slot.start_time && bookingEndTime <= slot.end_time)
+                ? "border border-emerald-100 bg-emerald-50 text-emerald-700"
+                : "border border-amber-100 bg-amber-50 text-amber-700"
+            )}>
+              Timing profile in effect: <span className="font-bold">{getTimingProfileDisplayLabel(selectedBookingTimingProfile)}</span>.
+              {selectedBookingTimingSlots.length > 0 && (
+                <span> Preferred slots: {selectedBookingTimingSlots.map(slot => `${slot.start_time}-${slot.end_time}`).join(', ')}.</span>
+              )}
+              {selectedBookingTimingSlots.length > 0 && !selectedBookingTimingSlots.some(slot => searchCriteria.time >= slot.start_time && bookingEndTime <= slot.end_time) && (
+                <span> The selected request time does not fully fit inside any configured academic slot for this context, so booking overlap checks still run but this should be reviewed carefully.</span>
+              )}
             </div>
           )}
           <div className="md:col-span-4 mt-2">
@@ -11843,6 +12219,7 @@ function TimetableBuilder() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [academicCalendars, setAcademicCalendars] = useState<any[]>([]);
+  const [timingProfiles, setTimingProfiles] = useState<any[]>([]);
   const [batchRoomAllocations, setBatchRoomAllocations] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [referenceDate, setReferenceDate] = useState(formatLocalDate(new Date()));
@@ -11938,7 +12315,48 @@ function TimetableBuilder() {
     return true;
   }), [roomScopedSchedules, timetableContext.department_id, timetableContext.year, timetableContext.section, timetableContext.semester]);
 
+  const resolvedTimingContext = useMemo(() => {
+    const candidateSchedules = contextSchedules.length > 0 ? contextSchedules : roomScopedSchedules;
+    const uniqueDepartmentIds = Array.from(new Set(candidateSchedules.map(schedule => schedule.department_id?.toString()).filter(Boolean)));
+    const uniqueYears = Array.from(new Set(candidateSchedules.map(schedule => normalizeYearOfStudyValue(schedule?.year_of_study, '')).filter(Boolean)));
+    const uniqueSemesters = Array.from(new Set(candidateSchedules.map(schedule => normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, '')).filter(Boolean)));
+    const uniqueSections = Array.from(new Set(candidateSchedules.map(schedule => schedule.section?.toString().trim()).filter(Boolean)));
+    const matchingCalendar = academicCalendars.find(calendar =>
+      calendar?.start_date <= referenceDate &&
+      calendar?.end_date >= referenceDate &&
+      (!timetableContext.department_id || idsMatch(calendar.department_id, timetableContext.department_id)) &&
+      (!timetableContext.year || normalizeYearOfStudyValue(calendar.year_of_study, '') === normalizeYearOfStudyValue(timetableContext.year, '')) &&
+      (!timetableContext.semester || normalizeSemesterValue(calendar.semester, '') === normalizeSemesterValue(timetableContext.semester, ''))
+    );
+
+    return {
+      school_id: matchingCalendar?.school_id || '',
+      department_id: timetableContext.department_id || (uniqueDepartmentIds.length === 1 ? uniqueDepartmentIds[0] : ''),
+      program: matchingCalendar?.program || '',
+      academic_year: matchingCalendar?.academic_year || '',
+      year_of_study: normalizeYearOfStudyValue(timetableContext.year, '') || (uniqueYears.length === 1 ? uniqueYears[0] : ''),
+      semester: timetableContext.semester || (uniqueSemesters.length === 1 ? uniqueSemesters[0] : ''),
+      section: timetableContext.section || (uniqueSections.length === 1 ? uniqueSections[0] : ''),
+    };
+  }, [academicCalendars, contextSchedules, referenceDate, roomScopedSchedules, timetableContext.department_id, timetableContext.section, timetableContext.semester, timetableContext.year]);
+
+  const activeTimingProfile = useMemo(() => resolveTimingProfileForContext({
+    timingProfiles,
+    academicCalendars,
+    activeDate: referenceDate,
+    context: resolvedTimingContext,
+  }), [academicCalendars, referenceDate, resolvedTimingContext, timingProfiles]);
+
+  const activeTimingProfileSlots = useMemo(
+    () => parseTimingProfileSlots(activeTimingProfile?.slot_pattern),
+    [activeTimingProfile],
+  );
+
   const roomTimeSlots = useMemo(() => {
+    if (activeTimingProfileSlots.length > 0 && (!requiresContextFilterForVacancy || hasContextFilter || distinctContextCount <= 1)) {
+      return activeTimingProfileSlots;
+    }
+
     const intervals = contextSchedules
       .map(schedule => ({
         start: timeToMinutes(schedule.start_time),
@@ -11970,26 +12388,29 @@ function TimetableBuilder() {
     ).values()).sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
 
     return uniqueSlots.length > 0 ? uniqueSlots : DEFAULT_TIMETABLE_TIME_SLOTS;
-  }, [contextSchedules]);
+  }, [activeTimingProfileSlots, contextSchedules, distinctContextCount, hasContextFilter, requiresContextFilterForVacancy]);
 
   const fetchData = async () => {
     try {
-      const [sRes, rRes, dRes, cRes, baRes] = await Promise.all([
+      const [sRes, rRes, dRes, cRes, tpRes, baRes] = await Promise.all([
         fetch('/api/schedules', { credentials: 'include' }),
         fetch('/api/rooms', { credentials: 'include' }),
         fetch('/api/departments', { credentials: 'include' }),
         fetch('/api/academic_calendars', { credentials: 'include' }),
+        fetch('/api/timing_profiles', { credentials: 'include' }),
         fetch('/api/batch_room_allocations', { credentials: 'include' }),
       ]);
       const sData = await sRes.json();
       const rData = await rRes.json();
       const dData = await dRes.json();
       const cData = await cRes.json();
+      const tpData = await tpRes.json();
       const baData = await baRes.json();
       setSchedules(deduplicateScheduleRows(Array.isArray(sData) ? sData : []));
       setRooms(rData);
       setDepartments(dData);
       setAcademicCalendars(Array.isArray(cData) ? cData : []);
+      setTimingProfiles(Array.isArray(tpData) ? tpData : []);
       setBatchRoomAllocations(Array.isArray(baData) ? baData : []);
       const params = new URLSearchParams(location.search);
       const requestedRoomId = params.get('roomId');
@@ -12201,6 +12622,14 @@ function TimetableBuilder() {
         <p className="mt-3 text-[11px] text-slate-500">
           Vacancy is computed inside the selected academic context. Use these filters when the same room is shared by multiple years, semesters, or sections with different timing patterns.
         </p>
+        {activeTimingProfile && (
+          <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+            Active timing profile: <span className="font-bold">{getTimingProfileDisplayLabel(activeTimingProfile)}</span>
+            {activeTimingProfileSlots.length > 0 && (
+              <span> with {activeTimingProfileSlots.length} configured slot{activeTimingProfileSlots.length === 1 ? '' : 's'}.</span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
@@ -12226,6 +12655,11 @@ function TimetableBuilder() {
         <p className="mt-3 text-[11px] text-slate-500">
           Vacant slots are inferred from the selected room&apos;s actual timetable timings and reduced to the smallest valid periods, while short break gaps under 30 minutes are ignored and scheduled classes keep their original imported duration.
         </p>
+        {activeTimingProfileSlots.length > 0 && (
+          <p className="mt-2 text-[11px] text-emerald-700">
+            This room is currently using the configured timing profile slot pattern instead of purely inferred timetable boundaries.
+          </p>
+        )}
       </div>
 
       {requiresContextFilterForVacancy && (

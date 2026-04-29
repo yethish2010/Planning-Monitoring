@@ -186,6 +186,24 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       FOREIGN KEY(room_id) REFERENCES rooms(id)
     );
 
+    CREATE TABLE IF NOT EXISTS timing_profiles (
+      id ${idDefinition},
+      profile_id TEXT UNIQUE NOT NULL,
+      profile_name TEXT NOT NULL,
+      school_id INTEGER,
+      department_id INTEGER,
+      program TEXT,
+      academic_year TEXT,
+      year_of_study TEXT,
+      semester TEXT,
+      section TEXT,
+      working_days TEXT,
+      slot_pattern TEXT NOT NULL,
+      notes TEXT,
+      FOREIGN KEY(school_id) REFERENCES schools(id),
+      FOREIGN KEY(department_id) REFERENCES departments(id)
+    );
+
     CREATE TABLE IF NOT EXISTS academic_calendars (
       id ${idDefinition},
       calendar_id TEXT UNIQUE NOT NULL,
@@ -196,6 +214,7 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       academic_year TEXT,
       year_of_study TEXT,
       semester TEXT,
+      timing_profile_id INTEGER,
       event_type TEXT,
       title TEXT NOT NULL,
       start_date DATE NOT NULL,
@@ -203,7 +222,8 @@ const getPrimarySchemaSql = (dialect: DatabaseDialect) => {
       status TEXT DEFAULT 'Upcoming',
       notes TEXT,
       FOREIGN KEY(school_id) REFERENCES schools(id),
-      FOREIGN KEY(department_id) REFERENCES departments(id)
+      FOREIGN KEY(department_id) REFERENCES departments(id),
+      FOREIGN KEY(timing_profile_id) REFERENCES timing_profiles(id)
     );
 
     CREATE TABLE IF NOT EXISTS batch_room_allocations (
@@ -377,6 +397,7 @@ await ensureColumn("users", "access_limits", "TEXT");
 await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
+await ensureColumn("academic_calendars", "timing_profile_id", "INTEGER");
 
 const normalizeRoomTypeValue = (value: any) => {
   const normalized = value?.toString().trim().toLowerCase();
@@ -711,6 +732,66 @@ const deriveBatchAllocationStatus = (startDate: string, endDate: string, request
   return "Active";
 };
 
+const normalizeTimingProfileWorkingDays = (value: any) => {
+  const normalized = value?.toString().trim() || "";
+  return normalized || "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday";
+};
+
+const normalizeTimingProfileSlotPattern = (value: any) => {
+  const normalized = value?.toString().trim().replace(/\s+/g, " ") || "";
+  return normalized;
+};
+
+const normalizeTimingProfilePayload = async (payload: any) => {
+  const nextPayload = { ...payload };
+  const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
+  const schoolId = nextPayload.school_id ? Number(nextPayload.school_id) : null;
+
+  const department = departmentId
+    ? await db.prepare("SELECT id, school_id FROM departments WHERE id = ?").get(departmentId) as any
+    : null;
+
+  if (departmentId && !department) {
+    throw new Error("Please select a valid department.");
+  }
+
+  if (schoolId) {
+    const school = await db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId) as any;
+    if (!school) {
+      throw new Error("Please select a valid school.");
+    }
+  }
+
+  if (department && schoolId && department.school_id?.toString() !== schoolId.toString()) {
+    throw new Error("Selected department does not belong to the selected school.");
+  }
+
+  nextPayload.department_id = department?.id || null;
+  nextPayload.school_id = department?.school_id || schoolId || null;
+  nextPayload.profile_id = nextPayload.profile_id?.toString().trim() || null;
+  nextPayload.profile_name = nextPayload.profile_name?.toString().trim() || nextPayload.profile_id || null;
+  nextPayload.program = nextPayload.program?.toString().trim() || null;
+  nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
+  nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
+  nextPayload.semester = nextPayload.semester?.toString().trim() || null;
+  nextPayload.section = nextPayload.section?.toString().trim() || null;
+  nextPayload.working_days = normalizeTimingProfileWorkingDays(nextPayload.working_days);
+  nextPayload.slot_pattern = normalizeTimingProfileSlotPattern(nextPayload.slot_pattern);
+  nextPayload.notes = nextPayload.notes?.toString().trim() || null;
+
+  if (!nextPayload.profile_id) {
+    throw new Error("Timing Profile ID is required.");
+  }
+  if (!nextPayload.profile_name) {
+    throw new Error("Timing Profile Name is required.");
+  }
+  if (!nextPayload.slot_pattern) {
+    throw new Error("Slot Timings are required.");
+  }
+
+  return nextPayload;
+};
+
 const normalizeAcademicCalendarPayload = async (payload: any) => {
   const nextPayload = { ...payload };
   const departmentId = nextPayload.department_id ? Number(nextPayload.department_id) : null;
@@ -731,6 +812,20 @@ const normalizeAcademicCalendarPayload = async (payload: any) => {
     throw new Error("Academic calendar start date cannot be after the end date.");
   }
 
+  const timingProfileId = nextPayload.timing_profile_id ? Number(nextPayload.timing_profile_id) : null;
+  const timingProfile = timingProfileId
+    ? await db.prepare("SELECT id, school_id, department_id FROM timing_profiles WHERE id = ?").get(timingProfileId) as any
+    : null;
+  if (timingProfileId && !timingProfile) {
+    throw new Error("Please select a valid timing profile.");
+  }
+  if (timingProfile?.department_id && timingProfile.department_id.toString() !== department.id.toString()) {
+    throw new Error("Selected timing profile does not belong to the selected department.");
+  }
+  if (timingProfile?.school_id && timingProfile.school_id.toString() !== department.school_id.toString()) {
+    throw new Error("Selected timing profile does not belong to the selected school.");
+  }
+
   nextPayload.department_id = department.id;
   nextPayload.school_id = department.school_id;
   nextPayload.program = nextPayload.program?.toString().trim() || null;
@@ -738,6 +833,7 @@ const normalizeAcademicCalendarPayload = async (payload: any) => {
   nextPayload.academic_year = nextPayload.academic_year?.toString().trim() || null;
   nextPayload.year_of_study = nextPayload.year_of_study?.toString().trim() || null;
   nextPayload.semester = nextPayload.semester?.toString().trim() || null;
+  nextPayload.timing_profile_id = timingProfile?.id || null;
   nextPayload.event_type = nextPayload.event_type?.toString().trim() || "Semester Period";
   nextPayload.title = nextPayload.title?.toString().trim() || `${nextPayload.program || "Academic"} ${nextPayload.semester || "Period"}`;
   nextPayload.start_date = startDate;
@@ -1823,6 +1919,10 @@ const duplicateRules: Record<string, Array<{ fields: string[]; label: string }>>
     { fields: ["calendar_id"], label: "Calendar ID" },
     { fields: ["department_id", "program", "batch", "year_of_study", "semester", "event_type", "title", "start_date", "end_date"], label: "Academic calendar period" },
   ],
+  timing_profiles: [
+    { fields: ["profile_id"], label: "Timing Profile ID" },
+    { fields: ["department_id", "program", "academic_year", "year_of_study", "semester", "section", "slot_pattern"], label: "Timing profile context" },
+  ],
   batch_room_allocations: [
     { fields: ["allocation_id"], label: "Allocation ID" },
     { fields: ["room_id", "department_id", "program", "batch", "year_of_study", "semester", "start_date", "end_date"], label: "Batch room allocation period" },
@@ -2146,6 +2246,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       if (tableName === "academic_calendars") {
         req.body = await normalizeAcademicCalendarPayload(req.body);
       }
+      if (tableName === "timing_profiles") {
+        req.body = await normalizeTimingProfilePayload(req.body);
+      }
       if (tableName === "batch_room_allocations") {
         req.body = await normalizeBatchRoomAllocationPayload(req.body);
       }
@@ -2284,6 +2387,9 @@ const createCrudRoutes = (tableName: string, idField: string = "id") => {
       }
       if (tableName === "academic_calendars") {
         req.body = await normalizeAcademicCalendarPayload({ ...existingItem, ...req.body });
+      }
+      if (tableName === "timing_profiles") {
+        req.body = await normalizeTimingProfilePayload({ ...existingItem, ...req.body });
       }
       if (tableName === "batch_room_allocations") {
         req.body = await normalizeBatchRoomAllocationPayload({ ...existingItem, ...req.body });
@@ -2459,6 +2565,7 @@ createCrudRoutes("schools");
 createCrudRoutes("departments");
 createCrudRoutes("department_allocations");
 createCrudRoutes("academic_calendars");
+createCrudRoutes("timing_profiles");
 createCrudRoutes("batch_room_allocations");
 createCrudRoutes("equipment");
 createCrudRoutes("schedules");
