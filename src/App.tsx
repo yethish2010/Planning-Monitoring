@@ -8777,7 +8777,7 @@ function ReportGeneration() {
     overused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     time_band_utilization: ['TimeBand', 'ScheduledHours', 'BookedHours', 'Utilization'],
     department_roomtype_demand: ['Department', 'TotalDemand'],
-    clash_overlap: ['Source', 'Room', 'DayOrDate', 'EntryA', 'EntryB'],
+    clash_overlap: ['Source', 'Room', 'DayOrDate', 'YearA', 'SemesterA', 'EntryA', 'YearB', 'SemesterB', 'EntryB'],
     vacancy_opportunity: ['Room', 'Building', 'Department', 'IdleHoursPerWeek', 'Utilization', 'Opportunity'],
     capacity_mismatch: ['Date', 'Room', 'Department', 'Event', 'Students', 'Capacity', 'OccupancyPercent', 'MismatchType'],
     exam_impact: ['ExamWindow', 'Department', 'Semester', 'StartDate', 'EndDate', 'Days', 'AffectedWeeklyClasses', 'EstimatedBlockedSessions'],
@@ -9214,10 +9214,14 @@ function ReportGeneration() {
           clashes.push({
             room: sorted[i].room_label || roomMetaByRoomId.get(sorted[i].room_id?.toString())?.room_number || sorted[i].room_id,
             day: sorted[i].day_of_week,
+            yearA: getYearDisplayLabel(sorted[i].year_of_study, sorted[i].semester),
+            semesterA: normalizeSemesterValue(sorted[i].semester, '-') || '-',
             startA: sorted[i].start_time,
             endA: sorted[i].end_time,
             courseA: sorted[i].course_name || sorted[i].course_code || 'Schedule A',
             sectionA: sorted[i].section || '',
+            yearB: getYearDisplayLabel(sorted[j].year_of_study, sorted[j].semester),
+            semesterB: normalizeSemesterValue(sorted[j].semester, '-') || '-',
             startB: sorted[j].start_time,
             endB: sorted[j].end_time,
             courseB: sorted[j].course_name || sorted[j].course_code || 'Schedule B',
@@ -9249,10 +9253,14 @@ function ReportGeneration() {
           clashes.push({
             room: getBookingRoomMeta(sorted[i])?.room_number || sorted[i].room_number || sorted[i].room_id,
             day: sorted[i].date || '',
+            yearA: '-',
+            semesterA: '-',
             startA: sorted[i].start_time,
             endA: sorted[i].end_time,
             courseA: sorted[i].event_name || 'Booking A',
             sectionA: sorted[i].faculty_name || '',
+            yearB: '-',
+            semesterB: '-',
             startB: sorted[j].start_time,
             endB: sorted[j].end_time,
             courseB: sorted[j].event_name || 'Booking B',
@@ -9702,7 +9710,11 @@ function ReportGeneration() {
           Source: item.source,
           Room: item.room,
           DayOrDate: item.day,
+          YearA: item.yearA || '-',
+          SemesterA: item.semesterA || '-',
           EntryA: `${item.startA} - ${item.endA} | ${item.courseA}`,
+          YearB: item.yearB || '-',
+          SemesterB: item.semesterB || '-',
           EntryB: `${item.startB} - ${item.endB} | ${item.courseB}`,
         })),
       },
@@ -10423,7 +10435,11 @@ function ReportGeneration() {
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Source</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day/Date</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Year A</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester A</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry A</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Year B</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semester B</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry B</th>
                       </tr>
                     </thead>
@@ -10433,12 +10449,16 @@ function ReportGeneration() {
                           <td className="py-4 text-xs font-bold text-rose-600">{item.source}</td>
                           <td className="py-4 text-sm font-bold text-slate-700">{item.room}</td>
                           <td className="py-4 text-sm text-slate-500">{item.day}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.yearA || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.semesterA || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.startA} - {item.endA} | {item.courseA}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.yearB || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.semesterB || '-'}</td>
                           <td className="py-4 text-sm text-slate-500">{item.startB} - {item.endB} | {item.courseB}</td>
                         </tr>
                       ))}
                       {overlapConflictReport.length === 0 && (
-                        <tr><td colSpan={5} className="py-8 text-center text-slate-400 italic">No overlap conflicts found for current filters.</td></tr>
+                        <tr><td colSpan={9} className="py-8 text-center text-slate-400 italic">No overlap conflicts found for current filters.</td></tr>
                       )}
                     </tbody>
                   </table>
