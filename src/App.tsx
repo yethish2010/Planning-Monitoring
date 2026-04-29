@@ -9846,30 +9846,33 @@ function ReportGeneration() {
       'Total Rows': totalRowsAcrossReports,
     });
 
+    const completeDataDynamicColumns = Array.from(new Set(
+      orderedReportTypes.flatMap((reportType) => {
+        const report = reportConfigs[reportType as keyof typeof reportConfigs];
+        return report.rows.flatMap((row: any) => Object.keys(row || {}));
+      })
+    ));
+    const completeDataHeaders = ['Report Type', 'Report Name', 'Sheet Name', 'Row No', ...completeDataDynamicColumns];
     const completeDataRows = orderedReportTypes.flatMap((reportType) => {
       const report = reportConfigs[reportType as keyof typeof reportConfigs];
       const reportName = reportLabels.get(reportType) || report.sheetName;
       return report.rows.map((row: any, rowIndex: number) => {
-        const entries = Object.entries(row || {});
-        const primaryEntry = entries[0] || ['', ''];
-        const secondaryEntry = entries[1] || ['', ''];
-        return {
+        const baseRow: Record<string, any> = {
           'Report Type': reportType,
           'Report Name': reportName,
           'Sheet Name': report.sheetName,
           'Row No': rowIndex + 1,
-          'Primary Field': primaryEntry[0],
-          'Primary Value': primaryEntry[1],
-          'Secondary Field': secondaryEntry[0],
-          'Secondary Value': secondaryEntry[1],
-          'Row JSON': JSON.stringify(row || {}),
         };
+        completeDataDynamicColumns.forEach((column) => {
+          baseRow[column] = row?.[column] ?? '';
+        });
+        return baseRow;
       });
     });
 
     const workbook = XLSX.utils.book_new();
     const summaryWorksheet = buildWorksheetFromRows(reportSummaryRows, ['S. No', 'Report Type', 'Report Name', 'Sheet Name', 'Total Rows']);
-    const completeDataWorksheet = buildWorksheetFromRows(completeDataRows, ['Report Type', 'Report Name', 'Sheet Name', 'Row No', 'Primary Field', 'Primary Value', 'Secondary Field', 'Secondary Value', 'Row JSON']);
+    const completeDataWorksheet = buildWorksheetFromRows(completeDataRows, completeDataHeaders);
     XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Overall Summary');
     XLSX.utils.book_append_sheet(workbook, completeDataWorksheet, 'Complete Data');
     orderedReportTypes.forEach((reportType) => {
