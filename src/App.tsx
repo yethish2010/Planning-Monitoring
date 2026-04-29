@@ -9569,8 +9569,243 @@ function ReportGeneration() {
     );
     XLSX.utils.book_append_sheet(workbook, visualWorksheet, sanitizeReportSheetName(`${baseSheetName} Visual`));
   };
+  const getChartRecommendationMeta = (
+    reportType: string,
+    columns: string[],
+  ): { chart: string; xAxis: string; yAxis: string; sortBy: string; note: string } => {
+    const defaults = {
+      chart: 'Column Chart',
+      xAxis: columns[0] || 'Category',
+      yAxis: columns[1] || 'Value',
+      sortBy: columns[1] || 'Value',
+      note: 'Use this chart for a quick category-vs-value comparison.',
+    };
+    const known: Record<string, { chart: string; xAxis: string; yAxis: string; sortBy: string; note: string }> = {
+      room_utilization: {
+        chart: 'Horizontal Bar',
+        xAxis: 'Room',
+        yAxis: 'Utilization',
+        sortBy: 'Utilization (desc)',
+        note: 'Best for top/bottom utilized rooms.',
+      },
+      campus_utilization: {
+        chart: 'Column Chart',
+        xAxis: 'Campus',
+        yAxis: 'AvgUtilization',
+        sortBy: 'AvgUtilization (desc)',
+        note: 'Compares campus-wise average utilization.',
+      },
+      school_utilization: {
+        chart: 'Column Chart',
+        xAxis: 'School',
+        yAxis: 'AvgUtilization',
+        sortBy: 'AvgUtilization (desc)',
+        note: 'Shows school-wise utilization distribution.',
+      },
+      building_utilization: {
+        chart: 'Column Chart',
+        xAxis: 'Building',
+        yAxis: 'AvgUtilization',
+        sortBy: 'AvgUtilization (desc)',
+        note: 'Highlights high/low performing buildings.',
+      },
+      department_allocation: {
+        chart: 'Clustered Bar',
+        xAxis: 'Department',
+        yAxis: 'Rooms / TotalCapacity',
+        sortBy: 'Rooms (desc)',
+        note: 'Compares room allocation and capacity by department.',
+      },
+      room_type_utilization: {
+        chart: 'Bar Chart',
+        xAxis: 'RoomType',
+        yAxis: 'AvgUtilization',
+        sortBy: 'AvgUtilization (desc)',
+        note: 'Useful for room-type-wise performance.',
+      },
+      usage_category_utilization: {
+        chart: 'Donut Chart',
+        xAxis: 'UsageCategory',
+        yAxis: 'Rooms',
+        sortBy: 'Rooms (desc)',
+        note: 'Shows usage share by category.',
+      },
+      year_utilization: {
+        chart: 'Bar Chart',
+        xAxis: 'Year',
+        yAxis: 'AvgUtilization',
+        sortBy: 'Year (asc)',
+        note: 'Tracks utilization across years of study.',
+      },
+      semester_utilization: {
+        chart: 'Bar Chart',
+        xAxis: 'Semester',
+        yAxis: 'AvgUtilization',
+        sortBy: 'Semester (asc)',
+        note: 'Compares odd/even semester utilization.',
+      },
+      section_utilization: {
+        chart: 'Bar Chart',
+        xAxis: 'Section',
+        yAxis: 'AvgUtilization',
+        sortBy: 'AvgUtilization (desc)',
+        note: 'Identifies heavily utilized sections.',
+      },
+      booking_approvals: {
+        chart: 'Pie Chart',
+        xAxis: 'Status',
+        yAxis: 'Count',
+        sortBy: 'Count (desc)',
+        note: 'Best for approval status composition.',
+      },
+      maintenance_impact: {
+        chart: 'Bar Chart',
+        xAxis: 'Room',
+        yAxis: 'MaintenanceIssues',
+        sortBy: 'MaintenanceIssues (desc)',
+        note: 'Surfaces rooms with maintenance burden.',
+      },
+      underused: {
+        chart: 'Horizontal Bar',
+        xAxis: 'Room',
+        yAxis: 'Utilization',
+        sortBy: 'Utilization (asc)',
+        note: 'Shows lowest utilized rooms first.',
+      },
+      overused: {
+        chart: 'Horizontal Bar',
+        xAxis: 'Room',
+        yAxis: 'Utilization',
+        sortBy: 'Utilization (desc)',
+        note: 'Shows highest utilized rooms first.',
+      },
+      time_band_utilization: {
+        chart: 'Line Chart',
+        xAxis: 'TimeBand',
+        yAxis: 'Utilization',
+        sortBy: 'TimeBand (asc)',
+        note: 'Best for utilization trend across time windows.',
+      },
+      department_roomtype_demand: {
+        chart: 'Stacked Bar',
+        xAxis: 'Department',
+        yAxis: 'TotalDemand + RoomType Columns',
+        sortBy: 'TotalDemand (desc)',
+        note: 'Compares room-type demand by department.',
+      },
+      clash_overlap: {
+        chart: 'Column Chart',
+        xAxis: 'Room',
+        yAxis: 'Overlap Count',
+        sortBy: 'Overlap Count (desc)',
+        note: 'Highlights rooms with frequent clashes.',
+      },
+      vacancy_opportunity: {
+        chart: 'Bar Chart',
+        xAxis: 'Room',
+        yAxis: 'IdleHoursPerWeek',
+        sortBy: 'IdleHoursPerWeek (desc)',
+        note: 'Prioritize high-idle rooms for optimization.',
+      },
+      capacity_mismatch: {
+        chart: 'Scatter Plot',
+        xAxis: 'Students',
+        yAxis: 'Capacity',
+        sortBy: 'OccupancyPercent (desc)',
+        note: 'Detect over/under capacity allocations visually.',
+      },
+      exam_impact: {
+        chart: 'Column Chart',
+        xAxis: 'Department/Semester',
+        yAxis: 'EstimatedBlockedSessions',
+        sortBy: 'EstimatedBlockedSessions (desc)',
+        note: 'Shows impact of exam windows on normal schedules.',
+      },
+      booking_lifecycle: {
+        chart: 'Funnel / Column',
+        xAxis: 'Lifecycle Stage',
+        yAxis: 'Count',
+        sortBy: 'Lifecycle flow',
+        note: 'Represents request-to-approval lifecycle.',
+      },
+      no_show_risk: {
+        chart: 'Scatter Plot',
+        xAxis: 'OccupancyPercent',
+        yAxis: 'RiskScore',
+        sortBy: 'RiskScore (desc)',
+        note: 'Prioritize no-show risk follow-up.',
+      },
+      shared_room_conflict: {
+        chart: 'Bar Chart',
+        xAxis: 'Room',
+        yAxis: 'RiskScore',
+        sortBy: 'RiskScore (desc)',
+        note: 'Identifies high-risk shared-room conflicts.',
+      },
+      semester_peak_forecast: {
+        chart: 'Line Chart',
+        xAxis: 'Day',
+        yAxis: 'PeakSlots',
+        sortBy: 'Day order',
+        note: 'Forecasts semester-wise peak load bands.',
+      },
+      raw_usage_data: {
+        chart: 'Pivot Chart',
+        xAxis: 'Building / Department / Room Type',
+        yAxis: 'Utilization / ScheduledHours',
+        sortBy: 'Utilization (desc)',
+        note: 'Use pivot chart for multi-dimensional raw usage analysis.',
+      },
+    };
+    return known[reportType] || defaults;
+  };
+  const buildChartRecommendationRows = (items: Array<{
+    reportType: string;
+    reportName: string;
+    sheetName: string;
+    rows: any[];
+    columns: string[];
+  }>) => items.map((item) => {
+    const recommendation = getChartRecommendationMeta(item.reportType, item.columns);
+    return {
+      'Report Type': item.reportType,
+      'Report Name': item.reportName,
+      'Source Sheet': item.sheetName,
+      'Recommended Chart': recommendation.chart,
+      'X Axis': recommendation.xAxis,
+      'Y Axis': recommendation.yAxis,
+      'Sort By': recommendation.sortBy,
+      'Top N Suggested': item.rows.length > 100 ? 20 : Math.min(10, Math.max(item.rows.length, 1)),
+      'Data Rows': item.rows.length,
+      Note: recommendation.note,
+    };
+  });
+  const appendChartRecommendationsSheet = (
+    workbook: XLSX.WorkBook,
+    items: Array<{
+      reportType: string;
+      reportName: string;
+      sheetName: string;
+      rows: any[];
+      columns: string[];
+    }>,
+  ) => {
+    const rows = buildChartRecommendationRows(items);
+    const worksheet = buildWorksheetFromRows(
+      rows,
+      ['Report Type', 'Report Name', 'Source Sheet', 'Recommended Chart', 'X Axis', 'Y Axis', 'Sort By', 'Top N Suggested', 'Data Rows', 'Note'],
+    );
+    XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeReportSheetName('Chart Recommendations'));
+  };
   const buildWorkbookFromReportConfigs = (reportConfigs: Record<string, { fileName: string; sheetName: string; rows: any[] }>, reportOrder: string[], fileName: string) => {
     const workbook = XLSX.utils.book_new();
+    const recommendationItems: Array<{
+      reportType: string;
+      reportName: string;
+      sheetName: string;
+      rows: any[];
+      columns: string[];
+    }> = [];
     reportOrder.forEach((reportType) => {
       const config = reportConfigs[reportType];
       if (!config) return;
@@ -9581,7 +9816,15 @@ function ReportGeneration() {
       const worksheet = buildWorksheetFromRows(config.rows, exportColumns);
       XLSX.utils.book_append_sheet(workbook, worksheet, config.sheetName);
       appendVisualizationSheet(workbook, config.sheetName, config.rows, exportColumns);
+      recommendationItems.push({
+        reportType,
+        reportName: REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName,
+        sheetName: config.sheetName,
+        rows: config.rows,
+        columns: exportColumns || [],
+      });
     });
+    appendChartRecommendationsSheet(workbook, recommendationItems);
     XLSX.writeFile(workbook, fileName);
   };
   const exportUtilizationReport = () => {
@@ -9591,7 +9834,14 @@ function ReportGeneration() {
   const exportSchoolSummaryReport = () => {
     const reportConfigs = buildUtilizationReportConfigs();
     const config = reportConfigs.school_utilization;
-    exportRowsToWorkbook(config.rows, config.fileName, config.sheetName, REPORT_EXPORT_COLUMNS.school_utilization);
+    exportRowsToWorkbook(
+      config.rows,
+      config.fileName,
+      config.sheetName,
+      REPORT_EXPORT_COLUMNS.school_utilization,
+      'school_utilization',
+      'School Utilization Summary',
+    );
   };
   const exportRawUsageData = () => {
     const rows = filteredRoomReports.map((room: any) => ({
@@ -9636,13 +9886,20 @@ function ReportGeneration() {
       'IsBookable', 'LabName', 'SubLabName', 'RestroomFor', 'Capacity', 'Status', 'Utilization', 'ScheduledHours',
       'BookedHours', 'MaintenanceIssues', 'BookingStatuses', 'BookingDates', 'Flags'
     ];
-    exportRowsToWorkbook(rows, 'raw-usage-data.xlsx', 'Raw Usage Data', rawUsageColumns);
+    exportRowsToWorkbook(rows, 'raw-usage-data.xlsx', 'Raw Usage Data', rawUsageColumns, 'raw_usage_data', 'Raw Usage Data');
   };
-  const exportRowsToWorkbook = (rows: any[], fileName: string, sheetName: string, columns?: string[]) => {
+  const exportRowsToWorkbook = (rows: any[], fileName: string, sheetName: string, columns?: string[], reportType = 'custom_report', reportName = sheetName) => {
     const workbook = XLSX.utils.book_new();
     const worksheet = buildWorksheetFromRows(rows, columns);
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
     appendVisualizationSheet(workbook, sheetName, rows, columns);
+    appendChartRecommendationsSheet(workbook, [{
+      reportType,
+      reportName,
+      sheetName,
+      rows,
+      columns: columns || (rows[0] ? Object.keys(rows[0]) : []),
+    }]);
     XLSX.writeFile(workbook, fileName);
   };
   const buildUtilizationReportConfigs = () => {
@@ -9920,7 +10177,14 @@ function ReportGeneration() {
     const dynamicColumns = reportType === 'department_roomtype_demand' && config.rows.length > 0
       ? Array.from(new Set(config.rows.flatMap((row: any) => Object.keys(row || {})))) as string[]
       : undefined;
-    exportRowsToWorkbook(config.rows, config.fileName, config.sheetName, dynamicColumns || REPORT_EXPORT_COLUMNS[reportType]);
+    exportRowsToWorkbook(
+      config.rows,
+      config.fileName,
+      config.sheetName,
+      dynamicColumns || REPORT_EXPORT_COLUMNS[reportType],
+      reportType,
+      REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName,
+    );
   };
   const exportComprehensiveWorkbook = () => {
     const reportConfigs = buildUtilizationReportConfigs();
@@ -9984,6 +10248,13 @@ function ReportGeneration() {
     const completeDataWorksheet = buildWorksheetFromRows(completeDataRows, completeDataHeaders);
     XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Overall Summary');
     XLSX.utils.book_append_sheet(workbook, completeDataWorksheet, 'Complete Data');
+    const recommendationItems: Array<{
+      reportType: string;
+      reportName: string;
+      sheetName: string;
+      rows: any[];
+      columns: string[];
+    }> = [];
     orderedReportTypes.forEach((reportType) => {
       const report = reportConfigs[reportType as keyof typeof reportConfigs];
       const dynamicColumns = reportType === 'department_roomtype_demand' && report.rows.length > 0
@@ -9993,7 +10264,15 @@ function ReportGeneration() {
       const worksheet = buildWorksheetFromRows(report.rows, exportColumns);
       XLSX.utils.book_append_sheet(workbook, worksheet, report.sheetName);
       appendVisualizationSheet(workbook, report.sheetName, report.rows, exportColumns);
+      recommendationItems.push({
+        reportType,
+        reportName: reportLabels.get(reportType) || report.sheetName,
+        sheetName: report.sheetName,
+        rows: report.rows,
+        columns: exportColumns || [],
+      });
     });
+    appendChartRecommendationsSheet(workbook, recommendationItems);
     XLSX.writeFile(workbook, 'comprehensive-utilization-workbook.xlsx');
   };
   const exportCurrentReport = () => exportReportByType(filters.reportType);
