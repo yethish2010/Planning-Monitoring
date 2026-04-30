@@ -9277,6 +9277,7 @@ function ReportGeneration() {
     year: '',
     semester: '',
     section: '',
+    room: '',
     roomType: '',
     bookingStatus: '',
     flag: '',
@@ -9479,6 +9480,7 @@ function ReportGeneration() {
     if (filters.year && !(room.yearTags || []).includes(filters.year)) return false;
     if (filters.semester && !(room.semesterTags || []).includes(filters.semester)) return false;
     if (filters.section && !(room.sectionTags || []).includes(filters.section)) return false;
+    if (filters.room && room.room_number?.toString().trim() !== filters.room) return false;
     if (filters.roomType && room.room_type !== filters.roomType) return false;
     if (filters.bookingStatus && !(room.bookingStatuses || []).includes(filters.bookingStatus)) return false;
     if (filters.flag && !(room.flags || []).includes(filters.flag)) return false;
@@ -9503,6 +9505,7 @@ function ReportGeneration() {
     if (filters.year && !(roomMeta?.yearTags || []).includes(filters.year)) return false;
     if (filters.semester && !(roomMeta?.semesterTags || []).includes(filters.semester)) return false;
     if (filters.section && !(roomMeta?.sectionTags || []).includes(filters.section)) return false;
+    if (filters.room && !matchesReportFilterValue(booking.room_number || booking.room_label || roomMeta?.room_number, filters.room)) return false;
     if (filters.roomType && !matchesReportFilterValue(booking.room_type || roomMeta?.room_type, filters.roomType)) return false;
     return true;
   });
@@ -9520,6 +9523,21 @@ function ReportGeneration() {
     .map((room: any) => room.floor_number)
     .filter((floor: any) => floor !== undefined && floor !== null)))
     .sort((a: any, b: any) => Number(a) - Number(b));
+  const roomOptions = Array.from(new Set(roomReports
+    .filter((room: any) =>
+      (!filters.campus || room.campus === filters.campus) &&
+      (!filters.building || room.building === filters.building) &&
+      (!filters.block || room.block === filters.block) &&
+      (!filters.floor || room.floor_number?.toString() === filters.floor) &&
+      (!filters.department || room.department === filters.department) &&
+      (!filters.year || (room.yearTags || []).includes(filters.year)) &&
+      (!filters.semester || (room.semesterTags || []).includes(filters.semester)) &&
+      (!filters.section || (room.sectionTags || []).includes(filters.section)) &&
+      (!filters.roomType || room.room_type === filters.roomType)
+    )
+    .map((room: any) => room.room_number?.toString().trim())
+    .filter(Boolean)))
+    .sort((a: any, b: any) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
   const yearOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.yearTags || [])))
     .sort((a: any, b: any) => Number(a) - Number(b));
   const semesterOptions = Array.from(new Set(filteredRoomReports.flatMap((room: any) => room.semesterTags || [])))
@@ -10069,6 +10087,138 @@ function ReportGeneration() {
     });
     return rows;
   })();
+  const detectTimeConflict = (entries: any[]) =>
+    entries.some((entry: any, index: number) =>
+      entries.slice(index + 1).some((other: any) => overlaps(entry.start_time, entry.end_time, other.start_time, other.end_time))
+    );
+  const selectedPerRoomMatrixRoom = filters.reportType === 'per_room_occupancy' && filteredRoomReports.length === 1
+    ? filteredRoomReports[0]
+    : null;
+  const perRoomOccupancyMatrix = (() => {
+    if (!selectedPerRoomMatrixRoom) return null;
+    const roomId = selectedPerRoomMatrixRoom.room_id?.toString();
+    const roomNumber = selectedPerRoomMatrixRoom.room_number?.toString().trim();
+    const roomScheduleRows = filteredScheduleRows.filter((schedule: any) => {
+      const scheduleRoomId = schedule.room_id?.toString();
+      const scheduleRoomLabel = schedule.room_label?.toString().trim();
+      return (roomId && scheduleRoomId === roomId) || (roomNumber && scheduleRoomLabel === roomNumber);
+    });
+    const roomBookingRows = filteredApprovedBookings.filter((booking: any) => {
+      const bookingRoomId = booking.room_id?.toString();
+      const bookingRoomNumber = (booking.room_number || booking.room_label)?.toString().trim();
+      return (roomId && bookingRoomId === roomId) || (roomNumber && bookingRoomNumber === roomNumber);
+    });
+    const entryMatchesWindow = (entry: any, window?: { start: number; end: number }) => {
+      const start = parseTimeToMinutes(entry.start_time);
+      const end = parseTimeToMinutes(entry.end_time);
+      if (start === null || end === null || end <= start) return false;
+      if (!window) return true;
+      return Math.max(0, Math.min(end, window.end) - Math.max(start, window.start)) > 0;
+    };
+    const sumMinutes = (entries: any[], window?: { start: number; end: number }) => entries.reduce((acc: number, entry: any) => {
+      const start = parseTimeToMinutes(entry.start_time);
+      const end = parseTimeToMinutes(entry.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      if (!window) return acc + (end - start);
+      return acc + Math.max(0, Math.min(end, window.end) - Math.max(start, window.start));
+    }, 0);
+    const summarizeSegment = (params: { date?: string; day?: string; window?: { label: string; start: number; end: number } }) => {
+      const normalizedDate = params.date ? normalizeComparableDateValue(params.date) : '';
+      const dayLabel = params.date ? getDateDayName(params.date) : (params.day || '');
+      const matchingSchedules = roomScheduleRows.filter((schedule: any) =>
+        schedule.day_of_week === dayLabel &&
+        (!normalizedDate || !isScheduleSuppressedForDate(schedule, normalizedDate, reportAcademicCalendars)) &&
+        entryMatchesWindow(schedule, params.window)
+      );
+      const suppressedSchedules = normalizedDate
+        ? roomScheduleRows.filter((schedule: any) =>
+            schedule.day_of_week === dayLabel &&
+            isScheduleSuppressedForDate(schedule, normalizedDate, reportAcademicCalendars) &&
+            entryMatchesWindow(schedule, params.window)
+          )
+        : [];
+      const matchingBookings = roomBookingRows.filter((booking: any) =>
+        ((normalizedDate && normalizeComparableDateValue(booking.date) === normalizedDate) ||
+          (!normalizedDate && getDateDayName(booking.date) === dayLabel)) &&
+        entryMatchesWindow(booking, params.window)
+      );
+      const scheduledMinutes = sumMinutes(matchingSchedules, params.window);
+      const bookedMinutes = sumMinutes(matchingBookings, params.window);
+      const activeEntries = [...matchingSchedules, ...matchingBookings];
+      const hasConflict = detectTimeConflict(activeEntries);
+      const occupancyStatus = hasConflict
+        ? 'Multiple'
+        : activeEntries.length > 0
+          ? 'Occupied'
+          : suppressedSchedules.length > 0
+            ? 'Exam Blocked'
+            : 'Vacant';
+      const baseWindowMinutes = params.window ? (params.window.end - params.window.start) : 12 * 60;
+      const utilization = baseWindowMinutes > 0
+        ? Math.min(100, Math.round(((scheduledMinutes + bookedMinutes) / baseWindowMinutes) * 100))
+        : 0;
+      return {
+        scheduledHours: Math.round((scheduledMinutes / 60) * 10) / 10,
+        bookedHours: Math.round((bookedMinutes / 60) * 10) / 10,
+        utilization: `${utilization}%`,
+        scheduledEntries: matchingSchedules.length,
+        approvedBookings: matchingBookings.length,
+        status: occupancyStatus,
+      };
+    };
+    const segments = occupancySnapshotMode === 'hour'
+      ? hourlyWindows.map((window) => ({
+          label: window.label,
+          summary: summarizeSegment({
+            date: occupancySnapshotDates[0] || '',
+            day: occupancySnapshotDates.length === 0 ? (filters.snapshotDay || getDateDayName(formatLocalDate(new Date()))) : '',
+            window,
+          }),
+        }))
+      : occupancySnapshotMode === 'day'
+        ? reportDayOrder.map((day) => ({
+            label: day,
+            summary: summarizeSegment({ day }),
+          }))
+        : occupancySnapshotDates.map((date) => ({
+            label: formatDisplayDate(date),
+            summary: summarizeSegment({ date }),
+          }));
+    const metricRows = [
+      {
+        Metric: 'Scheduled Hours',
+        ...Object.fromEntries(segments.map((segment) => [segment.label, segment.summary.scheduledHours])),
+      },
+      {
+        Metric: 'Booked Hours',
+        ...Object.fromEntries(segments.map((segment) => [segment.label, segment.summary.bookedHours])),
+      },
+      {
+        Metric: 'Utilization',
+        ...Object.fromEntries(segments.map((segment) => [segment.label, segment.summary.utilization])),
+      },
+      {
+        Metric: 'Scheduled Entries',
+        ...Object.fromEntries(segments.map((segment) => [segment.label, segment.summary.scheduledEntries])),
+      },
+      {
+        Metric: 'Approved Bookings',
+        ...Object.fromEntries(segments.map((segment) => [segment.label, segment.summary.approvedBookings])),
+      },
+      {
+        Metric: 'Status',
+        ...Object.fromEntries(segments.map((segment) => [segment.label, segment.summary.status])),
+      },
+    ];
+    return {
+      room: selectedPerRoomMatrixRoom.room_number,
+      columns: segments.map((segment) => segment.label),
+      rows: metricRows,
+    };
+  })();
+  const perRoomOccupancyMatrixColumns = perRoomOccupancyMatrix
+    ? ['Metric', ...perRoomOccupancyMatrix.columns]
+    : [];
   const departmentNamesForDemand = Array.from(new Set<string>([
     ...filteredScheduleRows.map((schedule: any) => schedule.department_name || roomMetaByRoomId.get(schedule.room_id?.toString())?.department || 'Unmapped'),
     ...filteredApprovedBookings.map((booking: any) => booking.department_name || getBookingRoomMeta(booking)?.department || 'Unmapped'),
@@ -11566,6 +11716,23 @@ function ReportGeneration() {
       alert('Selected report type is not available for individual export.');
       return;
     }
+    if (reportType === 'per_room_occupancy' && perRoomOccupancyMatrix) {
+      const workbook = await createExcelWorkbook();
+      const reportName = REPORT_TYPE_OPTIONS.find((option) => option.value === reportType)?.label || config.sheetName;
+      const exportColumns = getReportColumns(reportType, config.rows);
+      appendExcelDataSheet(workbook, config.sheetName, config.rows, exportColumns);
+      appendExcelDataSheet(workbook, `${config.sheetName} Matrix`, perRoomOccupancyMatrix.rows, perRoomOccupancyMatrixColumns);
+      appendExcelImageSheet(workbook, reportType, reportName, config.sheetName, config.rows, exportColumns);
+      appendExcelChartRecommendationsSheet(workbook, [{
+        reportType,
+        reportName,
+        sheetName: config.sheetName,
+        rows: config.rows,
+        columns: exportColumns,
+      }]);
+      await saveExcelWorkbook(workbook, config.fileName);
+      return;
+    }
     const exportColumns = getReportColumns(reportType, config.rows);
     await exportRowsToWorkbook(
       config.rows,
@@ -11642,6 +11809,9 @@ function ReportGeneration() {
       const exportColumns = getReportColumns(reportType, report.rows);
       const reportName = reportLabels.get(reportType) || report.sheetName;
       appendExcelDataSheet(workbook, report.sheetName, report.rows, exportColumns);
+      if (reportType === 'per_room_occupancy' && perRoomOccupancyMatrix) {
+        appendExcelDataSheet(workbook, `${report.sheetName} Matrix`, perRoomOccupancyMatrix.rows, perRoomOccupancyMatrixColumns);
+      }
       appendExcelImageSheet(workbook, reportType, reportName, report.sheetName, report.rows, exportColumns);
       recommendationItems.push({
         reportType,
@@ -11757,6 +11927,10 @@ function ReportGeneration() {
           <select value={filters.section} onChange={e => setFilters({ ...filters, section: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Sections</option>
             {sectionOptions.map((section: any) => <option key={section} value={section}>{section}</option>)}
+          </select>
+          <select value={filters.room} onChange={e => setFilters({ ...filters, room: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
+            <option value="">All Rooms</option>
+            {roomOptions.map((room: any) => <option key={room} value={room}>{room}</option>)}
           </select>
           <select value={filters.roomType} onChange={e => setFilters({ ...filters, roomType: e.target.value })} className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-emerald-500">
             <option value="">All Room Types</option>
@@ -12327,6 +12501,43 @@ function ReportGeneration() {
                 <p className="text-sm text-slate-500 mb-6">
                   Switch between date-wise, day-wise, and hour-wise room snapshots to see whether each room is vacant, occupied, has multiple simultaneous entries, or is suppressed by an exam override.
                 </p>
+                {perRoomOccupancyMatrix && (
+                  <div className="mb-8 p-5 bg-amber-50 border border-amber-100 rounded-2xl">
+                    <div className="flex items-center justify-between gap-4 mb-4">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-800">Selected Room Matrix: {perRoomOccupancyMatrix.room}</h4>
+                        <p className="text-xs text-slate-500">A transposed room-wise summary showing the selected room across the active {filters.snapshotMode === 'hour' ? 'hour bands' : filters.snapshotMode === 'day' ? 'weekdays' : 'dates'}.</p>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="border-b border-amber-100">
+                            <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Metric</th>
+                            {perRoomOccupancyMatrix.columns.map((column: string) => (
+                              <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">{column}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-amber-100/70">
+                          {perRoomOccupancyMatrix.rows.map((row: any) => (
+                            <tr key={row.Metric} className="hover:bg-white/60">
+                              <td className="py-4 text-sm font-bold text-slate-700">{row.Metric}</td>
+                              {perRoomOccupancyMatrix.columns.map((column: string) => (
+                                <td key={`${row.Metric}-${column}`} className="py-4 text-sm text-slate-500 text-right">{row[column] ?? '-'}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {!perRoomOccupancyMatrix && (
+                  <div className="mb-8 p-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm text-slate-500">
+                    Select a single room in the report filters to generate the transposed per-room matrix view.
+                  </div>
+                )}
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
                     <thead>
