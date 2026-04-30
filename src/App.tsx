@@ -586,8 +586,11 @@ const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any, batchRo
     const allocationSemester = normalizeSemesterValue(allocation?.semester, '');
     if (scheduleSemester && allocationSemester && allocationSemester !== scheduleSemester) return false;
 
-    if (date && allocation?.start_date && allocation?.end_date) {
-      if (allocation.start_date > date || allocation.end_date < date) return false;
+    const normalizedDate = normalizeComparableDateValue(date);
+    const allocationStartDate = normalizeComparableDateValue(allocation?.start_date);
+    const allocationEndDate = normalizeComparableDateValue(allocation?.end_date);
+    if (normalizedDate && allocationStartDate && allocationEndDate) {
+      if (allocationStartDate > normalizedDate || allocationEndDate < normalizedDate) return false;
     }
 
     return true;
@@ -599,13 +602,14 @@ const doesScheduleMatchCalendarOverride = (schedule: any, calendar: any, batchRo
 
 const isScheduleSuppressedForDate = (schedule: any, date: string, calendars: any[], batchRoomAllocations: any[] = []) => {
   if (!date || !Array.isArray(calendars) || calendars.length === 0) return false;
+  const normalizedDate = normalizeComparableDateValue(date);
   return calendars.some(calendar =>
     isExaminationCalendarEvent(calendar) &&
     calendar?.start_date &&
     calendar?.end_date &&
-    calendar.start_date <= date &&
-    calendar.end_date >= date &&
-    doesScheduleMatchCalendarOverride(schedule, calendar, batchRoomAllocations, date)
+    normalizeComparableDateValue(calendar.start_date) <= normalizedDate &&
+    normalizeComparableDateValue(calendar.end_date) >= normalizedDate &&
+    doesScheduleMatchCalendarOverride(schedule, calendar, batchRoomAllocations, normalizedDate)
   );
 };
 
@@ -1828,23 +1832,28 @@ const formatLocalDate = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
-const formatDisplayDate = (value?: string | Date | null) => {
+const normalizeComparableDateValue = (value?: string | Date | null) => {
   if (!value) return '';
-  if (value instanceof Date) {
-    const normalized = formatLocalDate(value).split('-');
-    return `${normalized[2]}-${normalized[1]}-${normalized[0]}`;
-  }
+  if (value instanceof Date) return formatLocalDate(value);
 
   const text = value.toString().trim();
   if (!text) return '';
 
   const isoLikeMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (isoLikeMatch) return `${isoLikeMatch[3]}-${isoLikeMatch[2]}-${isoLikeMatch[1]}`;
+  if (isoLikeMatch) return `${isoLikeMatch[1]}-${isoLikeMatch[2]}-${isoLikeMatch[3]}`;
 
-  const alreadyFormattedMatch = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-  if (alreadyFormattedMatch) return text;
+  const displayMatch = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (displayMatch) return `${displayMatch[3]}-${displayMatch[2]}-${displayMatch[1]}`;
 
   return text;
+};
+
+const formatDisplayDate = (value?: string | Date | null) => {
+  const normalized = normalizeComparableDateValue(value);
+  if (!normalized) return '';
+  const parts = normalized.split('-');
+  if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  return normalized;
 };
 
 const DEFAULT_TIMETABLE_TIME_SLOTS = [
@@ -1952,7 +1961,10 @@ const timingProfileMatchesContext = (profile: any, context: any) => {
 
 const academicCalendarMatchesTimingContext = (calendar: any, context: any, activeDate: string) => {
   if (!calendar?.timing_profile_id) return false;
-  if (activeDate && ((calendar.start_date && calendar.start_date > activeDate) || (calendar.end_date && calendar.end_date < activeDate))) return false;
+  const normalizedActiveDate = normalizeComparableDateValue(activeDate);
+  const normalizedCalendarStart = normalizeComparableDateValue(calendar?.start_date);
+  const normalizedCalendarEnd = normalizeComparableDateValue(calendar?.end_date);
+  if (normalizedActiveDate && ((normalizedCalendarStart && normalizedCalendarStart > normalizedActiveDate) || (normalizedCalendarEnd && normalizedCalendarEnd < normalizedActiveDate))) return false;
   if (normalizeLookupValue(calendar.event_type) === normalizeLookupValue('Examinations')) return false;
   if (calendar.school_id && context.school_id && !idsMatch(calendar.school_id, context.school_id)) return false;
   if (calendar.department_id && context.department_id && !idsMatch(calendar.department_id, context.department_id)) return false;
@@ -2000,9 +2012,11 @@ const minutesToTime = (minutes: number) => {
 };
 
 const getRangeLifecycleStatus = (startDate?: string, endDate?: string, completedLabel = 'Completed', futureLabel = 'Upcoming') => {
-  const today = formatLocalDate(new Date());
-  if (endDate && endDate < today) return completedLabel;
-  if (startDate && startDate > today) return futureLabel;
+  const today = normalizeComparableDateValue(new Date());
+  const normalizedStartDate = normalizeComparableDateValue(startDate);
+  const normalizedEndDate = normalizeComparableDateValue(endDate);
+  if (normalizedEndDate && normalizedEndDate < today) return completedLabel;
+  if (normalizedStartDate && normalizedStartDate > today) return futureLabel;
   return 'Active';
 };
 
@@ -9614,7 +9628,9 @@ function ReportGeneration() {
   };
   const safeDate = (value?: string) => {
     if (!value) return null;
-    const date = new Date(`${value}T00:00:00`);
+    const normalizedValue = normalizeComparableDateValue(value);
+    if (!normalizedValue) return null;
+    const date = new Date(`${normalizedValue}T00:00:00`);
     return Number.isNaN(date.getTime()) ? null : date;
   };
   const getDaysBetweenInclusive = (start?: string, end?: string) => {
@@ -9853,8 +9869,8 @@ function ReportGeneration() {
       (!filters.department || matchesReportFilterValue(calendar.department_name, filters.department)) &&
       (!filters.semester || normalizeSemesterValue(calendar.semester, '').toLowerCase() === filters.semester.toLowerCase()) &&
       (!filters.year || normalizeYearOfStudyValue(calendar.year_of_study) === filters.year) &&
-      (!filters.dateFrom || (calendar.end_date || calendar.start_date) >= filters.dateFrom) &&
-      (!filters.dateTo || (calendar.start_date || calendar.end_date) <= filters.dateTo),
+      (!filters.dateFrom || normalizeComparableDateValue(calendar.end_date || calendar.start_date) >= normalizeComparableDateValue(filters.dateFrom)) &&
+      (!filters.dateTo || normalizeComparableDateValue(calendar.start_date || calendar.end_date) <= normalizeComparableDateValue(filters.dateTo)),
     )
     .map((calendar: any) => {
       const scheduleMatches = filteredScheduleRows.filter((schedule: any) => {
@@ -12405,8 +12421,8 @@ function TimetableBuilder() {
     const uniqueSemesters = Array.from(new Set(candidateSchedules.map(schedule => normalizeExactSemesterValue(schedule?.semester, schedule?.year_of_study, '')).filter(Boolean)));
     const uniqueSections = Array.from(new Set(candidateSchedules.map(schedule => schedule.section?.toString().trim()).filter(Boolean)));
     const matchingCalendar = academicCalendars.find(calendar =>
-      calendar?.start_date <= referenceDate &&
-      calendar?.end_date >= referenceDate &&
+      normalizeComparableDateValue(calendar?.start_date) <= normalizeComparableDateValue(referenceDate) &&
+      normalizeComparableDateValue(calendar?.end_date) >= normalizeComparableDateValue(referenceDate) &&
       (!timetableContext.department_id || idsMatch(calendar.department_id, timetableContext.department_id)) &&
       (!timetableContext.year || normalizeYearOfStudyValue(calendar.year_of_study, '') === normalizeYearOfStudyValue(timetableContext.year, '')) &&
       (!timetableContext.semester || normalizeSemesterValue(calendar.semester, '') === normalizeSemesterValue(timetableContext.semester, ''))
