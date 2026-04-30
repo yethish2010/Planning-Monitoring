@@ -9280,6 +9280,7 @@ function ReportGeneration() {
     roomType: '',
     bookingStatus: '',
     flag: '',
+    snapshotMode: 'date',
     snapshotDay: '',
     snapshotTime: ''
   });
@@ -9712,6 +9713,11 @@ function ReportGeneration() {
     { value: '', label: 'Full Day' },
     ...hourlyWindows.map((band) => ({ value: band.label, label: band.label })),
   ];
+  const occupancySnapshotModeOptions = [
+    { value: 'date', label: 'By Date' },
+    { value: 'day', label: 'By Day' },
+    { value: 'hour', label: 'By Hour' },
+  ];
   const timeBandWindows = [
     { label: '08:00-10:00', start: 8 * 60, end: 10 * 60 },
     { label: '10:00-12:00', start: 10 * 60, end: 12 * 60 },
@@ -9939,8 +9945,10 @@ function ReportGeneration() {
     if (start === null || end === null || end <= start) return null;
     return { label: value, start, end };
   };
+  const occupancySnapshotMode = filters.snapshotMode || 'date';
   const occupancySnapshotWindow = parseTimeWindowLabel(filters.snapshotTime);
   const occupancySnapshotDates = (() => {
+    if (occupancySnapshotMode === 'day') return [];
     const explicitFrom = normalizeComparableDateValue(filters.dateFrom);
     const explicitTo = normalizeComparableDateValue(filters.dateTo);
     if (explicitFrom && explicitTo) {
@@ -9958,13 +9966,14 @@ function ReportGeneration() {
     if (explicitFrom || explicitTo) {
       return [explicitFrom || explicitTo].filter(Boolean) as string[];
     }
-    return filters.snapshotDay ? [] : [formatLocalDate(new Date())];
+    if (occupancySnapshotMode === 'hour' && filters.snapshotDay) return [];
+    return [formatLocalDate(new Date())];
   })();
   const getEntryWindowOverlap = (startTime?: string, endTime?: string) => {
     const start = parseTimeToMinutes(startTime);
     const end = parseTimeToMinutes(endTime);
     if (start === null || end === null || end <= start) return false;
-    if (!occupancySnapshotWindow) return true;
+    if (occupancySnapshotMode !== 'hour' || !occupancySnapshotWindow) return true;
     return Math.max(0, Math.min(end, occupancySnapshotWindow.end) - Math.max(start, occupancySnapshotWindow.start)) > 0;
   };
   const formatOccupancyEntry = (entry: any, source: 'Schedule' | 'Booking') => {
@@ -9975,7 +9984,9 @@ function ReportGeneration() {
   };
   const perRoomOccupancySnapshotRows = (() => {
     const rows: any[] = [];
-    const selectedDay = filters.snapshotDay || '';
+    const selectedDay = (occupancySnapshotMode === 'day' || occupancySnapshotMode === 'hour')
+      ? (filters.snapshotDay || getDateDayName(formatLocalDate(new Date())))
+      : '';
     const pushSnapshotRow = (room: any, dateLabel: string, dayLabel: string, matchingSchedules: any[], matchingBookings: any[], suppressedSchedules: any[]) => {
       const details = [
         ...matchingSchedules.map((entry) => formatOccupancyEntry(entry, 'Schedule')),
@@ -9993,7 +10004,9 @@ function ReportGeneration() {
       rows.push({
         Date: dateLabel,
         Day: dayLabel,
-        HourBand: occupancySnapshotWindow?.label || 'Full Day',
+        HourBand: occupancySnapshotMode === 'hour'
+          ? (occupancySnapshotWindow?.label || 'Full Day')
+          : 'All Hours',
         Room: room.room_number,
         Campus: room.campus || '',
         Building: room.building,
@@ -10603,7 +10616,7 @@ function ReportGeneration() {
         xAxis: 'Room',
         yAxis: 'ScheduledEntries',
         sortBy: 'ScheduledEntries (desc)',
-        note: 'Best for date/day/time occupancy snapshots by room.',
+        note: 'Best for room-wise date, day, or hour occupancy snapshots.',
       },
       department_roomtype_demand: {
         chart: 'Stacked Bar',
@@ -11759,13 +11772,20 @@ function ReportGeneration() {
           </select>
           {filters.reportType === 'per_room_occupancy' && (
             <>
+              <select value={filters.snapshotMode} onChange={e => setFilters({ ...filters, snapshotMode: e.target.value, snapshotTime: e.target.value === 'hour' ? filters.snapshotTime : '', snapshotDay: e.target.value === 'date' ? '' : filters.snapshotDay })} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm focus:outline-none focus:border-amber-500">
+                {occupancySnapshotModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              {(filters.snapshotMode === 'day' || filters.snapshotMode === 'hour') && (
               <select value={filters.snapshotDay} onChange={e => setFilters({ ...filters, snapshotDay: e.target.value })} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm focus:outline-none focus:border-amber-500">
-                <option value="">Auto Day From Date</option>
+                <option value="">{filters.snapshotMode === 'hour' ? 'Today' : 'Current Day'}</option>
                 {reportDayOrder.map((day: string) => <option key={day} value={day}>{day}</option>)}
               </select>
+              )}
+              {filters.snapshotMode === 'hour' && (
               <select value={filters.snapshotTime} onChange={e => setFilters({ ...filters, snapshotTime: e.target.value })} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm focus:outline-none focus:border-amber-500">
                 {occupancySnapshotTimeOptions.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
               </select>
+              )}
             </>
           )}
         </div>
@@ -12305,7 +12325,7 @@ function ReportGeneration() {
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-800 mb-2">Per-room Occupancy Snapshot</h3>
                 <p className="text-sm text-slate-500 mb-6">
-                  Uses the selected date range or weekday plus the optional hour band to show whether each room is vacant, occupied, has multiple simultaneous entries, or is suppressed by an exam override.
+                  Switch between date-wise, day-wise, and hour-wise room snapshots to see whether each room is vacant, occupied, has multiple simultaneous entries, or is suppressed by an exam override.
                 </p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
