@@ -9296,6 +9296,9 @@ function ReportGeneration() {
     { value: 'underused', label: 'Underused Rooms' },
     { value: 'overused', label: 'Overused Rooms' },
     { value: 'time_band_utilization', label: 'Time Band Utilization' },
+    { value: 'hourly_utilization', label: 'Hourly Utilization' },
+    { value: 'day_wise_utilization', label: 'Day-wise Utilization' },
+    { value: 'date_wise_occupancy', label: 'Date-wise Occupancy' },
     { value: 'department_roomtype_demand', label: 'Department vs Room-Type Demand' },
     { value: 'clash_overlap', label: 'Clash / Overlap Report' },
     { value: 'vacancy_opportunity', label: 'Vacancy Opportunity Report' },
@@ -9322,6 +9325,9 @@ function ReportGeneration() {
     underused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     overused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     time_band_utilization: ['TimeBand', 'ScheduledHours', 'BookedHours', 'Utilization'],
+    hourly_utilization: ['HourBand', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings'],
+    day_wise_utilization: ['Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms'],
+    date_wise_occupancy: ['Date', 'Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms'],
     department_roomtype_demand: ['Department', 'TotalDemand'],
     clash_overlap: ['Source', 'Room', 'DayOrDate', 'YearA', 'SemesterA', 'EntryA', 'YearB', 'SemesterB', 'EntryB'],
     vacancy_opportunity: ['Room', 'Building', 'Department', 'IdleHoursPerWeek', 'Utilization', 'Opportunity'],
@@ -9694,30 +9700,161 @@ function ReportGeneration() {
     { label: '14:00-16:00', start: 14 * 60, end: 16 * 60 },
     { label: '16:00-18:00', start: 16 * 60, end: 18 * 60 },
   ];
-  const roomTimeBandUtilization = timeBandWindows.map((band) => {
+  const summarizeWindowUtilization = (windowStart: number, windowEnd: number) => {
     const scheduledMinutes = filteredScheduleRows.reduce((acc: number, schedule: any) => {
       const start = parseTimeToMinutes(schedule.start_time);
       const end = parseTimeToMinutes(schedule.end_time);
       if (start === null || end === null || end <= start) return acc;
-      const overlapMinutes = Math.max(0, Math.min(end, band.end) - Math.max(start, band.start));
+      const overlapMinutes = Math.max(0, Math.min(end, windowEnd) - Math.max(start, windowStart));
       return acc + overlapMinutes;
     }, 0);
     const bookedMinutes = filteredApprovedBookings.reduce((acc: number, booking: any) => {
       const start = parseTimeToMinutes(booking.start_time);
       const end = parseTimeToMinutes(booking.end_time);
       if (start === null || end === null || end <= start) return acc;
-      const overlapMinutes = Math.max(0, Math.min(end, band.end) - Math.max(start, band.start));
+      const overlapMinutes = Math.max(0, Math.min(end, windowEnd) - Math.max(start, windowStart));
       return acc + overlapMinutes;
     }, 0);
     const totalMinutes = scheduledMinutes + bookedMinutes;
     const roomCount = Math.max(filteredRoomReports.length, 1);
-    const maxMinutes = roomCount * (band.end - band.start) * reportDayOrder.length;
+    const scheduledEntries = filteredScheduleRows.filter((schedule: any) => {
+      const start = parseTimeToMinutes(schedule.start_time);
+      const end = parseTimeToMinutes(schedule.end_time);
+      return start !== null && end !== null && end > start && Math.max(0, Math.min(end, windowEnd) - Math.max(start, windowStart)) > 0;
+    }).length;
+    const approvedBookings = filteredApprovedBookings.filter((booking: any) => {
+      const start = parseTimeToMinutes(booking.start_time);
+      const end = parseTimeToMinutes(booking.end_time);
+      return start !== null && end !== null && end > start && Math.max(0, Math.min(end, windowEnd) - Math.max(start, windowStart)) > 0;
+    }).length;
+    const maxMinutes = roomCount * (windowEnd - windowStart) * reportDayOrder.length;
     const utilization = maxMinutes > 0 ? Math.min(100, Math.round((totalMinutes / maxMinutes) * 100)) : 0;
     return {
-      band: band.label,
       scheduledHours: Math.round((scheduledMinutes / 60) * 10) / 10,
       bookedHours: Math.round((bookedMinutes / 60) * 10) / 10,
       utilization,
+      scheduledEntries,
+      approvedBookings,
+    };
+  };
+  const roomTimeBandUtilization = timeBandWindows.map((band) => {
+    const summary = summarizeWindowUtilization(band.start, band.end);
+    return {
+      band: band.label,
+      ...summary,
+    };
+  });
+  const hourlyWindows = Array.from({ length: 10 }, (_, index) => {
+    const start = (8 + index) * 60;
+    const end = start + 60;
+    return {
+      label: `${minutesToTime(start)}-${minutesToTime(end)}`,
+      start,
+      end,
+    };
+  });
+  const hourlyUtilizationReport = hourlyWindows.map((band) => ({
+    hourBand: band.label,
+    ...summarizeWindowUtilization(band.start, band.end),
+  }));
+  const dayWiseUtilizationReport = reportDayOrder.map((day) => {
+    const daySchedules = filteredScheduleRows.filter((schedule: any) => schedule.day_of_week === day);
+    const dayBookings = filteredApprovedBookings.filter((booking: any) => getDateDayName(booking.date) === day);
+    const scheduledMinutes = daySchedules.reduce((acc: number, schedule: any) => {
+      const start = parseTimeToMinutes(schedule.start_time);
+      const end = parseTimeToMinutes(schedule.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      return acc + (end - start);
+    }, 0);
+    const bookedMinutes = dayBookings.reduce((acc: number, booking: any) => {
+      const start = parseTimeToMinutes(booking.start_time);
+      const end = parseTimeToMinutes(booking.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      return acc + (end - start);
+    }, 0);
+    const occupiedRooms = new Set<string>([
+      ...daySchedules.map((schedule: any) => schedule.room_id?.toString() || schedule.room_label?.toString().trim()).filter(Boolean),
+      ...dayBookings.map((booking: any) => booking.room_id?.toString() || booking.room_label?.toString().trim()).filter(Boolean),
+    ]).size;
+    const roomCount = Math.max(filteredRoomReports.length, 1);
+    const maxMinutes = roomCount * 12 * 60;
+    const utilization = maxMinutes > 0 ? Math.min(100, Math.round(((scheduledMinutes + bookedMinutes) / maxMinutes) * 100)) : 0;
+    return {
+      day,
+      scheduledHours: Math.round((scheduledMinutes / 60) * 10) / 10,
+      bookedHours: Math.round((bookedMinutes / 60) * 10) / 10,
+      utilization,
+      scheduledEntries: daySchedules.length,
+      approvedBookings: dayBookings.length,
+      occupiedRooms,
+    };
+  });
+  const dateScopeForOccupancy = (() => {
+    const explicitFrom = normalizeComparableDateValue(filters.dateFrom);
+    const explicitTo = normalizeComparableDateValue(filters.dateTo);
+    if (explicitFrom && explicitTo) {
+      const start = safeDate(explicitFrom);
+      const end = safeDate(explicitTo);
+      if (!start || !end || end < start) return [];
+      const rows: string[] = [];
+      const cursor = new Date(start);
+      while (cursor <= end) {
+        rows.push(formatLocalDate(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      return rows;
+    }
+    if (explicitFrom || explicitTo) {
+      const seed = safeDate(explicitFrom || explicitTo);
+      if (!seed) return [];
+      const rows: string[] = [];
+      const cursor = new Date(seed);
+      if (!explicitFrom && explicitTo) cursor.setDate(cursor.getDate() - 5);
+      for (let index = 0; index < 6; index += 1) {
+        rows.push(formatLocalDate(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      return rows;
+    }
+    return Object.values(getWeekDatesForReferenceDate(formatLocalDate(new Date())));
+  })();
+  const dateWiseOccupancyReport = dateScopeForOccupancy.map((date) => {
+    const dayName = getDateDayName(date);
+    const dateSchedules = filteredScheduleRows.filter((schedule: any) =>
+      schedule.day_of_week === dayName &&
+      !isScheduleSuppressedForDate(schedule, date, reportAcademicCalendars)
+    );
+    const dateBookings = filteredApprovedBookings.filter((booking: any) =>
+      normalizeComparableDateValue(booking.date) === date
+    );
+    const scheduledMinutes = dateSchedules.reduce((acc: number, schedule: any) => {
+      const start = parseTimeToMinutes(schedule.start_time);
+      const end = parseTimeToMinutes(schedule.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      return acc + (end - start);
+    }, 0);
+    const bookedMinutes = dateBookings.reduce((acc: number, booking: any) => {
+      const start = parseTimeToMinutes(booking.start_time);
+      const end = parseTimeToMinutes(booking.end_time);
+      if (start === null || end === null || end <= start) return acc;
+      return acc + (end - start);
+    }, 0);
+    const occupiedRooms = new Set<string>([
+      ...dateSchedules.map((schedule: any) => schedule.room_id?.toString() || schedule.room_label?.toString().trim()).filter(Boolean),
+      ...dateBookings.map((booking: any) => booking.room_id?.toString() || booking.room_label?.toString().trim()).filter(Boolean),
+    ]).size;
+    const roomCount = Math.max(filteredRoomReports.length, 1);
+    const maxMinutes = roomCount * 12 * 60;
+    const utilization = maxMinutes > 0 ? Math.min(100, Math.round(((scheduledMinutes + bookedMinutes) / maxMinutes) * 100)) : 0;
+    return {
+      date,
+      day: dayName,
+      scheduledHours: Math.round((scheduledMinutes / 60) * 10) / 10,
+      bookedHours: Math.round((bookedMinutes / 60) * 10) / 10,
+      utilization,
+      scheduledEntries: dateSchedules.length,
+      approvedBookings: dateBookings.length,
+      occupiedRooms,
     };
   });
   const departmentNamesForDemand = Array.from(new Set<string>([
@@ -11003,6 +11140,45 @@ function ReportGeneration() {
           Utilization: `${item.utilization}%`,
         })),
       },
+      hourly_utilization: {
+        fileName: 'hourly-utilization-report.xlsx',
+        sheetName: 'Hourly Utilization',
+        rows: hourlyUtilizationReport.map((item: any) => ({
+          HourBand: item.hourBand,
+          ScheduledHours: item.scheduledHours,
+          BookedHours: item.bookedHours,
+          Utilization: `${item.utilization}%`,
+          ScheduledEntries: item.scheduledEntries,
+          ApprovedBookings: item.approvedBookings,
+        })),
+      },
+      day_wise_utilization: {
+        fileName: 'day-wise-utilization-report.xlsx',
+        sheetName: 'Day-wise Utilization',
+        rows: dayWiseUtilizationReport.map((item: any) => ({
+          Day: item.day,
+          ScheduledHours: item.scheduledHours,
+          BookedHours: item.bookedHours,
+          Utilization: `${item.utilization}%`,
+          ScheduledEntries: item.scheduledEntries,
+          ApprovedBookings: item.approvedBookings,
+          OccupiedRooms: item.occupiedRooms,
+        })),
+      },
+      date_wise_occupancy: {
+        fileName: 'date-wise-occupancy-report.xlsx',
+        sheetName: 'Date-wise Occupancy',
+        rows: dateWiseOccupancyReport.map((item: any) => ({
+          Date: item.date,
+          Day: item.day,
+          ScheduledHours: item.scheduledHours,
+          BookedHours: item.bookedHours,
+          Utilization: `${item.utilization}%`,
+          ScheduledEntries: item.scheduledEntries,
+          ApprovedBookings: item.approvedBookings,
+          OccupiedRooms: item.occupiedRooms,
+        })),
+      },
       department_roomtype_demand: {
         fileName: 'department-roomtype-demand-report.xlsx',
         sheetName: 'Department RoomType Demand',
@@ -11706,6 +11882,114 @@ function ReportGeneration() {
                           <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.utilization}%</td>
                         </tr>
                       ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'hourly_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Hourly Utilization Report</h3>
+                <p className="text-sm text-slate-500 mb-6">Shows room usage in one-hour bands across the academic week using the currently filtered schedules and approved bookings.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Hour Band</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Booked Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utilization</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Entries</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Approved Bookings</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {hourlyUtilizationReport.map((item: any) => (
+                        <tr key={item.hourBand} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.hourBand}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledHours}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.bookedHours}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.utilization}%</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledEntries}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.approvedBookings}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'day_wise_utilization' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Day-wise Utilization Report</h3>
+                <p className="text-sm text-slate-500 mb-6">Summarizes weekly room usage by weekday so you can compare which academic days are most heavily occupied.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Booked Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utilization</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Entries</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Approved Bookings</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Occupied Rooms</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {dayWiseUtilizationReport.map((item: any) => (
+                        <tr key={item.day} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.day}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledHours}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.bookedHours}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.utilization}%</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledEntries}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.approvedBookings}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.occupiedRooms}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'date_wise_occupancy' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Date-wise Occupancy Report</h3>
+                <p className="text-sm text-slate-500 mb-6">Projects occupancy across actual calendar dates. If no date range is selected, the report defaults to the current academic week.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Day</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Booked Hours</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utilization</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Entries</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Approved Bookings</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Occupied Rooms</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {dateWiseOccupancyReport.map((item: any) => (
+                        <tr key={item.date} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{formatDisplayDate(item.date)}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.day}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledHours}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.bookedHours}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.utilization}%</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledEntries}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.approvedBookings}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.occupiedRooms}</td>
+                        </tr>
+                      ))}
+                      {dateWiseOccupancyReport.length === 0 && (
+                        <tr><td colSpan={8} className="py-8 text-center text-slate-400 italic">No date-wise occupancy rows found for the selected filters.</td></tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
