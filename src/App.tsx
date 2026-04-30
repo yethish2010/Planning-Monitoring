@@ -9330,9 +9330,9 @@ function ReportGeneration() {
     underused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     overused: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
     time_band_utilization: ['TimeBand', 'ScheduledHours', 'BookedHours', 'Utilization'],
-    hourly_utilization: ['HourBand', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings'],
-    day_wise_utilization: ['Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms'],
-    date_wise_occupancy: ['Date', 'Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms'],
+    hourly_utilization: ['HourBand', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms', 'RoomNumbers'],
+    day_wise_utilization: ['Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms', 'RoomNumbers'],
+    date_wise_occupancy: ['Date', 'Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms', 'RoomNumbers'],
     per_room_occupancy: ['Date', 'Day', 'HourBand', 'Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Capacity', 'OccupancyStatus', 'ScheduledEntries', 'ApprovedBookings', 'SuppressedSchedules', 'Details'],
     department_roomtype_demand: ['Department', 'TotalDemand'],
     clash_overlap: ['Source', 'Room', 'DayOrDate', 'YearA', 'SemesterA', 'EntryA', 'YearB', 'SemesterB', 'EntryB'],
@@ -9756,6 +9756,26 @@ function ReportGeneration() {
       approvedBookings,
     };
   };
+  const collectSortedRoomNumbers = (values: Array<any>) =>
+    Array.from(new Set(
+      values
+        .map((value) => value?.toString().trim())
+        .filter(Boolean)
+    )).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
+  const getScheduleReportRoomNumber = (schedule: any) => {
+    const roomIdKey = schedule.room_id?.toString();
+    return roomMetaByRoomId.get(roomIdKey)?.room_number?.toString().trim()
+      || roomMetaByNumber.get(schedule.room_label?.toString().trim())?.room_number?.toString().trim()
+      || schedule.room_label?.toString().trim()
+      || roomIdKey
+      || '';
+  };
+  const getBookingReportRoomNumber = (booking: any) =>
+    getBookingRoomMeta(booking)?.room_number?.toString().trim()
+    || booking.room_number?.toString().trim()
+    || booking.room_label?.toString().trim()
+    || booking.room_id?.toString()
+    || '';
   const roomTimeBandUtilization = timeBandWindows.map((band) => {
     const summary = summarizeWindowUtilization(band.start, band.end);
     return {
@@ -9763,10 +9783,28 @@ function ReportGeneration() {
       ...summary,
     };
   });
-  const hourlyUtilizationReport = hourlyWindows.map((band) => ({
-    hourBand: band.label,
-    ...summarizeWindowUtilization(band.start, band.end),
-  }));
+  const hourlyUtilizationReport = hourlyWindows.map((band) => {
+    const activeSchedules = filteredScheduleRows.filter((schedule: any) => {
+      const start = parseTimeToMinutes(schedule.start_time);
+      const end = parseTimeToMinutes(schedule.end_time);
+      return start !== null && end !== null && end > start && Math.max(0, Math.min(end, band.end) - Math.max(start, band.start)) > 0;
+    });
+    const activeBookings = filteredApprovedBookings.filter((booking: any) => {
+      const start = parseTimeToMinutes(booking.start_time);
+      const end = parseTimeToMinutes(booking.end_time);
+      return start !== null && end !== null && end > start && Math.max(0, Math.min(end, band.end) - Math.max(start, band.start)) > 0;
+    });
+    const roomNumbers = collectSortedRoomNumbers([
+      ...activeSchedules.map((schedule: any) => getScheduleReportRoomNumber(schedule)),
+      ...activeBookings.map((booking: any) => getBookingReportRoomNumber(booking)),
+    ]);
+    return {
+      hourBand: band.label,
+      ...summarizeWindowUtilization(band.start, band.end),
+      occupiedRooms: roomNumbers.length,
+      roomNumbers: roomNumbers.join(', '),
+    };
+  });
   const dayWiseUtilizationReport = reportDayOrder.map((day) => {
     const daySchedules = filteredScheduleRows.filter((schedule: any) => schedule.day_of_week === day);
     const dayBookings = filteredApprovedBookings.filter((booking: any) => getDateDayName(booking.date) === day);
@@ -9782,10 +9820,11 @@ function ReportGeneration() {
       if (start === null || end === null || end <= start) return acc;
       return acc + (end - start);
     }, 0);
-    const occupiedRooms = new Set<string>([
-      ...daySchedules.map((schedule: any) => schedule.room_id?.toString() || schedule.room_label?.toString().trim()).filter(Boolean),
-      ...dayBookings.map((booking: any) => booking.room_id?.toString() || booking.room_label?.toString().trim()).filter(Boolean),
-    ]).size;
+    const roomNumbers = collectSortedRoomNumbers([
+      ...daySchedules.map((schedule: any) => getScheduleReportRoomNumber(schedule)),
+      ...dayBookings.map((booking: any) => getBookingReportRoomNumber(booking)),
+    ]);
+    const occupiedRooms = roomNumbers.length;
     const roomCount = Math.max(filteredRoomReports.length, 1);
     const maxMinutes = roomCount * 12 * 60;
     const utilization = maxMinutes > 0 ? Math.min(100, Math.round(((scheduledMinutes + bookedMinutes) / maxMinutes) * 100)) : 0;
@@ -9797,6 +9836,7 @@ function ReportGeneration() {
       scheduledEntries: daySchedules.length,
       approvedBookings: dayBookings.length,
       occupiedRooms,
+      roomNumbers: roomNumbers.join(', '),
     };
   });
   const dateScopeForOccupancy = (() => {
@@ -9849,10 +9889,11 @@ function ReportGeneration() {
       if (start === null || end === null || end <= start) return acc;
       return acc + (end - start);
     }, 0);
-    const occupiedRooms = new Set<string>([
-      ...dateSchedules.map((schedule: any) => schedule.room_id?.toString() || schedule.room_label?.toString().trim()).filter(Boolean),
-      ...dateBookings.map((booking: any) => booking.room_id?.toString() || booking.room_label?.toString().trim()).filter(Boolean),
-    ]).size;
+    const roomNumbers = collectSortedRoomNumbers([
+      ...dateSchedules.map((schedule: any) => getScheduleReportRoomNumber(schedule)),
+      ...dateBookings.map((booking: any) => getBookingReportRoomNumber(booking)),
+    ]);
+    const occupiedRooms = roomNumbers.length;
     const roomCount = Math.max(filteredRoomReports.length, 1);
     const maxMinutes = roomCount * 12 * 60;
     const utilization = maxMinutes > 0 ? Math.min(100, Math.round(((scheduledMinutes + bookedMinutes) / maxMinutes) * 100)) : 0;
@@ -9865,6 +9906,7 @@ function ReportGeneration() {
       scheduledEntries: dateSchedules.length,
       approvedBookings: dateBookings.length,
       occupiedRooms,
+      roomNumbers: roomNumbers.join(', '),
     };
   });
   const detailedRoomReportRows = filteredRoomReports.map((room: any) => ({
@@ -11347,6 +11389,8 @@ function ReportGeneration() {
           Utilization: `${item.utilization}%`,
           ScheduledEntries: item.scheduledEntries,
           ApprovedBookings: item.approvedBookings,
+          OccupiedRooms: item.occupiedRooms,
+          RoomNumbers: item.roomNumbers,
         })),
       },
       day_wise_utilization: {
@@ -11360,6 +11404,7 @@ function ReportGeneration() {
           ScheduledEntries: item.scheduledEntries,
           ApprovedBookings: item.approvedBookings,
           OccupiedRooms: item.occupiedRooms,
+          RoomNumbers: item.roomNumbers,
         })),
       },
       date_wise_occupancy: {
@@ -11374,6 +11419,7 @@ function ReportGeneration() {
           ScheduledEntries: item.scheduledEntries,
           ApprovedBookings: item.approvedBookings,
           OccupiedRooms: item.occupiedRooms,
+          RoomNumbers: item.roomNumbers,
         })),
       },
       per_room_occupancy: {
@@ -12153,6 +12199,8 @@ function ReportGeneration() {
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utilization</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Entries</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Approved Bookings</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Occupied Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room Numbers</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -12164,6 +12212,8 @@ function ReportGeneration() {
                           <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.utilization}%</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledEntries}</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.approvedBookings}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.occupiedRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomNumbers || '-'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -12187,6 +12237,7 @@ function ReportGeneration() {
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Entries</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Approved Bookings</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Occupied Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room Numbers</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -12199,6 +12250,7 @@ function ReportGeneration() {
                           <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledEntries}</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.approvedBookings}</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.occupiedRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomNumbers || '-'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -12223,6 +12275,7 @@ function ReportGeneration() {
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Scheduled Entries</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Approved Bookings</th>
                         <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Occupied Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room Numbers</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -12236,10 +12289,11 @@ function ReportGeneration() {
                           <td className="py-4 text-sm text-slate-500 text-right">{item.scheduledEntries}</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.approvedBookings}</td>
                           <td className="py-4 text-sm text-slate-500 text-right">{item.occupiedRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.roomNumbers || '-'}</td>
                         </tr>
                       ))}
                       {dateWiseOccupancyReport.length === 0 && (
-                        <tr><td colSpan={8} className="py-8 text-center text-slate-400 italic">No date-wise occupancy rows found for the selected filters.</td></tr>
+                        <tr><td colSpan={9} className="py-8 text-center text-slate-400 italic">No date-wise occupancy rows found for the selected filters.</td></tr>
                       )}
                     </tbody>
                   </table>
