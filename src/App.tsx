@@ -9279,10 +9279,13 @@ function ReportGeneration() {
     section: '',
     roomType: '',
     bookingStatus: '',
-    flag: ''
+    flag: '',
+    snapshotDay: '',
+    snapshotTime: ''
   });
   const REPORT_TYPE_OPTIONS = [
     { value: 'room_utilization', label: 'Room Utilization' },
+    { value: 'room_level_detail', label: 'Room-level Detail' },
     { value: 'campus_utilization', label: 'Campus Utilization' },
     { value: 'building_utilization', label: 'Building Utilization' },
     { value: 'department_allocation', label: 'Department Allocation' },
@@ -9299,6 +9302,7 @@ function ReportGeneration() {
     { value: 'hourly_utilization', label: 'Hourly Utilization' },
     { value: 'day_wise_utilization', label: 'Day-wise Utilization' },
     { value: 'date_wise_occupancy', label: 'Date-wise Occupancy' },
+    { value: 'per_room_occupancy', label: 'Per-room Occupancy Snapshot' },
     { value: 'department_roomtype_demand', label: 'Department vs Room-Type Demand' },
     { value: 'clash_overlap', label: 'Clash / Overlap Report' },
     { value: 'vacancy_opportunity', label: 'Vacancy Opportunity Report' },
@@ -9311,6 +9315,7 @@ function ReportGeneration() {
   ];
   const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
     room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'Semesters', 'Sections', 'Flags'],
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
     building_utilization: ['Building', 'Rooms', 'MaintenanceIssues', 'AvgUtilization'],
@@ -9328,6 +9333,7 @@ function ReportGeneration() {
     hourly_utilization: ['HourBand', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings'],
     day_wise_utilization: ['Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms'],
     date_wise_occupancy: ['Date', 'Day', 'ScheduledHours', 'BookedHours', 'Utilization', 'ScheduledEntries', 'ApprovedBookings', 'OccupiedRooms'],
+    per_room_occupancy: ['Date', 'Day', 'HourBand', 'Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Capacity', 'OccupancyStatus', 'ScheduledEntries', 'ApprovedBookings', 'SuppressedSchedules', 'Details'],
     department_roomtype_demand: ['Department', 'TotalDemand'],
     clash_overlap: ['Source', 'Room', 'DayOrDate', 'YearA', 'SemesterA', 'EntryA', 'YearB', 'SemesterB', 'EntryB'],
     vacancy_opportunity: ['Room', 'Building', 'Department', 'IdleHoursPerWeek', 'Utilization', 'Opportunity'],
@@ -9693,6 +9699,19 @@ function ReportGeneration() {
     return true;
   });
   const filteredApprovedBookings = filteredReportBookings.filter((booking: any) => booking.status === 'Approved');
+  const hourlyWindows = Array.from({ length: 10 }, (_, index) => {
+    const start = (8 + index) * 60;
+    const end = start + 60;
+    return {
+      label: `${minutesToTime(start)}-${minutesToTime(end)}`,
+      start,
+      end,
+    };
+  });
+  const occupancySnapshotTimeOptions = [
+    { value: '', label: 'Full Day' },
+    ...hourlyWindows.map((band) => ({ value: band.label, label: band.label })),
+  ];
   const timeBandWindows = [
     { label: '08:00-10:00', start: 8 * 60, end: 10 * 60 },
     { label: '10:00-12:00', start: 10 * 60, end: 12 * 60 },
@@ -9742,15 +9761,6 @@ function ReportGeneration() {
     return {
       band: band.label,
       ...summary,
-    };
-  });
-  const hourlyWindows = Array.from({ length: 10 }, (_, index) => {
-    const start = (8 + index) * 60;
-    const end = start + 60;
-    return {
-      label: `${minutesToTime(start)}-${minutesToTime(end)}`,
-      start,
-      end,
     };
   });
   const hourlyUtilizationReport = hourlyWindows.map((band) => ({
@@ -9857,6 +9867,153 @@ function ReportGeneration() {
       occupiedRooms,
     };
   });
+  const detailedRoomReportRows = filteredRoomReports.map((room: any) => ({
+    RoomId: room.room_id?.toString() || '',
+    Room: room.room_number,
+    Aliases: getRoomAliasList(room).join(', '),
+    Campus: room.campus || '',
+    Building: room.building,
+    Block: room.block || '',
+    Floor: getFloorName(room.floor_number),
+    Department: room.department,
+    School: room.school,
+    Type: getRoomTypeDisplay(room),
+    Layout: room.room_layout || 'Normal',
+    Status: room.status,
+    Capacity: room.capacity,
+    Utilization: `${room.utilization}%`,
+    ScheduledHours: room.scheduledHours,
+    BookedHours: room.bookedHours,
+    Years: (room.yearTags || []).map((year: string) => `Year ${year}`).join(', '),
+    Semesters: (room.semesterTags || []).join(', '),
+    Sections: (room.sectionTags || []).join(', '),
+    Flags: (room.flags || []).join(', '),
+  }));
+  const parseTimeWindowLabel = (value?: string) => {
+    if (!value || !value.includes('-')) return null;
+    const [startLabel, endLabel] = value.split('-').map((item) => item.trim());
+    const start = parseTimeToMinutes(startLabel);
+    const end = parseTimeToMinutes(endLabel);
+    if (start === null || end === null || end <= start) return null;
+    return { label: value, start, end };
+  };
+  const occupancySnapshotWindow = parseTimeWindowLabel(filters.snapshotTime);
+  const occupancySnapshotDates = (() => {
+    const explicitFrom = normalizeComparableDateValue(filters.dateFrom);
+    const explicitTo = normalizeComparableDateValue(filters.dateTo);
+    if (explicitFrom && explicitTo) {
+      const start = safeDate(explicitFrom);
+      const end = safeDate(explicitTo);
+      if (!start || !end || end < start) return [];
+      const rows: string[] = [];
+      const cursor = new Date(start);
+      while (cursor <= end) {
+        rows.push(formatLocalDate(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      return rows;
+    }
+    if (explicitFrom || explicitTo) {
+      return [explicitFrom || explicitTo].filter(Boolean) as string[];
+    }
+    return filters.snapshotDay ? [] : [formatLocalDate(new Date())];
+  })();
+  const getEntryWindowOverlap = (startTime?: string, endTime?: string) => {
+    const start = parseTimeToMinutes(startTime);
+    const end = parseTimeToMinutes(endTime);
+    if (start === null || end === null || end <= start) return false;
+    if (!occupancySnapshotWindow) return true;
+    return Math.max(0, Math.min(end, occupancySnapshotWindow.end) - Math.max(start, occupancySnapshotWindow.start)) > 0;
+  };
+  const formatOccupancyEntry = (entry: any, source: 'Schedule' | 'Booking') => {
+    const title = source === 'Schedule'
+      ? [entry.course_name, entry.course_code, entry.faculty].filter(Boolean).join(' | ')
+      : [entry.event_name || entry.purpose, entry.department_name, entry.status].filter(Boolean).join(' | ');
+    return title || `${source} ${entry.start_time || ''}-${entry.end_time || ''}`.trim();
+  };
+  const perRoomOccupancySnapshotRows = (() => {
+    const rows: any[] = [];
+    const selectedDay = filters.snapshotDay || '';
+    const pushSnapshotRow = (room: any, dateLabel: string, dayLabel: string, matchingSchedules: any[], matchingBookings: any[], suppressedSchedules: any[]) => {
+      const details = [
+        ...matchingSchedules.map((entry) => formatOccupancyEntry(entry, 'Schedule')),
+        ...matchingBookings.map((entry) => formatOccupancyEntry(entry, 'Booking')),
+        ...suppressedSchedules.map((entry) => `Exam suppressed: ${formatOccupancyEntry(entry, 'Schedule')}`),
+      ].filter(Boolean);
+      const activeCount = matchingSchedules.length + matchingBookings.length;
+      const occupancyStatus = activeCount > 1
+        ? 'Multiple'
+        : activeCount === 1
+          ? 'Occupied'
+          : suppressedSchedules.length > 0
+            ? 'Exam Blocked'
+            : 'Vacant';
+      rows.push({
+        Date: dateLabel,
+        Day: dayLabel,
+        HourBand: occupancySnapshotWindow?.label || 'Full Day',
+        Room: room.room_number,
+        Campus: room.campus || '',
+        Building: room.building,
+        Block: room.block || '',
+        Floor: getFloorName(room.floor_number),
+        Department: room.department,
+        School: room.school,
+        Type: getRoomTypeDisplay(room),
+        Capacity: room.capacity,
+        OccupancyStatus: occupancyStatus,
+        ScheduledEntries: matchingSchedules.length,
+        ApprovedBookings: matchingBookings.length,
+        SuppressedSchedules: suppressedSchedules.length,
+        Details: details.join(' || '),
+      });
+    };
+    filteredRoomReports.forEach((room: any) => {
+      const roomId = room.room_id?.toString();
+      const roomNumber = room.room_number?.toString().trim();
+      const roomScheduleRows = filteredScheduleRows.filter((schedule: any) => {
+        const scheduleRoomId = schedule.room_id?.toString();
+        const scheduleRoomLabel = schedule.room_label?.toString().trim();
+        return (roomId && scheduleRoomId === roomId) || (roomNumber && scheduleRoomLabel === roomNumber);
+      });
+      const roomBookingRows = filteredApprovedBookings.filter((booking: any) => {
+        const bookingRoomId = booking.room_id?.toString();
+        const bookingRoomNumber = (booking.room_number || booking.room_label)?.toString().trim();
+        return (roomId && bookingRoomId === roomId) || (roomNumber && bookingRoomNumber === roomNumber);
+      });
+      if (occupancySnapshotDates.length > 0) {
+        occupancySnapshotDates.forEach((date) => {
+          const dayLabel = getDateDayName(date);
+          const matchingSchedules = roomScheduleRows.filter((schedule: any) =>
+            schedule.day_of_week === dayLabel &&
+            !isScheduleSuppressedForDate(schedule, date, reportAcademicCalendars) &&
+            getEntryWindowOverlap(schedule.start_time, schedule.end_time)
+          );
+          const suppressedSchedules = roomScheduleRows.filter((schedule: any) =>
+            schedule.day_of_week === dayLabel &&
+            isScheduleSuppressedForDate(schedule, date, reportAcademicCalendars) &&
+            getEntryWindowOverlap(schedule.start_time, schedule.end_time)
+          );
+          const matchingBookings = roomBookingRows.filter((booking: any) =>
+            normalizeComparableDateValue(booking.date) === date &&
+            getEntryWindowOverlap(booking.start_time, booking.end_time)
+          );
+          pushSnapshotRow(room, date, dayLabel, matchingSchedules, matchingBookings, suppressedSchedules);
+        });
+      } else if (selectedDay) {
+        const matchingSchedules = roomScheduleRows.filter((schedule: any) =>
+          schedule.day_of_week === selectedDay &&
+          getEntryWindowOverlap(schedule.start_time, schedule.end_time)
+        );
+        const matchingBookings = roomBookingRows.filter((booking: any) =>
+          getDateDayName(booking.date) === selectedDay &&
+          getEntryWindowOverlap(booking.start_time, booking.end_time)
+        );
+        pushSnapshotRow(room, '-', selectedDay, matchingSchedules, matchingBookings, []);
+      }
+    });
+    return rows;
+  })();
   const departmentNamesForDemand = Array.from(new Set<string>([
     ...filteredScheduleRows.map((schedule: any) => schedule.department_name || roomMetaByRoomId.get(schedule.room_id?.toString())?.department || 'Unmapped'),
     ...filteredApprovedBookings.map((booking: any) => booking.department_name || getBookingRoomMeta(booking)?.department || 'Unmapped'),
@@ -10273,6 +10430,13 @@ function ReportGeneration() {
         sortBy: 'Utilization (desc)',
         note: 'Best for top/bottom utilized rooms.',
       },
+      room_level_detail: {
+        chart: 'Horizontal Bar',
+        xAxis: 'Room',
+        yAxis: 'Utilization',
+        sortBy: 'Utilization (desc)',
+        note: 'Detailed room-by-room operational picture with academic context tags.',
+      },
       campus_utilization: {
         chart: 'Column Chart',
         xAxis: 'Campus',
@@ -10370,6 +10534,34 @@ function ReportGeneration() {
         yAxis: 'Utilization',
         sortBy: 'TimeBand (asc)',
         note: 'Best for utilization trend across time windows.',
+      },
+      hourly_utilization: {
+        chart: 'Line Chart',
+        xAxis: 'HourBand',
+        yAxis: 'Utilization',
+        sortBy: 'HourBand (asc)',
+        note: 'Highlights the busiest and quietest hourly windows.',
+      },
+      day_wise_utilization: {
+        chart: 'Column Chart',
+        xAxis: 'Day',
+        yAxis: 'Utilization',
+        sortBy: 'Day order',
+        note: 'Compares academic day load across the week.',
+      },
+      date_wise_occupancy: {
+        chart: 'Line Chart',
+        xAxis: 'Date',
+        yAxis: 'Utilization',
+        sortBy: 'Date (asc)',
+        note: 'Shows occupancy changes across actual calendar dates.',
+      },
+      per_room_occupancy: {
+        chart: 'Column Chart',
+        xAxis: 'Room',
+        yAxis: 'ScheduledEntries',
+        sortBy: 'ScheduledEntries (desc)',
+        note: 'Best for date/day/time occupancy snapshots by room.',
       },
       department_roomtype_demand: {
         chart: 'Stacked Bar',
@@ -11019,6 +11211,11 @@ function ReportGeneration() {
         sheetName: 'Room Utilization',
         rows: roomDetailRows,
       },
+      room_level_detail: {
+        fileName: 'room-level-detail-report.xlsx',
+        sheetName: 'Room-level Detail',
+        rows: detailedRoomReportRows,
+      },
       campus_utilization: {
         fileName: 'campus-utilization-report.xlsx',
         sheetName: 'Campus Utilization',
@@ -11178,6 +11375,11 @@ function ReportGeneration() {
           ApprovedBookings: item.approvedBookings,
           OccupiedRooms: item.occupiedRooms,
         })),
+      },
+      per_room_occupancy: {
+        fileName: 'per-room-occupancy-report.xlsx',
+        sheetName: 'Per-room Occupancy',
+        rows: perRoomOccupancySnapshotRows,
       },
       department_roomtype_demand: {
         fileName: 'department-roomtype-demand-report.xlsx',
@@ -11509,6 +11711,17 @@ function ReportGeneration() {
             <option value="">All Flags</option>
             {flagOptions.map((flag: any) => <option key={flag} value={flag}>{flag}</option>)}
           </select>
+          {filters.reportType === 'per_room_occupancy' && (
+            <>
+              <select value={filters.snapshotDay} onChange={e => setFilters({ ...filters, snapshotDay: e.target.value })} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm focus:outline-none focus:border-amber-500">
+                <option value="">Auto Day From Date</option>
+                {reportDayOrder.map((day: string) => <option key={day} value={day}>{day}</option>)}
+              </select>
+              <select value={filters.snapshotTime} onChange={e => setFilters({ ...filters, snapshotTime: e.target.value })} className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm focus:outline-none focus:border-amber-500">
+                {occupancySnapshotTimeOptions.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
+              </select>
+            </>
+          )}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
@@ -11860,6 +12073,44 @@ function ReportGeneration() {
               </div>
             )}
 
+            {filters.reportType === 'room_level_detail' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Room-level Detail Report</h3>
+                <p className="text-sm text-slate-500 mb-6">Provides one row per room with location, academic usage tags, operational status, and utilization context.</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        {['Room', 'Building', 'Block', 'Floor', 'Department', 'Type', 'Capacity', 'Utilization', 'Scheduled Hours', 'Booked Hours', 'Years', 'Semesters', 'Sections', 'Flags'].map((column) => (
+                          <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {detailedRoomReportRows.map((item: any) => (
+                        <tr key={item.RoomId || item.Room} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.Room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Building}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Block || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Floor}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Department}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Type}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.Capacity}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.Utilization}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.ScheduledHours}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.BookedHours}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Years || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Semesters || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Sections || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Flags || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {filters.reportType === 'time_band_utilization' && (
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-800 mb-6">Room Utilization by Time Band</h3>
@@ -11989,6 +12240,49 @@ function ReportGeneration() {
                       ))}
                       {dateWiseOccupancyReport.length === 0 && (
                         <tr><td colSpan={8} className="py-8 text-center text-slate-400 italic">No date-wise occupancy rows found for the selected filters.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'per_room_occupancy' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Per-room Occupancy Snapshot</h3>
+                <p className="text-sm text-slate-500 mb-6">
+                  Uses the selected date range or weekday plus the optional hour band to show whether each room is vacant, occupied, has multiple simultaneous entries, or is suppressed by an exam override.
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        {['Date', 'Day', 'Hour Band', 'Room', 'Building', 'Block', 'Floor', 'Department', 'Type', 'Status', 'Schedules', 'Bookings', 'Exam Suppressed', 'Details'].map((column) => (
+                          <th key={column} className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {perRoomOccupancySnapshotRows.map((item: any) => (
+                        <tr key={`${item.Date}-${item.Day}-${item.Room}-${item.HourBand}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm text-slate-500">{item.Date === '-' ? '-' : formatDisplayDate(item.Date)}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Day}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.HourBand}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.Room}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Building}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Block || '-'}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Floor}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Department}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Type}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.OccupancyStatus}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.ScheduledEntries}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.ApprovedBookings}</td>
+                          <td className="py-4 text-sm text-slate-500 text-right">{item.SuppressedSchedules}</td>
+                          <td className="py-4 text-sm text-slate-500 min-w-[320px]">{item.Details || '-'}</td>
+                        </tr>
+                      ))}
+                      {perRoomOccupancySnapshotRows.length === 0 && (
+                        <tr><td colSpan={14} className="py-8 text-center text-slate-400 italic">No room snapshot rows found for the selected date, day, or hour band.</td></tr>
                       )}
                     </tbody>
                   </table>
