@@ -1828,6 +1828,25 @@ const formatLocalDate = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 
+const formatDisplayDate = (value?: string | Date | null) => {
+  if (!value) return '';
+  if (value instanceof Date) {
+    const normalized = formatLocalDate(value).split('-');
+    return `${normalized[2]}-${normalized[1]}-${normalized[0]}`;
+  }
+
+  const text = value.toString().trim();
+  if (!text) return '';
+
+  const isoLikeMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoLikeMatch) return `${isoLikeMatch[3]}-${isoLikeMatch[2]}-${isoLikeMatch[1]}`;
+
+  const alreadyFormattedMatch = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (alreadyFormattedMatch) return text;
+
+  return text;
+};
+
 const DEFAULT_TIMETABLE_TIME_SLOTS = [
   { start_time: '09:00', end_time: '09:55' },
   { start_time: '09:55', end_time: '10:50' },
@@ -5465,8 +5484,8 @@ function AcademicCalendarManagement() {
       },
     },
     { key: 'title', label: 'Title', fullWidth: true },
-    { key: 'start_date', label: 'Start Date', type: 'date' },
-    { key: 'end_date', label: 'End Date', type: 'date' },
+    { key: 'start_date', label: 'Start Date', type: 'date', render: (item: any) => formatDisplayDate(item.start_date) || '-' },
+    { key: 'end_date', label: 'End Date', type: 'date', render: (item: any) => formatDisplayDate(item.end_date) || '-' },
     {
       key: 'status',
       label: 'Status',
@@ -5695,7 +5714,7 @@ function BatchRoomAllocationManagement() {
   const getCalendarLabel = (calendar: any) => {
     const studyPeriod = getStudyPeriodDisplay(calendar.year_of_study, calendar.semester, calendar.program);
     const programLabel = [calendar.program || 'Program', calendar.batch || '', studyPeriod !== '-' ? studyPeriod : ''].filter(Boolean).join(' - ');
-    return `${calendar.title} - ${programLabel}`.trim() + ` (${calendar.start_date} to ${calendar.end_date})`;
+    return `${calendar.title} - ${programLabel}`.trim() + ` (${formatDisplayDate(calendar.start_date)} to ${formatDisplayDate(calendar.end_date)})`;
   };
 
   const filteredCalendarOptions = (formData: any) =>
