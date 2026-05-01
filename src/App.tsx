@@ -907,6 +907,9 @@ const getRoomTypeDisplay = (room: any) => {
   return roomType || room?.room_type || '';
 };
 
+const getBaseRoomTypeDisplay = (room: any) =>
+  normalizeRoomTypeValue(room?.room_type) || room?.room_type || '';
+
 const normalizeBooleanLikeValue = (value: unknown, defaultValue = true) => {
   if (value === undefined || value === null || value === '') return defaultValue;
   if (typeof value === 'boolean') return value;
@@ -4987,14 +4990,16 @@ function RoomManagement() {
         is_bookable: isNonCapacityRoomType(value) ? '0' : nextData.is_bookable,
         capacity: isCapacityRoomType(value) ? nextData.capacity : '',
       }),
-      render: (item: any) => getRoomTypeDisplay(item),
+      render: (item: any) => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item.room_layout))
+        ? '-'
+        : getBaseRoomTypeDisplay(item),
     },
     {
       key: 'sub_room_type',
       label: 'Sub Room Type',
       tableOnly: true,
       render: (item: any) => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item.room_layout))
-        ? getRoomTypeDisplay(item)
+        ? getBaseRoomTypeDisplay(item)
         : '-',
     },
     {
@@ -5080,6 +5085,8 @@ function RoomManagement() {
   const prepareFormData = (item: any) => {
     const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
     const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
+    const isChildLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout));
+    const childLabName = isChildLayout ? (item?.lab_name || '') : '';
 
     return {
       ...item,
@@ -5090,8 +5097,8 @@ function RoomManagement() {
       parent_room_id: item?.parent_room_id || '',
       room_layout: normalizeRoomLayoutValue(item?.room_layout),
       sub_room_count: item?.sub_room_count ?? '',
-      lab_name: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout)) ? '' : (item?.lab_name || ''),
-      sub_lab_name: HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout)) ? (item?.lab_name || '') : '',
+      lab_name: isChildLayout ? childLabName : (item?.lab_name || ''),
+      sub_lab_name: childLabName,
       usage_category: normalizeUsageCategoryValue(item?.usage_category, item?.room_type),
     };
   };
