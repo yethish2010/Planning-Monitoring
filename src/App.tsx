@@ -9315,6 +9315,7 @@ function ReportGeneration() {
   });
   const REPORT_TYPE_OPTIONS = [
     { value: 'room_utilization', label: 'Room Utilization' },
+    { value: 'available_room_summary', label: 'Available Room Summary' },
     { value: 'room_level_detail', label: 'Room-level Detail' },
     { value: 'campus_utilization', label: 'Campus Utilization' },
     { value: 'building_utilization', label: 'Building Utilization' },
@@ -9345,6 +9346,7 @@ function ReportGeneration() {
   ];
   const REPORT_EXPORT_COLUMNS: Record<string, string[]> = {
     room_utilization: ['Room', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Utilization', 'ScheduledHours', 'BookedHours', 'Capacity', 'Status', 'Flags'],
+    available_room_summary: ['SummaryScope', 'Category', 'AvailableRooms', 'RoomNumbers'],
     room_level_detail: ['RoomId', 'Room', 'Aliases', 'Campus', 'Building', 'Block', 'Floor', 'Department', 'School', 'Type', 'Layout', 'Status', 'Capacity', 'Utilization', 'ScheduledHours', 'BookedHours', 'Years', 'Semesters', 'Sections', 'Flags'],
     campus_utilization: ['Campus', 'Buildings', 'Rooms', 'AvgUtilization'],
     school_utilization: ['School', 'Departments', 'Rooms', 'TotalCapacity', 'AvgUtilization', 'UnmappedRooms'],
@@ -9633,6 +9635,58 @@ function ReportGeneration() {
         avgUtilization: Math.round(usageRooms.reduce((acc: number, room: any) => acc + room.utilization, 0) / (usageRooms.length || 1)),
       };
     }).sort((a: any, b: any) => b.avgUtilization - a.avgUtilization);
+  const collectSortedRoomNumbers = (values: Array<any>) =>
+    Array.from(new Set(
+      values
+        .map((value) => value?.toString().trim())
+        .filter(Boolean)
+    )).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
+  const availableRoomReports = filteredRoomReports.filter((room: any) => room.status === 'Available');
+  const summarizeAvailableRooms = (scope: string, rows: any[], getLabel: (room: any) => string) => Array.from(new Set(
+    rows.map((room: any) => getLabel(room)).filter(Boolean)
+  )).map((label) => {
+    const matchingRooms = rows.filter((room: any) => getLabel(room) === label);
+    const roomNumbers = collectSortedRoomNumbers(matchingRooms.map((room: any) => room.room_number));
+    return {
+      SummaryScope: scope,
+      Category: label,
+      AvailableRooms: matchingRooms.length,
+      RoomNumbers: roomNumbers.join(', '),
+    };
+  }).sort((left: any, right: any) => {
+    if (right.AvailableRooms !== left.AvailableRooms) return right.AvailableRooms - left.AvailableRooms;
+    return left.Category.localeCompare(right.Category, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  const availableRoomSummaryRows = [
+    ...summarizeAvailableRooms(
+      'Room Type',
+      availableRoomReports.filter((room: any) => !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))),
+      (room: any) => getBaseRoomTypeDisplay(room)
+    ),
+    ...summarizeAvailableRooms(
+      'Sub Room Type',
+      availableRoomReports.filter((room: any) => HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout))),
+      (room: any) => getBaseRoomTypeDisplay(room)
+    ),
+    ...summarizeAvailableRooms(
+      'Lab Name',
+      availableRoomReports.filter((room: any) =>
+        normalizeRoomTypeValue(room.room_type) === 'Lab' &&
+        !HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) &&
+        room.lab_name
+      ),
+      (room: any) => room.lab_name?.toString().trim() || ''
+    ),
+    ...summarizeAvailableRooms(
+      'Sub Lab Name',
+      availableRoomReports.filter((room: any) =>
+        normalizeRoomTypeValue(room.room_type) === 'Lab' &&
+        HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(room.room_layout)) &&
+        (room.sub_lab_name || room.lab_name)
+      ),
+      (room: any) => room.sub_lab_name?.toString().trim() || room.lab_name?.toString().trim() || ''
+    ),
+  ];
   const yearSummary = yearOptions.map((year: any) => {
     const yearRooms = filteredRoomReports.filter((room: any) => (room.yearTags || []).includes(year));
     return {
@@ -9808,12 +9862,6 @@ function ReportGeneration() {
       approvedBookings,
     };
   };
-  const collectSortedRoomNumbers = (values: Array<any>) =>
-    Array.from(new Set(
-      values
-        .map((value) => value?.toString().trim())
-        .filter(Boolean)
-    )).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }));
   const getScheduleReportRoomNumber = (schedule: any) => {
     const roomIdKey = schedule.room_id?.toString();
     return roomMetaByRoomId.get(roomIdKey)?.room_number?.toString().trim()
@@ -11444,6 +11492,11 @@ function ReportGeneration() {
         sheetName: 'Room Utilization',
         rows: roomDetailRows,
       },
+      available_room_summary: {
+        fileName: 'available-room-summary-report.xlsx',
+        sheetName: 'Available Room Summary',
+        rows: availableRoomSummaryRows,
+      },
       room_level_detail: {
         fileName: 'room-level-detail-report.xlsx',
         sheetName: 'Room-level Detail',
@@ -12188,6 +12241,62 @@ function ReportGeneration() {
                           <td className="py-4 text-sm font-bold text-slate-700 text-right">{department.avgUtilization}%</td>
                         </tr>
                       ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {filters.reportType === 'available_room_summary' && (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">Available Room Summary</h3>
+                <p className="text-sm text-slate-500 mb-6">
+                  Summarizes only rooms whose current room-management status is <span className="font-semibold text-slate-700">Available</span>, including base room types, child sub room types, and named labs.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
+                  <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Available Rooms</p>
+                    <p className="text-2xl font-bold text-slate-800">{availableRoomReports.length}</p>
+                  </div>
+                  <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                    <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Room Types</p>
+                    <p className="text-2xl font-bold text-slate-800">{availableRoomSummaryRows.filter((row: any) => row.SummaryScope === 'Room Type').length}</p>
+                  </div>
+                  <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                    <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Sub Room Types</p>
+                    <p className="text-2xl font-bold text-slate-800">{availableRoomSummaryRows.filter((row: any) => row.SummaryScope === 'Sub Room Type').length}</p>
+                  </div>
+                  <div className="p-4 bg-violet-50 rounded-2xl border border-violet-100">
+                    <p className="text-[10px] font-bold text-violet-600 uppercase tracking-widest">Named Labs</p>
+                    <p className="text-2xl font-bold text-slate-800">{availableRoomSummaryRows.filter((row: any) => row.SummaryScope === 'Lab Name' || row.SummaryScope === 'Sub Lab Name').length}</p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Summary Scope</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Category</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Available Rooms</th>
+                        <th className="pb-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Room Numbers</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {availableRoomSummaryRows.map((item: any) => (
+                        <tr key={`${item.SummaryScope}-${item.Category}`} className="hover:bg-slate-50/50">
+                          <td className="py-4 text-sm font-bold text-slate-700">{item.SummaryScope}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.Category}</td>
+                          <td className="py-4 text-sm font-bold text-slate-700 text-right">{item.AvailableRooms}</td>
+                          <td className="py-4 text-sm text-slate-500">{item.RoomNumbers || '-'}</td>
+                        </tr>
+                      ))}
+                      {availableRoomSummaryRows.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="py-8 text-center text-sm text-slate-400 italic">
+                            No available-room summary rows match the selected filters.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
