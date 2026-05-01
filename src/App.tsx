@@ -96,6 +96,27 @@ const sanitizeExtractedSchedule = (schedule: any) => {
 const normalizeLookupValue = (value: unknown) =>
   value?.toString().trim().toLowerCase().replace(/\s+/g, ' ') || '';
 
+const ROOM_IMPORT_OPTIONAL_PLACEHOLDERS = new Set([
+  '-',
+  '--',
+  '---',
+  'n/a',
+  'na',
+  'none',
+  'null',
+  'nil',
+]);
+
+const normalizeOptionalImportValue = (value: unknown) => {
+  const raw = value?.toString().trim() || '';
+  if (!raw) return '';
+  const normalized = normalizeLookupValue(raw);
+  return ROOM_IMPORT_OPTIONAL_PLACEHOLDERS.has(normalized) ? '' : raw;
+};
+
+const normalizeOptionalImportLookupValue = (value: unknown) =>
+  normalizeLookupValue(normalizeOptionalImportValue(value));
+
 const getRoomLookupVariants = (value: unknown) => {
   const base = normalizeLookupValue(value);
   if (!base) return [];
@@ -5088,8 +5109,8 @@ function RoomManagement() {
       row['Room Number'],
       row['Room ID'],
     ].map(normalizeLookupValue).filter(Boolean);
-    const getRowParentLabel = (row: any) => normalizeLookupValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
-    const getRowSubRoomName = (row: any) => getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString().trim() || '';
+    const getRowParentLabel = (row: any) => normalizeOptionalImportLookupValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
+    const getRowSubRoomName = (row: any) => normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name']));
     const getRowSubRoomCount = (row: any) => parseInt(getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside'])?.toString() || '0', 10) || 0;
 
     const parentRows = data.filter(row => HIERARCHY_PARENT_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout']))));
@@ -5163,7 +5184,7 @@ function RoomManagement() {
           normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue)
         )
       );
-      const parentRoomValue = getImportValue(row, ['Parent Room', 'Inside / Parent Room']);
+      const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
       const parentRoom = parentRoomValue ? findRoomByImportLabel(knownRooms, parentRoomValue) : null;
 
       if (parentRoomValue && !parentRoom) {
@@ -5179,11 +5200,11 @@ function RoomManagement() {
         room_layout: normalizeRoomLayoutValue(getImportValue(row, ['Room Layout', 'Layout'])),
         parent_room_id: parentRoom?.id || null,
         sub_room_count: getImportValue(row, ['Sub Room Count', 'Number of Splits', 'Number of Rooms Inside']),
-        room_section_name: getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])?.toString() || '',
+        room_section_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Room Name', 'Room Section Name', 'Section Name'])) || '',
         usage_category: normalizeUsageCategoryValue(getImportValue(row, ['Usage Category', 'Usage']), getImportValue(row, ['Sub Room Type', 'Room Type'])),
         is_bookable: isNonCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? 0 : normalizeBooleanLikeValue(getImportValue(row, ['Is Bookable', 'Bookable']), true) ? 1 : 0,
-        lab_name: getImportValue(row, ['Lab Name']),
-        sub_lab_name: getImportValue(row, ['Sub Lab Name']),
+        lab_name: normalizeOptionalImportValue(getImportValue(row, ['Lab Name'])),
+        sub_lab_name: normalizeOptionalImportValue(getImportValue(row, ['Sub Lab Name'])),
         restroom_type: normalizeRestroomTypeValue(getImportValue(row, ['Restroom For', 'Restroom Type'])),
         capacity: isCapacityRoomType(getImportValue(row, ['Sub Room Type', 'Room Type'])) ? parseInt(row['Capacity']) || 0 : 0,
         status: row['Status'] || 'Available'
