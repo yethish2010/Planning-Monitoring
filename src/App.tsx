@@ -3560,6 +3560,7 @@ function GenericCRUD({
   filterControls,
   initialSearchTerm,
   dataSorter,
+  exportBuilder,
 }: {
   type: string,
   fields: any[],
@@ -3573,6 +3574,7 @@ function GenericCRUD({
   filterControls?: React.ReactNode,
   initialSearchTerm?: string,
   dataSorter?: (a: any, b: any) => number,
+  exportBuilder?: (items: any[]) => { headers: string[]; rows: any[][] },
 }) {
   const [data, setData] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -3673,14 +3675,18 @@ function GenericCRUD({
   };
 
   const downloadExport = () => {
-    const headers = tableFields.map(field => field.label);
-    const rows = filteredData.map(item =>
-      tableFields.map(field => {
-        const value = getFieldDisplayValue(field, item);
-        return value === undefined || value === null ? '' : value;
-      })
-    );
-    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const exportData = exportBuilder
+      ? exportBuilder(filteredData)
+      : {
+          headers: tableFields.map(field => field.label),
+          rows: filteredData.map(item =>
+            tableFields.map(field => {
+              const value = getFieldDisplayValue(field, item);
+              return value === undefined || value === null ? '' : value;
+            })
+          ),
+        };
+    const worksheet = XLSX.utils.aoa_to_sheet([exportData.headers, ...exportData.rows]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeExcelName(`${type} Data`));
     XLSX.writeFile(workbook, `${type}_Export.xlsx`);
@@ -5206,7 +5212,8 @@ function RoomManagement() {
         (
           f.id?.toString() === floorValue?.toString() ||
           f.floor_number?.toString() === floorValue?.toString() ||
-          normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue)
+          normalizeLookupValue(getFloorName(f.floor_number)) === normalizeLookupValue(floorValue) ||
+          normalizeLookupValue(getFloorDisplayLabel(f, blocks, buildings)) === normalizeLookupValue(floorValue)
         )
       );
       const parentRoomValue = normalizeOptionalImportValue(getImportValue(row, ['Parent Room', 'Inside / Parent Room']));
@@ -5255,12 +5262,65 @@ function RoomManagement() {
     }
   };
 
+  const buildRoomExportData = (items: any[]) => {
+    const headers = IMPORT_TEMPLATE_CONFIG.Room?.headers || fields.map(field => field.label);
+    const toCellValue = (value: unknown) => {
+      const normalized = normalizeOptionalImportValue(value);
+      return normalized || '-';
+    };
+
+    const rows = items.map(item => {
+      const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
+      const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
+      const building = buildings.find(b => idsMatch(b.id, block?.building_id));
+      const isChildRoom = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout));
+      const parentRoom = item?.parent_room_id ? rooms.find(room => idsMatch(room.id, item.parent_room_id)) : null;
+      const roomType = normalizeRoomTypeValue(item?.room_type);
+      const roomLayout = normalizeRoomLayoutValue(item?.room_layout);
+      const labName = normalizeOptionalImportValue(item?.lab_name);
+      const usageCategory = normalizeUsageCategoryValue(item?.usage_category, roomType);
+      const restroomType = normalizeRestroomTypeValue(item?.restroom_type);
+
+      const rowMap: Record<string, any> = {
+        'Room ID': item?.room_id || '',
+        'Room Number': item?.room_number || '',
+        'Room Aliases': toCellValue(normalizeRoomAliases(item?.room_aliases)),
+        'Building': building?.name || '',
+        'Block / Direct Floors': block ? getBlockDisplayLabel(block, building) : '',
+        'Floor': floor ? getFloorDisplayLabel(floor, blocks, buildings) : '',
+        'Room Layout': roomLayout || '',
+        'Sub Room Count': HIERARCHY_PARENT_ROOM_LAYOUTS.includes(roomLayout) ? (item?.sub_room_count ?? '') : '',
+        'Room Type': isChildRoom ? '-' : (roomType || ''),
+        'Sub Room Type': isChildRoom ? (roomType || '-') : '-',
+        'Sub Room Name': toCellValue(item?.room_section_name),
+        'Inside / Parent Room': toCellValue(parentRoom?.room_number),
+        'Usage Category': usageCategory || '',
+        'Is Bookable': normalizeBooleanLikeValue(item?.is_bookable, true) ? 'Yes' : 'No',
+        'Lab Name': roomType === 'Lab' && !isChildRoom ? toCellValue(labName) : '-',
+        'Sub Lab Name': roomType === 'Lab' && isChildRoom ? toCellValue(labName) : '-',
+        'Capacity': isCapacityRoomType(roomType) ? (item?.capacity ?? 0) : '-',
+        'Status': item?.status || 'Available',
+      };
+
+      if (roomType === 'Restroom') {
+        rowMap['Lab Name'] = '-';
+        rowMap['Sub Lab Name'] = '-';
+        rowMap['Restroom For'] = restroomType || '-';
+      }
+
+      return headers.map(header => rowMap[header] ?? '');
+    });
+
+    return { headers, rows };
+  };
+
   return (
     <GenericCRUD
       type="Room"
       fields={fields}
       apiPath="/api/rooms"
       onImport={handleImport}
+      exportBuilder={buildRoomExportData}
       prepareSubmitData={prepareSubmitData}
       prepareFormData={prepareFormData}
       onDataChanged={refreshRooms}
