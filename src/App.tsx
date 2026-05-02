@@ -1311,6 +1311,9 @@ const IMPORT_TEMPLATE_CONFIG: Record<string, { headers: string[]; exampleRows: R
   Room: {
     headers: ['Room ID', 'Room Number', 'Room Aliases', 'Building', 'Block / Direct Floors', 'Floor', 'Room Layout', 'Sub Room Count', 'Room Type', 'Sub Room Type', 'Sub Room Name', 'Parent Room', 'Usage Category', 'Is Bookable', 'Capacity', 'Status', 'Lab Name', 'Sub Lab Name', 'Restroom For'],
     instructions: [
+      'You can safely export Room Management data, edit it in Excel, and import it back to update existing rows. Keep Room ID, Room Number, Building, Block / Direct Floors, and Floor unchanged unless you intentionally want to move the room.',
+      'For re-importing exported files, keep the exported Floor and Block / Direct Floors labels exactly as they appear in the file so the importer can match the same room location correctly.',
+      'Parent Room / Inside / Parent Room is optional for non-child rows. Leave it blank or use - only when there is no parent room.',
       'Use Shared Room for one physical room with multiple doors/entrances. It behaves like a normal single room and does not need Sub Room Count, Sub Room Name, or Parent Room.',
       'For seminar halls or shared venues with multiple room numbers like 4015 and 4016, create one canonical room row and list the alternate labels in Room Aliases separated by commas.',
       'Use one row for the parent room and one separate row for every split/inside child room.',
