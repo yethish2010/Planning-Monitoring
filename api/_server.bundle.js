@@ -529,6 +529,61 @@ await ensureColumn("users", "access_paths", "TEXT");
 await ensureColumn("users", "force_password_change", "INTEGER DEFAULT 0");
 await ensureColumn("batch_room_allocations", "allocation_mode", "TEXT DEFAULT 'Shared'");
 await ensureColumn("academic_calendars", "timing_profile_id", "INTEGER");
+var ROOM_TYPE_MATCH_ORDER = [
+  "Admin Office",
+  "Auditorium",
+  "Board Room",
+  "Cafeteria",
+  "Classroom",
+  "Classroom Lab",
+  "Common Room",
+  "Computer Lab",
+  "Conference Room",
+  "Corridor",
+  "Dean Office",
+  "Electrical Room",
+  "Emergency Exit",
+  "Entrance",
+  "Exam Hall",
+  "Examination Section",
+  "Exit",
+  "Faculty Room",
+  "Gym",
+  "HOD Cabin",
+  "Lab",
+  "Language Lab",
+  "Lecture Hall",
+  "Library",
+  "Lounge",
+  "Main Entrance",
+  "Maintenance Room",
+  "Medical Room",
+  "Meeting Room",
+  "Multipurpose Classroom",
+  "Multipurpose Lab",
+  "Multipurpose Lecture Hall",
+  "Multipurpose Room",
+  "Office",
+  "Pantry",
+  "Reading Room",
+  "Reception",
+  "Records Room",
+  "Research Lab",
+  "Restroom",
+  "Security Room",
+  "Seminar Hall",
+  "Server Room",
+  "Smart Classroom",
+  "Sports Room",
+  "Staff Room",
+  "Staircase",
+  "Store",
+  "Studio",
+  "Tutorial Room",
+  "Utility",
+  "Waiting Area",
+  "Workshop"
+].sort((left, right) => right.toLowerCase().length - left.toLowerCase().length);
 var normalizeRoomTypeValue = (value) => {
   const normalized = value?.toString().trim().toLowerCase();
   if (!normalized) return "";
@@ -573,6 +628,11 @@ var normalizeRoomTypeValue = (value) => {
   if (["medical room", "sick room", "first aid room"].includes(normalized)) return "Medical Room";
   if (["security room", "guard room"].includes(normalized)) return "Security Room";
   if (["sports room", "sports hall"].includes(normalized)) return "Sports Room";
+  const prefixedMatch = ROOM_TYPE_MATCH_ORDER.find((option) => {
+    const normalizedOption = option.toLowerCase();
+    return normalized === normalizedOption || normalized.startsWith(`${normalizedOption} -`) || normalized.startsWith(`${normalizedOption}:`) || normalized.startsWith(`${normalizedOption}/`);
+  });
+  if (prefixedMatch) return prefixedMatch;
   return value?.toString().trim() || "";
 };
 var normalizeRestroomTypeValue = (value) => {

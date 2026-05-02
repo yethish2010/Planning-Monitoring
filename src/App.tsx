@@ -804,6 +804,9 @@ const NON_CAPACITY_ROOM_TYPES = new Set([
   'Staircase',
 ]);
 
+const ROOM_TYPE_MATCH_ORDER = [...ROOM_TYPE_OPTIONS]
+  .sort((left, right) => normalizeLookupValue(right).length - normalizeLookupValue(left).length);
+
 const normalizeRoomTypeValue = (value: unknown) => {
   const normalized = normalizeLookupValue(value);
   if (!normalized) return '';
@@ -848,6 +851,16 @@ const normalizeRoomTypeValue = (value: unknown) => {
   if (['medical room', 'sick room', 'first aid room'].includes(normalized)) return 'Medical Room';
   if (['security room', 'guard room'].includes(normalized)) return 'Security Room';
   if (['sports room', 'sports hall'].includes(normalized)) return 'Sports Room';
+  const prefixedMatch = ROOM_TYPE_MATCH_ORDER.find((option) => {
+    const normalizedOption = normalizeLookupValue(option);
+    return (
+      normalized === normalizedOption ||
+      normalized.startsWith(`${normalizedOption} -`) ||
+      normalized.startsWith(`${normalizedOption}:`) ||
+      normalized.startsWith(`${normalizedOption}/`)
+    );
+  });
+  if (prefixedMatch) return prefixedMatch;
   return value?.toString().trim() || '';
 };
 
@@ -5086,7 +5099,9 @@ function RoomManagement() {
     const floor = floors.find(f => idsMatch(f.id, item?.floor_id));
     const block = blocks.find(b => idsMatch(b.id, floor?.block_id));
     const isChildLayout = HIERARCHY_CHILD_ROOM_LAYOUTS.includes(normalizeRoomLayoutValue(item?.room_layout));
-    const childLabName = isChildLayout ? (item?.lab_name || '') : '';
+    const normalizedRoomType = normalizeRoomTypeValue(item?.room_type || item?.sub_room_type);
+    const normalizedRestroomType = normalizeRestroomTypeValue(item?.restroom_type);
+    const childLabName = isChildLayout ? (item?.sub_lab_name || item?.lab_name || '') : '';
 
     return {
       ...item,
@@ -5096,10 +5111,13 @@ function RoomManagement() {
       room_aliases: item?.room_aliases || '',
       parent_room_id: item?.parent_room_id || '',
       room_layout: normalizeRoomLayoutValue(item?.room_layout),
+      room_type: normalizedRoomType,
+      restroom_type: normalizedRestroomType,
       sub_room_count: item?.sub_room_count ?? '',
       lab_name: isChildLayout ? childLabName : (item?.lab_name || ''),
       sub_lab_name: childLabName,
-      usage_category: normalizeUsageCategoryValue(item?.usage_category, item?.room_type),
+      usage_category: normalizeUsageCategoryValue(item?.usage_category, normalizedRoomType),
+      status: item?.status || 'Available',
     };
   };
 
